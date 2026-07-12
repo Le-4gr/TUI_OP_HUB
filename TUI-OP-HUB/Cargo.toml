@@ -8,3 +8,46 @@ repository = ""
 readme = "../README.md"
 
 [dependencies]
+# Async runtime (US-NF-02)
+tokio = { version = "1", features = ["full"] }
+
+# Structured logging (US-NF-04)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Database (US-NF-06, US-NF-07)
+sqlx = { version = "0.8", features = [
+    "runtime-tokio-rustls",
+    "sqlite",
+    "macros",
+    "migrate",
+] }
+
+# Error handling (US-NF-08)
+anyhow = "1"
+thiserror = "2"
+
+# Serialization (US-APP-06)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# API (US-API-01)
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+# TUI (US-TUI-*)
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Misc
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+# Single binary optimization (US-NF-05)
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
