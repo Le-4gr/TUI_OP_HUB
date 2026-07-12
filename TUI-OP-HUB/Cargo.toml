@@ -1,0 +1,10 @@
+[package]
+name = "tui-op-hub"
+version = "0.1.0"
+edition = "2021"
+description = "A terminal user interface (TUI) operations hub built in Rust"
+license = "MIT OR Apache-2.0"
+repository = ""
+readme = "../README.md"
+
+[dependencies]
