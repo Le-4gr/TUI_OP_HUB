@@ -20,7 +20,7 @@ use std::io;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use crate::repository;
-use crate::config::ThemeConfig;
+use crate::config::{ThemeConfig, KeybindingsConfig};
 use crate::models::{CreateEntity, CreateProject, Entity, EntityType, Project, Tag};
 
 // ─── Tabs ───────────────────────────────────────────────────────────────────
@@ -162,6 +162,7 @@ pub struct App {
     pub active_project: String,
     pub active_project_id: Option<String>,
     pub theme: ThemeConfig,
+    pub keybindings: KeybindingsConfig,
     pub message: String,
     pub entity_form: EntityForm,
     pub project_form: ProjectForm,
@@ -170,7 +171,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(db_path: &str, theme: ThemeConfig) -> Self {
+    pub fn new(db_path: &str, theme: ThemeConfig, keybindings: KeybindingsConfig) -> Self {
         Self {
             tab: Tab::Dashboard,
             mode: Mode::Normal,
@@ -186,6 +187,7 @@ impl App {
             active_project: "all".to_string(),
             active_project_id: None,
             theme,
+            keybindings,
             message: String::new(),
             entity_form: EntityForm::default(),
             project_form: ProjectForm::default(),
