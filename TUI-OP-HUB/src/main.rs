@@ -33,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     if config.tui.enabled {
-        let mut app = App::new(&config.database.path);
+        let mut app = App::new(&config.database.path, config.theme.clone());
         tui::run(&mut app, pool).await?;
     } else {
         tracing::info!("TUI disabled, running headless. Press Ctrl+C to shut down.");
