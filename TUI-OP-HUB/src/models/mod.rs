@@ -1,4 +1,4 @@
-//! Data models (US-CMD-01, US-CMD-03, US-PROJ-01).
+//! Data models (US-CMD-01..09, US-PROJ-01..06, US-SRCH-01..04).
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -38,6 +38,7 @@ pub struct CreateEntity {
     pub type_id: String,
     pub project_id: Option<String>,
     pub tags: Option<Vec<String>>,
+    pub metadata_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -53,4 +54,11 @@ pub struct SearchResult {
     pub description: Option<String>,
     pub content: Option<String>,
     pub type_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct EntityType {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
 }
