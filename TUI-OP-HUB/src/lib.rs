@@ -1,8 +1,16 @@
 //! TUI-OP-HUB - a terminal user interface operations hub.
+pub mod api;
+pub mod auth;
 pub mod config;
+pub mod config_manager;
 pub mod db;
+pub mod environment;
 pub mod error;
 pub mod models;
+pub mod plugin;
+pub mod process;
 pub mod repository;
-pub mod api;
+pub mod scheduler;
+pub mod secrets;
 pub mod tui;
+pub mod workflow;

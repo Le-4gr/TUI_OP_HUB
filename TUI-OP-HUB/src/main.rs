@@ -1,8 +1,8 @@
 //! Entry point for TUI-OP-HUB.
 use std::sync::Arc;
+use tui_op_hub::api;
 use tui_op_hub::config::AppConfig;
 use tui_op_hub::db;
-use tui_op_hub::api;
 use tui_op_hub::tui::{self, App};
 
 #[tokio::main]

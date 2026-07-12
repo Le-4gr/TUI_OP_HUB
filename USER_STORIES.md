@@ -10,7 +10,67 @@
 
 ---
 
-## 👥 Roles & Personas
+## � Phase Completion Status
+
+### ✅ Phase 1 — Complete
+
+**Core Features Implemented**:
+- ✅ `US-CMD-01` through `US-CMD-09`: Full command/script storage and management (CRUD, copy, run)
+- ✅ `US-PROJ-01` through `US-PROJ-07`: Project grouping and context switching
+- ✅ `US-SRCH-01` through `US-SRCH-04`: Full-text search (FTS5) and filtering by tags/type/project
+- ✅ `US-TUI-01` through `US-TUI-10`: Complete TUI with 7 tabs, keyboard navigation, help overlay, theming
+- ✅ `US-APP-01`, `US-APP-02`, `US-APP-06`: Configuration system with TOML, themes, keybindings
+- ✅ `US-API-01`, `US-API-02`: Local API with entity CRUD endpoints
+- ✅ `US-WF-01`, `US-WF-03`, `US-WF-04`, `US-WF-06`, `US-WF-08`: Workflow system with Lua scripting and run history
+- ✅ `US-SEC-02`, `US-SEC-03`, `US-SEC-04`, `US-SEC-09`, `US-SEC-10`: Secrets storage with XChaCha20Poly1305 encryption
+- ✅ **User Profiles**: Multi-user encryption support with per-user keys (foundation for Phase 2)
+
+**Database Schema**: 12 tables (entities, projects, tags, types, workflow_runs, secrets, user_profiles, user_keys, plugins, ssh_hosts, scheduled_tasks, entities_fts)
+
+**Technology Stack**:
+- Language: Rust 2021 edition
+- Async Runtime: tokio
+- Web: axum with tower-http middleware
+- Database: sqlx + SQLite (WAL mode)
+- TUI: ratatui + crossterm
+- Scripting: mlua (Lua 5.4)
+- Crypto: chacha20poly1305 (XChaCha20Poly1305 AEAD)
+
+---
+
+### 🔄 Phase 2 — Foundation Ready
+
+**Models & Schema Complete**:
+- ✅ Plugin system (models, schema, DB functions, approval workflow structure)
+- ✅ SSH host manager (models, schema, DB functions)
+- ✅ Task scheduler with cron (models, schema, DB functions)
+
+**Pending Phase 2 Work** (ready to implement):
+- 🔄 `US-PLG-05`, `US-PLG-06`: Plugin approval workflow UI and enforcement
+- 🔄 `US-PLG-07`, `US-PLG-10`: Plugin command registration and TUI listing
+- 🔄 `US-SSH-01` through `US-SSH-06`: SSH host manager TUI and quick-connect
+- 🔄 `US-WF-07`: Scheduler daemon with cron parsing and execution
+- 🔄 `US-SEC-01`, `US-SEC-05`: SSH key storage and ssh-agent integration
+- 🔄 `US-DEP-04`: Systemd integration
+
+**Not Yet Started** (Future/P2+):
+- 🟢 `US-PROC-01` through `US-PROC-07`: Process management (future feature)
+- 🟢 `US-PKG-01` through `US-PKG-09`: Package manager integration (future)
+- 🟢 `US-ENV-01` through `US-ENV-08`: Environment variable/venv management (future)
+- 🟢 `US-CFG-01` through `US-CFG-08`: Config file management (future)
+- 🟢 `US-DB-01` through `US-DB-06`: Multi-database support (future)
+- 🟢 `US-WEB-01` through `US-WEB-04`: Web UI (future)
+- 🟢 `US-SYNC-01` through `US-SYNC-04`: Cross-machine sync (future)
+- 🟢 `US-BAK-01` through `US-BAK-04`: Backup/export (future)
+
+**Implementation Strategy**:
+- Phase 1 ✅: Complete CRUD for entities, projects, workflows, and secrets with full TUI integration
+- Phase 2 🔄: Extend Phase 1 with plugins, SSH, and scheduler (foundation laid, TUI/API integration pending)
+- Phase 3+: Advanced features (process management, package management, environments, web UI, sync)
+
+---
+
+## �👥 Roles & Personas
 
 | 🎭 Role | 📖 Description |
 |:---|:---|
@@ -130,6 +190,11 @@
 | `US-SEC-08` | As an **Admin**, I want **access control** over secrets (future), so that only authorized plugins/users can read sensitive values. | 🟢 | 8 |
 | `US-SEC-09` | As a **User**, I want to **rotate or revoke** a stored secret, so that I can respond to compromise. | 🟡 | 3 |
 | `US-SEC-10` | As a **User**, I want secrets **referenced (not copied)** by projects/workflows, so that a single source of truth is maintained. | 🟡 | 3 |
+| `US-SEC-11` | As a **User**, I want to **set a master password** for my user profile, so that I can decrypt my secrets with a password instead of relying on environment variables. | 🔴 | 5 |
+| `US-SEC-12` | As a **User**, I want to **login with my password** at startup, so that my encryption key is derived from my password and secrets are automatically decrypted. | 🔴 | 5 |
+| `US-SEC-13` | As a **User**, I want to **choose between password-based or environment-based** secret encryption, so that I can use the method that fits my workflow. | 🟡 | 3 |
+| `US-SEC-14` | As a **User**, I want my **session to auto-lock** after inactivity, so that my secrets are protected when I step away. | 🟡 | 3 |
+| `US-SEC-15` | As a **User**, I want to **change my master password**, so that I can update my security credentials without losing access to my secrets. | 🟡 | 5 |
 
 ---
 

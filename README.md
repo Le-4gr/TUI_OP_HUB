@@ -1,117 +1,64 @@
 # TUI-OP-HUB
 
-A terminal user interface (TUI) operations hub, built in Rust.
-
-## Overview
-
-TUI-OP-HUB is a keyboard-driven terminal application that centralizes operational
-workflows — commands, scripts, projects, tags, search — into a single, ergonomic
-interface. It is designed for operators, developers, and power users who live in
-the terminal and want a unified cockpit for their day-to-day tasks.
+A terminal-based operations hub for command management, workflow automation, and secure secret storage with multi-user encryption support.
 
 ## Features
 
-- **Dashboard** — At-a-glance overview of commands, projects, tags, and types
-- **Commands** — Store, edit, delete, search, filter, run, and copy commands/scripts
-- **Projects** — Group related resources, switch between projects, project dashboards
-- **Tags** — Organize and filter entities by tags
-- **Full-text search** — FTS5-powered search with relevance ranking
-- **Configurable** — Themes and keybindings via TOML config
-- **REST API** — Full CRUD API with workflow execution endpoint
-- **Headless mode** — Run backend-only without TUI
+### Phase 1 ✅ Complete
 
-## Prerequisites
+- **Entity Management**: Create, read, update, delete typed entities (commands, scripts, apps, workflows, environment variables, configs, secrets)
+- **Project Organization**: Group entities by project with filtering and search
+- **Tag System**: Organize entities with flexible tagging  
+- **Full-Text Search**: Fast FTS5-powered search across all entities
+- **Workflow Automation**: Lua-based workflow engine with Host functions (run_command, query_entity, emit_event, log)
+- **Workflow Execution**: Execute workflows from TUI with run history tracking
+- **Encrypted Secrets**: XChaCha20Poly1305 AEAD cipher with per-user key management
+- **User Profiles**: Multi-user support with individual encryption keys
+- **REST API**: Axum-based HTTP API for full CRUD and workflow execution
+- **TUI Dashboard**: Interactive terminal UI with 7 tabs (Dashboard, Commands, Projects, Tags, Search, Workflows, Secrets)
 
-- [Rust](https://www.rust-lang.org/tools/install) (stable toolchain, 1.70+)
-- Cargo (ships with Rust)
-- A Unix-like terminal (Linux, macOS, BSD)
+### Phase 2 🔄 Foundation Ready
+
+- Plugin architecture (models, schema, DB functions, approval workflow structure)
+- SSH host manager (models, schema, DB functions)
+- Task scheduler with cron support (models, schema, DB functions)
 
 ## Quick Start
 
-```bash
-# Clone the repository
-git clone <repo-url>
-cd TUI-OP-HUB
-
-# Enter the Rust project directory
-cd TUI-OP-HUB
-
-# Build and run (debug mode)
-cargo run
-
-# Or build first, then run
-cargo build
-./target/debug/tui-op-hub
-```
-
-## Build
-
-### Debug build
-
-```bash
-cd TUI-OP-HUB
-cargo build
-```
-
-### Release build (optimized)
-
+### Build
 ```bash
 cd TUI-OP-HUB
 cargo build --release
-# Binary at: ./target/release/tui-op-hub
 ```
 
-The release build is a single optimized binary with LTO, stripped symbols,
-and opt-level=3.
-
-## Run
-
-### Interactive TUI mode (default)
-
+### Run
 ```bash
-cd TUI-OP-HUB
-cargo run
-# or after building:
-./target/debug/tui-op-hub
+# Set encryption key (generate with: openssl rand -base64 32)
+export TUI_OP_HUB_SECRETS_KEY="<base64-32-byte-key>"
+export TUI_OP_HUB_USER="default"  # Optional
+
+./target/release/tui-op-hub
 ```
-
-### Headless mode (backend + API only, no TUI)
-
-Set `tui.enabled = false` in your config file (see Configuration below).
-
-In headless mode, the API server runs and the process waits for Ctrl+C.
 
 ## Configuration
 
-TUI-OP-HUB reads its configuration from a TOML file. The default location is:
-
-```
-$XDG_CONFIG_HOME/tui-op-hub/config.toml
-# or
-~/.config/tui-op-hub/config.toml
-```
-
-If no config file exists, sensible defaults are used.
-
-### Example config.toml
-
+Create `~/.config/tui-op-hub/config.toml`:
 ```toml
 [database]
 path = "tuihub.db"
 busy_timeout_ms = 5000
 
 [api]
-bind_addr = "127.0.0.1:3000"
+bind_addr = "127.0.0.1:3001"
 
 [tui]
 enabled = true
+page_size = 10
 
 [theme]
-name = "dark"
 fg = "white"
 bg = "black"
-accent = "yellow"
-status_bg = "blue"
+accent = "cyan"
 
 [keybindings]
 quit = "q"
@@ -125,79 +72,154 @@ copy = "c"
 run = "r"
 ```
 
-### Theme colors
+## Security
 
-Supported color names: white, black, red, green, yellow, blue,
-magenta, cyan, gray, darkgray.
+**Encryption Model**:
+- Secrets encrypted with XChaCha20Poly1305 AEAD cipher
+- Per-user 32-byte keys stored in `user_keys` table
+- Random 24-byte nonce per message (semantic security)
+- Plaintext never stored in database
 
-### Keybinding keys
-
-Single characters (e.g. "q", "n") or special key names: tab, enter,
-esc, up, down, left, right, backspace, space.
+**Key Management**:
+- Generate key: `openssl rand -base64 32` (outputs 44-char base64)
+- Set via: `TUI_OP_HUB_SECRETS_KEY` environment variable
+- Or store in database via `user_keys` table with `user_id`
 
 ## TUI Keybindings
 
 | Key | Action |
 |:----|:-------|
-| Tab / Left / Right | Switch tabs |
-| Up / Down | Navigate list items |
-| Enter | Select item / Switch project |
-| ? | Toggle help overlay |
-| q | Quit (in Normal mode) |
-| n | Create new entity/project |
-| e | Edit entity (in detail view) |
-| d | Delete entity/project (with confirmation) |
-| / | Start search (on Search tab) |
+| Tab/Left/Right | Switch tabs |
+| Up/Down | Navigate items |
+| Enter | Select/Detail view |
+| ? | Help |
+| q | Quit |
+| n | Create new |
+| e | Edit (detail view) |
+| d | Delete |
+| / | Search |
 | f | Filter by tags |
-| c | Copy content to clipboard (in detail view) |
-| r | Run command/script (in detail view) |
-| Esc | Cancel / Back |
+| c | Copy content |
+| r | Run (commands/workflows) |
+| v | View secret (Secrets tab) |
+| Esc | Cancel |
 
-## Tabs
+## API Endpoints
 
-1. **Dashboard** — Stats overview and quick actions
-2. **Commands** — List, create, filter, and manage commands/scripts
-3. **Projects** — List, create, switch, and delete projects
-4. **Tags** — Browse all tags
-5. **Search** — Full-text search across all entities
+### Secrets (User-Specific)
+- `GET /secrets` - List user secrets
+- `POST /secrets` - Create encrypted secret
+- `GET /secrets/{id}` - Get secret (decrypted)
+- `PUT /secrets/{id}` - Update secret
+- `DELETE /secrets/{id}` - Delete secret
 
-## API
+### Workflows
+- `GET /workflows` - List workflows
+- `POST /workflows/{id}/execute` - Execute workflow
 
-The backend exposes a REST API (default: 127.0.0.1:0 = random port, check logs).
+### Entities
+- `GET /entities` - List entities
+- `POST /entities` - Create entity  
+- `GET /entities/{id}` - Get entity
+- `PUT /entities/{id}` - Update entity
+- `DELETE /entities/{id}` - Delete entity
 
-### Endpoints
+### Other
+- `GET /projects` - List projects
+- `GET /tags` - List tags
+- `GET /types` - List entity types
 
-| Method | Path | Description |
-|:-------|:-----|:------------|
-| GET | /health | Health check |
-| POST | /entities | Create entity |
-| GET | /entities | List entities (query: type_id, project_id) |
-| GET | /entities/search?q=... | Full-text search |
-| GET | /entities/filter-by-tags?tags=a,b | Filter by tags |
-| GET | /entities/{id} | Get entity |
-| PUT | /entities/{id} | Update entity |
-| DELETE | /entities/{id} | Delete entity |
-| GET | /entities/{id}/tags | Get entity's tags |
-| POST | /entities/{id}/run | Execute entity content |
-| POST | /projects | Create project |
-| GET | /projects | List projects |
-| GET | /projects/{id} | Get project |
-| DELETE | /projects/{id} | Delete project |
-| GET | /projects/{id}/entities | List project's entities |
-| GET | /projects/{id}/dashboard | Project dashboard |
-| GET | /tags | List all tags |
-| GET | /types | List all entity types |
+## Architecture
 
-### Example API calls
+**Core Modules**:
+- **config**: Configuration management with TOML
+- **db**: SQLite schema with migrations, WAL mode
+- **models**: Data structures with sqlx derives
+- **repository**: Data access layer with async operations
+- **api**: Axum HTTP routes and handlers
+- **tui**: Ratatui terminal UI with 7 tabs
+- **secrets**: XChaCha20Poly1305 encryption/decryption
+- **workflow**: Lua-based engine with Host functions
 
+**Database**:
+- SQLite with WAL mode for concurrent access
+- 12+ tables: entities, projects, tags, types, workflow_runs, secrets, user_profiles, user_keys, plugins, ssh_hosts, scheduled_tasks
+- Full-text search with FTS5 virtual table
+- Foreign key constraints with ON CASCADE DELETE
+
+## Development
+
+### Tests
 ```bash
-# Health check
-curl http://127.0.0.1:3000/health
+cargo test
+```
 
-# Create a command
-curl -X POST http://127.0.0.1:3000/entities \
-  -H "Content-Type: application/json" \
-  -d '{"name":"list files","description":"ls -la","content":"ls -la","type_id":"cmd"}'
+### Format
+```bash
+cargo fmt --all
+```
+
+### Clippy
+```bash
+cargo clippy --all-targets -- -D warnings
+```
+
+## Build Profile
+
+**Release Build** (recommended):
+```bash
+cargo build --release
+```
+
+Optimizations applied:
+- opt-level = 3 (maximum optimization)
+- lto = true (link-time optimization)
+- codegen-units = 1 (better optimization)
+- strip = true (reduce binary size)
+
+Result: ~6.1 MB single executable with full feature set
+
+## Project Structure
+
+```
+TUI-OP-HUB/
+├── src/
+│   ├── main.rs              # Entry point
+│   ├── lib.rs               # Library exports
+│   ├── error.rs             # Error types
+│   ├── config/              # Configuration
+│   ├── db/                  # Database
+│   ├── models/              # Data models  
+│   ├── repository/          # Data access
+│   ├── api/                 # HTTP API
+│   ├── tui/                 # Terminal UI
+│   ├── secrets/             # Encryption
+│   ├── workflow/            # Lua engine
+│   └── environment.rs       # Env vars
+├── target/                  # Build output
+└── Cargo.toml               # Dependencies
+```
+
+## Dependencies
+
+Key stack:
+- **Runtime**: tokio (async)
+- **Web**: axum, tower-http
+- **Database**: sqlx (SQLite)
+- **TUI**: ratatui, crossterm
+- **Scripting**: mlua (Lua 5.4)
+- **Crypto**: chacha20poly1305, getrandom
+- **Serialization**: serde, serde_json, serde_yaml
+
+## Status
+
+**Version**: 0.2.0  
+**Phase 1**: ✅ Complete (workflows, secrets, user profiles)  
+**Phase 2**: 🔄 Ready (plugins, SSH, scheduler foundation)
+
+## License
+
+See project documentation for license terms.
 
 # Search
 curl "http://127.0.0.1:3000/entities/search?q=list"

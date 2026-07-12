@@ -44,9 +44,32 @@ crossterm = "0.28"
 # Clipboard (US-CMD-08)
 arboard = "3"
 
+# Lua embedding (US-WF-04, US-PLG-02)
+mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
+
+# Process & Resource Management (US-PROC-01..07)
+sysinfo = "0.32"
+
+# YAML support (US-WF-03)
+serde_yaml = "0.9"
+
 # Misc
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+chacha20poly1305 = "0.10"
+rand = "0.8"
+base64 = "0.21"
+getrandom = "0.2"
+
+# Authentication & Security (US-SEC-11..15)
+argon2 = "0.5"
+zeroize = "1.7"
+
+# Workflow Scheduler (US-WF-07)
+cron = "0.12"
+
+# Plugin System (US-PLG-01)
+libloading = "0.8"
 
 [profile.release]
 # Single binary optimization (US-NF-05)

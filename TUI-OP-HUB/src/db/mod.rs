@@ -1,9 +1,9 @@
 //! Database layer (US-NF-06, US-NF-07).
+use crate::config::DatabaseConfig;
+use crate::error::{AppError, AppResult};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use std::str::FromStr;
-use crate::config::DatabaseConfig;
-use crate::error::{AppError, AppResult};
 
 pub async fn init_pool(cfg: &DatabaseConfig) -> AppResult<SqlitePool> {
     let url = format!("sqlite://{}", cfg.path);

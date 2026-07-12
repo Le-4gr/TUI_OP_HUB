@@ -1,7 +1,7 @@
 //! Application configuration (US-APP-01, US-APP-02, US-APP-06).
-use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
 use crate::error::{AppError, AppResult};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -16,6 +16,9 @@ pub struct AppConfig {
     /// Configurable keybindings (US-APP-02).
     #[serde(default)]
     pub keybindings: KeybindingsConfig,
+    /// Current user for multi-user encryption
+    #[serde(default = "default_user")]
+    pub current_user: String,
 }
 
 impl Default for AppConfig {
@@ -26,6 +29,7 @@ impl Default for AppConfig {
             tui: TuiConfig::default(),
             theme: ThemeConfig::default(),
             keybindings: KeybindingsConfig::default(),
+            current_user: default_user(),
         }
     }
 }
@@ -38,10 +42,22 @@ pub struct DatabaseConfig {
     pub busy_timeout_ms: u64,
 }
 impl Default for DatabaseConfig {
-    fn default() -> Self { Self { path: default_db_path(), busy_timeout_ms: default_busy_timeout() } }
+    fn default() -> Self {
+        Self {
+            path: default_db_path(),
+            busy_timeout_ms: default_busy_timeout(),
+        }
+    }
 }
-fn default_db_path() -> String { "tuihub.db".to_string() }
-fn default_busy_timeout() -> u64 { 5000 }
+fn default_db_path() -> String {
+    "tuihub.db".to_string()
+}
+fn default_busy_timeout() -> u64 {
+    5000
+}
+fn default_user() -> String {
+    std::env::var("TUI_OP_HUB_USER").unwrap_or_else(|_| "default".to_string())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiConfig {
@@ -49,9 +65,15 @@ pub struct ApiConfig {
     pub bind_addr: String,
 }
 impl Default for ApiConfig {
-    fn default() -> Self { Self { bind_addr: default_api_addr() } }
+    fn default() -> Self {
+        Self {
+            bind_addr: default_api_addr(),
+        }
+    }
 }
-fn default_api_addr() -> String { "127.0.0.1:0".to_string() }
+fn default_api_addr() -> String {
+    "127.0.0.1:0".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TuiConfig {
@@ -59,9 +81,15 @@ pub struct TuiConfig {
     pub enabled: bool,
 }
 impl Default for TuiConfig {
-    fn default() -> Self { Self { enabled: default_tui_enabled() } }
+    fn default() -> Self {
+        Self {
+            enabled: default_tui_enabled(),
+        }
+    }
 }
-fn default_tui_enabled() -> bool { true }
+fn default_tui_enabled() -> bool {
+    true
+}
 
 /// Theme configuration (US-APP-01).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,11 +116,21 @@ impl Default for ThemeConfig {
         }
     }
 }
-fn default_theme_name() -> String { "dark".to_string() }
-fn default_fg() -> String { "white".to_string() }
-fn default_bg() -> String { "black".to_string() }
-fn default_accent() -> String { "yellow".to_string() }
-fn default_status_bg() -> String { "blue".to_string() }
+fn default_theme_name() -> String {
+    "dark".to_string()
+}
+fn default_fg() -> String {
+    "white".to_string()
+}
+fn default_bg() -> String {
+    "black".to_string()
+}
+fn default_accent() -> String {
+    "yellow".to_string()
+}
+fn default_status_bg() -> String {
+    "blue".to_string()
+}
 
 impl ThemeConfig {
     pub fn fg_color(&self) -> ratatui::style::Color {
@@ -167,15 +205,33 @@ impl Default for KeybindingsConfig {
     }
 }
 
-fn default_kb_quit() -> String { "q".to_string() }
-fn default_kb_help() -> String { "?".to_string() }
-fn default_kb_search() -> String { "/".to_string() }
-fn default_kb_filter() -> String { "f".to_string() }
-fn default_kb_create() -> String { "n".to_string() }
-fn default_kb_edit() -> String { "e".to_string() }
-fn default_kb_delete() -> String { "d".to_string() }
-fn default_kb_copy() -> String { "c".to_string() }
-fn default_kb_run() -> String { "r".to_string() }
+fn default_kb_quit() -> String {
+    "q".to_string()
+}
+fn default_kb_help() -> String {
+    "?".to_string()
+}
+fn default_kb_search() -> String {
+    "/".to_string()
+}
+fn default_kb_filter() -> String {
+    "f".to_string()
+}
+fn default_kb_create() -> String {
+    "n".to_string()
+}
+fn default_kb_edit() -> String {
+    "e".to_string()
+}
+fn default_kb_delete() -> String {
+    "d".to_string()
+}
+fn default_kb_copy() -> String {
+    "c".to_string()
+}
+fn default_kb_run() -> String {
+    "r".to_string()
+}
 
 impl KeybindingsConfig {
     /// Parse a keybinding string into a `KeyCode`.
@@ -242,7 +298,10 @@ impl AppConfig {
             return PathBuf::from(xdg).join("tui-op-hub").join("config.toml");
         }
         if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(".config").join("tui-op-hub").join("config.toml");
+            return PathBuf::from(home)
+                .join(".config")
+                .join("tui-op-hub")
+                .join("config.toml");
         }
         PathBuf::from("config.toml")
     }

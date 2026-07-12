@@ -3,10 +3,15 @@
 //! Covers: US-TUI-01..10, US-CMD-01..09, US-PROJ-01..07, US-SRCH-01..04,
 //! US-NF-10, US-DEP-02, US-APP-01..02.
 
+pub mod login_view;
+
+use crate::config::{KeybindingsConfig, ThemeConfig};
+use crate::models::{CreateEntity, CreateProject, Entity, EntityType, Project, Secret, Tag};
+use crate::repository;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -16,12 +21,9 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs, Wrap},
     Frame, Terminal,
 };
-use std::io;
 use sqlx::SqlitePool;
+use std::io;
 use std::sync::Arc;
-use crate::repository;
-use crate::config::{ThemeConfig, KeybindingsConfig};
-use crate::models::{CreateEntity, CreateProject, Entity, EntityType, Project, Tag};
 
 // ─── Tabs ───────────────────────────────────────────────────────────────────
 
@@ -32,11 +34,21 @@ pub enum Tab {
     Projects,
     Tags,
     Search,
+    Workflows,
+    Secrets,
 }
 
 impl Tab {
-    fn all() -> [Tab; 5] {
-        [Tab::Dashboard, Tab::Commands, Tab::Projects, Tab::Tags, Tab::Search]
+    fn all() -> [Tab; 7] {
+        [
+            Tab::Dashboard,
+            Tab::Commands,
+            Tab::Projects,
+            Tab::Tags,
+            Tab::Search,
+            Tab::Workflows,
+            Tab::Secrets,
+        ]
     }
     fn title(self) -> &'static str {
         match self {
@@ -45,6 +57,8 @@ impl Tab {
             Tab::Projects => "Projects",
             Tab::Tags => "Tags",
             Tab::Search => "Search",
+            Tab::Workflows => "Workflows",
+            Tab::Secrets => "Secrets",
         }
     }
     fn next(self) -> Tab {
@@ -70,6 +84,7 @@ pub enum Mode {
     CreateEntity,
     EditEntity,
     CreateProject,
+    CreateSecret,
     ConfirmDelete,
     Help,
 }
@@ -112,14 +127,36 @@ impl EntityForm {
     fn to_create(&self) -> CreateEntity {
         CreateEntity {
             name: self.name.clone(),
-            description: if self.description.is_empty() { None } else { Some(self.description.clone()) },
-            content: if self.content.is_empty() { None } else { Some(self.content.clone()) },
-            type_id: if self.type_id.is_empty() { "cmd".to_string() } else { self.type_id.clone() },
-            project_id: if self.project_id.is_empty() { None } else { Some(self.project_id.clone()) },
+            description: if self.description.is_empty() {
+                None
+            } else {
+                Some(self.description.clone())
+            },
+            content: if self.content.is_empty() {
+                None
+            } else {
+                Some(self.content.clone())
+            },
+            type_id: if self.type_id.is_empty() {
+                "cmd".to_string()
+            } else {
+                self.type_id.clone()
+            },
+            project_id: if self.project_id.is_empty() {
+                None
+            } else {
+                Some(self.project_id.clone())
+            },
             tags: if self.tags.is_empty() {
                 None
             } else {
-                Some(self.tags.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+                Some(
+                    self.tags
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
+                )
             },
             metadata_json: None,
         }
@@ -131,6 +168,17 @@ struct ProjectForm {
     name: String,
     description: String,
     field_index: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SecretForm {
+    name: String,
+    value: String,
+    field_index: usize,
+}
+
+impl SecretForm {
+    const FIELDS: [&'static str; 2] = ["Name", "Value"];
 }
 
 impl ProjectForm {
@@ -154,9 +202,11 @@ pub struct App {
     pub filter_input: String,
     pub items: Vec<String>,
     pub entities: Vec<Entity>,
+    pub runs: Vec<crate::models::WorkflowRun>,
     pub projects: Vec<Project>,
     pub tags: Vec<Tag>,
     pub types: Vec<EntityType>,
+    pub secrets: Vec<Secret>,
     pub selected: usize,
     pub db_path: String,
     pub active_project: String,
@@ -164,10 +214,11 @@ pub struct App {
     pub theme: ThemeConfig,
     pub keybindings: KeybindingsConfig,
     pub message: String,
-    pub entity_form: EntityForm,
-    pub project_form: ProjectForm,
+    entity_form: EntityForm,
+    project_form: ProjectForm,
+    secret_form: SecretForm,
     pub editing_id: Option<String>,
-    pub delete_target: DeleteTarget,
+    delete_target: DeleteTarget,
 }
 
 impl App {
@@ -179,9 +230,11 @@ impl App {
             filter_input: String::new(),
             items: Vec::new(),
             entities: Vec::new(),
+            runs: Vec::new(),
             projects: Vec::new(),
             tags: Vec::new(),
             types: Vec::new(),
+            secrets: Vec::new(),
             selected: 0,
             db_path: db_path.to_string(),
             active_project: "all".to_string(),
@@ -191,6 +244,7 @@ impl App {
             message: String::new(),
             entity_form: EntityForm::default(),
             project_form: ProjectForm::default(),
+            secret_form: SecretForm::default(),
             editing_id: None,
             delete_target: DeleteTarget::Entity(String::new()),
         }
@@ -252,7 +306,9 @@ async fn refresh_data(app: &mut App, pool: &SqlitePool) {
 
     match app.tab {
         Tab::Dashboard => {
-            app.entities = repository::list_entities(pool, None, None).await.unwrap_or_default();
+            app.entities = repository::list_entities(pool, None, None)
+                .await
+                .unwrap_or_default();
             app.items = Vec::new();
         }
         Tab::Commands => {
@@ -267,7 +323,9 @@ async fn refresh_data(app: &mut App, pool: &SqlitePool) {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
-                repository::filter_by_tags(pool, &tags).await.unwrap_or_default()
+                repository::filter_by_tags(pool, &tags)
+                    .await
+                    .unwrap_or_default()
             };
             app.items = app
                 .entities
@@ -289,7 +347,12 @@ async fn refresh_data(app: &mut App, pool: &SqlitePool) {
                     } else {
                         "  "
                     };
-                    format!("{}{} — {}", marker, p.name, p.description.as_deref().unwrap_or(""))
+                    format!(
+                        "{}{} — {}",
+                        marker,
+                        p.name,
+                        p.description.as_deref().unwrap_or("")
+                    )
                 })
                 .collect();
         }
@@ -301,7 +364,9 @@ async fn refresh_data(app: &mut App, pool: &SqlitePool) {
             app.entities = if app.input.is_empty() {
                 Vec::new()
             } else {
-                let results = repository::search_entities(pool, &app.input).await.unwrap_or_default();
+                let results = repository::search_entities(pool, &app.input)
+                    .await
+                    .unwrap_or_default();
                 let ids: Vec<String> = results.iter().map(|r| r.id.clone()).collect();
                 let mut entities = Vec::new();
                 for id in ids {
@@ -319,6 +384,45 @@ async fn refresh_data(app: &mut App, pool: &SqlitePool) {
                     format!("[{}] {} — {}", e.type_id, e.name, desc)
                 })
                 .collect();
+        }
+        Tab::Workflows => {
+            app.entities = if app.filter_input.is_empty() {
+                repository::list_entities(pool, Some("wf"), app.active_project_id.as_deref())
+                    .await
+                    .unwrap_or_default()
+            } else {
+                let tags: Vec<String> = app
+                    .filter_input
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                repository::filter_by_tags(pool, &tags)
+                    .await
+                    .unwrap_or_default()
+            };
+            app.items = app
+                .entities
+                .iter()
+                .map(|e| {
+                    let desc = e.description.as_deref().unwrap_or("");
+                    format!("[{}] {} — {}", e.type_id, e.name, desc)
+                })
+                .collect();
+
+            // fetch run history for selected workflow if any
+            if let Some(e) = app.entities.get(app.selected) {
+                app.runs = repository::list_workflow_runs_by_workflow_id(pool, &e.id)
+                    .await
+                    .unwrap_or_default();
+            } else {
+                app.runs = Vec::new();
+            }
+        }
+        Tab::Secrets => {
+            app.entities = Vec::new();
+            app.secrets = repository::list_secrets(pool, "default").await.unwrap_or_default();
+            app.items = app.secrets.iter().map(|s| s.name.clone()).collect();
         }
     }
 
@@ -376,6 +480,10 @@ async fn handle_key(app: &mut App, key: KeyCode, pool: &SqlitePool) {
             handle_project_form(app, key, pool).await;
             return;
         }
+        Mode::CreateSecret => {
+            handle_secret_form(app, key, pool).await;
+            return;
+        }
         Mode::Detail => {
             match key {
                 KeyCode::Esc => {
@@ -393,31 +501,108 @@ async fn handle_key(app: &mut App, key: KeyCode, pool: &SqlitePool) {
                         }
                     }
                 }
-                KeyCode::Char('r') => {
-                    let run_info = app
-                        .selected_entity()
-                        .and_then(|e| e.content.as_ref().map(|c| (e.name.clone(), c.clone())));
-                    if let Some((name, content)) = run_info {
-                        app.mode = Mode::Normal;
-                        app.set_message(format!("Running: {}...", name));
-                        disable_raw_mode().ok();
-                        execute!(io::stdout(), LeaveAlternateScreen).ok();
-                        let shell = std::env::var("SHELL").unwrap_or("bash".to_string());
-                        let result = std::process::Command::new(&shell)
-                            .arg("-c")
-                            .arg(&content)
-                            .status();
-                        enable_raw_mode().ok();
-                        execute!(io::stdout(), EnterAlternateScreen).ok();
-                        match result {
-                            Ok(status) => {
-                                app.set_message(if status.success() {
-                                    format!("✓ {} completed successfully", name)
-                                } else {
-                                    format!("✗ {} exited with error", name)
-                                });
+                KeyCode::Char('v') => {
+                    if app.tab == Tab::Secrets {
+                        if let Some(s) = app.secrets.get(app.selected) {
+                            match crate::secrets::decrypt_for_user(pool, "default", &s.value_enc).await {
+                                Ok(val) => app.set_message(format!("{} = {}", s.name, val)),
+                                Err(e) => app.set_message(format!("✗ Decrypt failed: {}", e)),
                             }
-                            Err(_) => app.set_message("✗ Failed to execute"),
+                        }
+                    }
+                }
+                KeyCode::Char('r') => {
+                    if let Some(e) = app.selected_entity() {
+                        if e.type_id == "wf" {
+                            // Run workflow via workflow engine and persist run history
+                            let id = e.id.clone();
+                            let id_for_exec = id.clone();
+                            let name = e.name.clone();
+                            app.mode = Mode::Normal;
+                            app.set_message(format!("Running workflow: {}...", name));
+
+                            // Execute in blocking task (mlua / engine may not be Send)
+                            let pool_owned = pool.clone();
+                            let pool_arc = std::sync::Arc::new(pool_owned);
+
+                            match tokio::task::spawn_blocking(move || {
+                                let rt = tokio::runtime::Handle::current();
+                                rt.block_on(async move {
+                                    crate::workflow::execute_workflow_by_id(
+                                        pool_arc,
+                                        &id_for_exec,
+                                        None,
+                                    )
+                                    .await
+                                })
+                            })
+                            .await
+                            {
+                                Ok(exec_res) => match exec_res {
+                                    Ok(res) => {
+                                        // Persist run (best-effort)
+                                        let run = crate::models::WorkflowRun {
+                                            run_id: uuid::Uuid::new_v4().to_string(),
+                                            workflow_id: id.clone(),
+                                            success: res.success,
+                                            output: Some(res.output.clone()),
+                                            error: res.error.clone(),
+                                            duration_ms: None,
+                                            steps_completed: None,
+                                            created_at: chrono::Utc::now().to_rfc3339(),
+                                        };
+                                        if let Err(e) =
+                                            crate::repository::insert_workflow_run(pool, &run).await
+                                        {
+                                            app.set_message(format!(
+                                                "✓ {} finished — but failed to persist run: {}",
+                                                name, e
+                                            ));
+                                        } else {
+                                            app.set_message(format!("✓ {} finished", name));
+                                            // refresh runs for detail view
+                                            app.runs = crate::repository::list_workflow_runs_by_workflow_id(pool, &id).await.unwrap_or_default();
+                                        }
+                                    }
+                                    Err(e) => {
+                                        app.set_message(format!(
+                                            "✗ Workflow execution failed: {}",
+                                            e
+                                        ));
+                                    }
+                                },
+                                Err(e) => {
+                                    app.set_message(format!("✗ Execution join error: {}", e));
+                                }
+                            }
+                        } else {
+                            // existing shell-run behavior for commands
+                            let run_info = app.selected_entity().and_then(|e| {
+                                e.content.as_ref().map(|c| (e.name.clone(), c.clone()))
+                            });
+                            if let Some((name, content)) = run_info {
+                                app.mode = Mode::Normal;
+                                app.set_message(format!("Running: {}...", name));
+                                disable_raw_mode().ok();
+                                execute!(io::stdout(), LeaveAlternateScreen).ok();
+                                let shell = std::env::var("SHELL").unwrap_or("bash".to_string());
+                                let result = std::process::Command::new(&shell)
+                                    .arg("-c")
+                                    .arg(&content)
+                                    .status();
+                                enable_raw_mode().ok();
+                                execute!(io::stdout(), EnterAlternateScreen).ok();
+                                match result {
+                                    Ok(status) => {
+                                        app.set_message(if status.success() {
+                                            format!("✓ {} completed successfully", name)
+                                        } else {
+                                            format!("✗ {} exited with error", name)
+                                        });
+                                    }
+                                    Err(_) => app.set_message("✗ Failed to execute"),
+                                }
+                            }
                         }
                     }
                 }
@@ -523,9 +708,13 @@ async fn handle_key(app: &mut App, key: KeyCode, pool: &SqlitePool) {
             app.filter_input.clear();
         }
         KeyCode::Char('n') => match app.tab {
-            Tab::Commands | Tab::Search => {
+            Tab::Commands | Tab::Search | Tab::Workflows => {
                 app.entity_form = EntityForm {
-                    type_id: "cmd".to_string(),
+                    type_id: if app.tab == Tab::Workflows {
+                        "wf".to_string()
+                    } else {
+                        "cmd".to_string()
+                    },
                     ..Default::default()
                 };
                 app.editing_id = None;
@@ -535,10 +724,14 @@ async fn handle_key(app: &mut App, key: KeyCode, pool: &SqlitePool) {
                 app.project_form = ProjectForm::default();
                 app.mode = Mode::CreateProject;
             }
+            Tab::Secrets => {
+                app.secret_form = SecretForm::default();
+                app.mode = Mode::CreateSecret;
+            }
             _ => {}
         },
         KeyCode::Enter => match app.tab {
-            Tab::Commands | Tab::Search => {
+            Tab::Commands | Tab::Search | Tab::Workflows => {
                 if app.selected_entity().is_some() {
                     app.mode = Mode::Detail;
                 }
@@ -580,10 +773,12 @@ async fn handle_entity_form(app: &mut App, key: KeyCode, pool: &SqlitePool) {
             form.field_index = (form.field_index + 1) % EntityForm::FIELDS.len();
         }
         KeyCode::BackTab => {
-            form.field_index = (form.field_index + EntityForm::FIELDS.len() - 1) % EntityForm::FIELDS.len();
+            form.field_index =
+                (form.field_index + EntityForm::FIELDS.len() - 1) % EntityForm::FIELDS.len();
         }
         KeyCode::Up => {
-            form.field_index = (form.field_index + EntityForm::FIELDS.len() - 1) % EntityForm::FIELDS.len();
+            form.field_index =
+                (form.field_index + EntityForm::FIELDS.len() - 1) % EntityForm::FIELDS.len();
         }
         KeyCode::Down => {
             form.field_index = (form.field_index + 1) % EntityForm::FIELDS.len();
@@ -669,7 +864,8 @@ async fn handle_project_form(app: &mut App, key: KeyCode, pool: &SqlitePool) {
             form.field_index = (form.field_index + 1) % ProjectForm::FIELDS.len();
         }
         KeyCode::Up => {
-            form.field_index = (form.field_index + ProjectForm::FIELDS.len() - 1) % ProjectForm::FIELDS.len();
+            form.field_index =
+                (form.field_index + ProjectForm::FIELDS.len() - 1) % ProjectForm::FIELDS.len();
         }
         KeyCode::Enter => {
             if form.name.is_empty() {
@@ -714,16 +910,69 @@ async fn handle_project_form(app: &mut App, key: KeyCode, pool: &SqlitePool) {
     }
 }
 
+// ─── Secret form handling ──────────────────────────────────────────────────
+
+async fn handle_secret_form(app: &mut App, key: KeyCode, pool: &SqlitePool) {
+    let form = &mut app.secret_form;
+    match key {
+        KeyCode::Esc => {
+            app.mode = Mode::Normal;
+        }
+        KeyCode::Tab | KeyCode::Down => {
+            form.field_index = (form.field_index + 1) % SecretForm::FIELDS.len();
+        }
+        KeyCode::Up => {
+            form.field_index =
+                (form.field_index + SecretForm::FIELDS.len() - 1) % SecretForm::FIELDS.len();
+        }
+        KeyCode::Enter => {
+            if form.name.is_empty() {
+                app.set_message("✗ Name is required");
+                return;
+            }
+            match crate::secrets::encrypt_for_user(pool, "default", &form.value).await {
+                Ok(enc) => match repository::create_secret(pool, "default", &form.name, &enc).await {
+                    Ok(s) => {
+                        app.set_message(format!("✓ Secret created: {}", s.name));
+                        app.mode = Mode::Normal;
+                    }
+                    Err(e) => app.set_message(format!("✗ Create failed: {}", e)),
+                },
+                Err(e) => app.set_message(format!("✗ Encryption failed: {}", e)),
+            }
+        }
+        KeyCode::Backspace => match form.field_index {
+            0 => {
+                form.name.pop();
+            }
+            1 => {
+                form.value.pop();
+            }
+            _ => {}
+        },
+        KeyCode::Char(c) => match form.field_index {
+            0 => {
+                form.name.push(c);
+            }
+            1 => {
+                form.value.push(c);
+            }
+            _ => {}
+        },
+        _ => {}
+    }
+}
+
 // ─── Drawing ────────────────────────────────────────────────────────────────
 
 fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Tabs
-            Constraint::Min(1),     // Main content
-            Constraint::Length(3),  // Input/Help/Message
-            Constraint::Length(1),  // Status bar
+            Constraint::Length(3), // Tabs
+            Constraint::Min(1),    // Main content
+            Constraint::Length(3), // Input/Help/Message
+            Constraint::Length(1), // Status bar
         ])
         .split(f.area());
 
@@ -797,13 +1046,19 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
             ))))
         })
         .collect();
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("Recent Entities"));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Recent Entities"),
+    );
     f.render_widget(list, chunks[1]);
 }
 
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
-    let show_selection = matches!(app.tab, Tab::Commands | Tab::Search | Tab::Projects);
+    let show_selection = matches!(
+        app.tab,
+        Tab::Commands | Tab::Search | Tab::Projects | Tab::Workflows
+    );
     let items: Vec<ListItem> = app
         .items
         .iter()
@@ -820,8 +1075,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let title = format!("{} ({})", app.tab.title(), app.items.len());
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title));
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
     f.render_widget(list, area);
 }
 
@@ -912,7 +1166,11 @@ fn draw_project_form(f: &mut Frame, app: &App, area: Rect) {
     );
 
     let para = Paragraph::new(content)
-        .block(Block::default().borders(Borders::ALL).title("Create Project"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Create Project"),
+        )
         .wrap(Wrap { trim: true });
     f.render_widget(para, area);
 }
@@ -999,22 +1257,37 @@ fn draw_bottom(f: &mut Frame, app: &App, area: Rect) {
         }
         Mode::Detail => {
             if let Some(e) = app.selected_entity() {
-                let detail = format!(
+                let mut detail = format!(
                     "Name: {}  |  Type: {}  |  Description: {}\n\
-                     Content: {}\n\n\
-                     [c] Copy  [r] Run  [e] Edit  [d] Delete  [Esc] Back",
+                     Content: {}\n\n",
                     e.name,
                     e.type_id,
                     e.description.as_deref().unwrap_or("(none)"),
                     e.content.as_deref().unwrap_or("(none)"),
                 );
-                let para = Paragraph::new(detail)
-                    .wrap(Wrap { trim: true })
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title(format!("Entity: {}", e.name)),
-                    );
+
+                // If this is a workflow, append recent run history
+                if app.tab == Tab::Workflows {
+                    detail.push_str("Recent runs:\n");
+                    if app.runs.is_empty() {
+                        detail.push_str("  (no runs found)\n");
+                    } else {
+                        for r in app.runs.iter().take(10) {
+                            let short_out = r.output.as_deref().unwrap_or("");
+                            let when = r.created_at.as_str();
+                            let status = if r.success { "success" } else { "failure" };
+                            detail.push_str(&format!("  [{}] {} — {}\n", when, status, short_out));
+                        }
+                    }
+                    detail.push_str("\n[c] Copy  [r] Run  [e] Edit  [d] Delete  [Esc] Back");
+                } else {
+                    detail.push_str("[c] Copy  [r] Run  [e] Edit  [d] Delete  [Esc] Back");
+                }
+                let para = Paragraph::new(detail).wrap(Wrap { trim: true }).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(format!("Entity: {}", e.name)),
+                );
                 f.render_widget(para, area);
             }
         }
@@ -1051,7 +1324,10 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         app.mode,
         app.items.len(),
     );
-    let status_bar = Paragraph::new(status)
-        .style(Style::default().bg(app.theme.status_bg_color()).fg(Color::White));
+    let status_bar = Paragraph::new(status).style(
+        Style::default()
+            .bg(app.theme.status_bg_color())
+            .fg(Color::White),
+    );
     f.render_widget(status_bar, area);
 }

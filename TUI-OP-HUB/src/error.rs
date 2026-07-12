@@ -34,6 +34,15 @@ pub enum AppError {
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
+    #[error("lua error: {0}")]
+    Lua(#[from] mlua::Error),
+
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
+
+    #[error("authentication error: {0}")]
+    Auth(String),
+
     #[error("{0}")]
     Other(String),
 }
