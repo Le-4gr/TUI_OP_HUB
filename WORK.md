@@ -5,7 +5,35 @@
 
 ---
 
-## 🎯 Session 15 (current): black-screen fix, visible search bar, type badges, project workspaces
+## 🎯 Session 16 (current): terminal fix, visible search bar, import/export TUI, keybinds update
+
+**Goal: fix the terminal (black screen after shell), make the `/` search bar
+prominently visible, wire import/export to TUI keybinds, update keybinds overlay.**
+
+### What was done and how
+1. **Terminal fix**: `spawn_terminal` now clears the screen before spawning
+   the shell (so the shell gets a clean terminal), and after the shell exits
+   the `needs_full_redraw` flag forces ratatui to do a full repaint. The
+   `terminal.clear()` call in the run loop ensures no stale buffer.
+2. **Search bar**: When `/` is active, the footer area is **replaced** with a
+   dedicated search bar showing `/ query█` (block cursor) in warning color.
+   The list title changes to `🔍 query (N results)`. When Esc is pressed the
+   footer reverts to keybind hints.
+3. **Import/export TUI keybinds**:
+   - `x` on Commands/Workflows/Secrets tabs exports the knowledge base to
+     `~/tui-op-hub-export.json` (excludes secrets for safety)
+   - `I` on any tab imports from `~/tui-op-hub-export.json`
+   - Both wired in `handle_dashboard_key`, available in all list states
+4. **Keybinds overlay + footer updated**: `x` Export, `I` Import added to
+   Commands section of the overlay and the Commands footer hints.
+
+### Validation
+- `cargo fmt` ✔ · `clippy --all-targets` 0 errors ✔ · `cargo build` ✔
+- `cargo test` → **146 passed / 0 failed** (113 lib + 33 BDD)
+
+---
+
+## 🎯 Session 15: black-screen fix, visible search bar, project workspaces (completed)
 
 **Goal: fix black screen after external commands, make `/` search visible,
 add type badges to lists, add project workspace creation with editors and

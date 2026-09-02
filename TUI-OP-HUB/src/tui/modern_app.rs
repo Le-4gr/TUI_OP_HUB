@@ -1361,6 +1361,19 @@ impl ModernApp {
                     self.open_in_editor().await;
                 }
             }
+            KeyCode::Char('x') => {
+                // Export knowledge base to JSON (US-CMD-01, sharing)
+                if matches!(
+                    self.ui.state,
+                    AppState::Commands | AppState::Workflows | AppState::Secrets
+                ) {
+                    self.export_knowledge_base().await;
+                }
+            }
+            KeyCode::Char('I') => {
+                // Import knowledge base from JSON (sharing)
+                self.import_knowledge_base().await;
+            }
             KeyCode::Char('k') => {
                 // SSH/GPG key generation (US-SEC-01) — notify when the tools
                 // are missing instead of failing later
@@ -1767,6 +1780,84 @@ impl ModernApp {
         self.render_keybind_footer(f, chunks[2], &self.keybind_hints());
     }
 
+    // ── Knowledge-base import/export (US-CMD-01, sharing) ────────────────
+
+    /// Export the knowledge base to `~/tui-op-hub-export.json`.
+    /// Excludes secrets by default for safety.
+    async fn export_knowledge_base(&mut self) {
+        let user_id = self.current_user_profile_id().await;
+        let bundle = match crate::share::export_knowledge(
+            &*self.pool,
+            Some(&user_id),
+            crate::share::SecretMode::Exclude,
+            None,
+        )
+        .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                self.status_message = Some(format!("\u{2717} Export failed: {}", e));
+                return;
+            }
+        };
+        let json = match crate::share::bundle_to_json(&bundle) {
+            Ok(j) => j,
+            Err(e) => {
+                self.status_message = Some(format!("\u{2717} Serialize failed: {}", e));
+                return;
+            }
+        };
+        let path = dirs_home().join("tui-op-hub-export.json");
+        match std::fs::write(&path, &json) {
+            Ok(()) => {
+                self.status_message = Some(format!(
+                    "\u{2713} Exported {} entities to {}",
+                    bundle.entities.len(),
+                    path.display()
+                ));
+            }
+            Err(e) => {
+                self.status_message = Some(format!("\u{2717} Write failed: {}", e));
+            }
+        }
+    }
+
+    /// Import a knowledge base from `~/tui-op-hub-export.json`.
+    async fn import_knowledge_base(&mut self) {
+        let path = dirs_home().join("tui-op-hub-export.json");
+        if !path.exists() {
+            self.status_message = Some(format!("\u{2717} No import file at {}", path.display()));
+            return;
+        }
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.status_message = Some(format!("\u{2717} Read failed: {}", e));
+                return;
+            }
+        };
+        let bundle = match crate::share::bundle_from_json(&text) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status_message = Some(format!("\u{2717} Invalid bundle: {}", e));
+                return;
+            }
+        };
+        match crate::share::import_knowledge(&*self.pool, &bundle).await {
+            Ok((imported, skipped)) => {
+                self.status_message = Some(format!(
+                    "\u{2713} Imported {} entities ({} skipped)",
+                    imported, skipped
+                ));
+                let _ = self.fetch_stats().await;
+                self.refresh_current_tab().await;
+            }
+            Err(e) => {
+                self.status_message = Some(format!("\u{2717} Import failed: {}", e));
+            }
+        }
+    }
+
     // ── Keybind helper (footer hints + `?` overlay; US-TUI-09) ─────────────
 
     /// Render a footer line of keybind hints. Keys are highlighted, labels
@@ -1822,6 +1913,8 @@ impl ModernApp {
                 ("m", "Man"),
                 ("R", "Sudo"),
                 ("`", "Shell"),
+                ("x", "Export"),
+                ("I", "Import"),
                 ("/", "Find"),
                 ("?", "Keybinds"),
                 ("q", "Quit"),
@@ -4617,6 +4710,8 @@ impl ModernApp {
         lines.push(row("o", "Open in external editor"));
         lines.push(row("i", "Show command options"));
         lines.push(row("m", "Open man page"));
+        lines.push(row("x", "Export knowledge base"));
+        lines.push(row("I", "Import knowledge base"));
         lines.push(row("R", "Run with sudo/doas/su"));
         lines.push(row("R", "Run with sudo/doas/su"));
 
