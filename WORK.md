@@ -7,6 +7,16 @@
 
 ## 🎯 Session 16 (current): terminal fix, visible search bar, import/export TUI, keybinds update
 
+> **Update 4 (same session):** Release/install flow with always-on backend (US-DEP-04).
+> `--install-service` is now a full idempotent setup: generates the master key into
+> `~/.config/tui-op-hub/env` (mode 600, never overwritten), unit references `EnvironmentFile=`,
+> enables the user service. Service runs `--headless` (scheduler + API) permanently; the TUI
+> still launches on demand and **coexists** with the service (shared WAL database; API
+> port-in-use is now handled gracefully instead of panicking). New root `install.sh`:
+> build release + install binary + enable service. Service functions are home-injectable
+> (`*_in(home)`) for testing. New doc: `docs/INSTALL.md`. Tests: +3 service unit tests
+> (env file generation/key validity/permissions/idempotency, unit+env install, idempotent key).
+
 > **Update 3 (same session):** Cron + init-system + import/export docs (US-WF-07, US-DEP-04).
 > New `src/service/mod.rs`: systemd user-unit generation/install/uninstall + cron watchdog
 > line; CLI flags `--headless`, `--print-unit`, `--install-service`, `--uninstall-service`

@@ -33,12 +33,21 @@ fn handle_cli_flags() -> Option<bool> {
         }
         "--install-service" => match tui_op_hub::service::install_service() {
             Ok(path) => {
-                println!("\u{2713} Installed {}", path.display());
+                println!("✓ Service installed and enabled: {}", path.display());
                 println!(
-                    "  Enable/start: systemctl --user enable --now {0}",
+                    "  Env file:        {}",
+                    tui_op_hub::service::env_file_path().display()
+                );
+                println!(
+                    "  Manage:          systemctl --user start|stop|status {0}",
                     tui_op_hub::service::SERVICE_NAME
                 );
-                println!("  Provide the key: systemctl --user set-environment TUI_OP_HUB_SECRETS_KEY=<base64-32-bytes>");
+                println!(
+                    "  Logs:            journalctl --user -u {0} -f",
+                    tui_op_hub::service::SERVICE_NAME
+                );
+                println!("  The background service runs the scheduler + API headless.");
+                println!("  Launch the TUI anytime with: tui-op-hub");
                 Some(true)
             }
             Err(e) => {
@@ -97,14 +106,33 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let pool_clone = pool.clone();
-    let bind_addr = config.api.bind_addr.clone();
-    tokio::spawn(async move {
-        let router = api::router(pool_clone);
-        let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
-        tracing::info!(addr = %bind_addr, "API server listening");
-        axum::serve(listener, router).await.unwrap();
-    });
+    // When the systemd service is already running, its API owns the port and
+    // both processes share the SQLite database (WAL) — the TUI simply skips
+    // starting a second API server.
+    {
+        let pool_clone = pool.clone();
+        let bind_addr = config.api.bind_addr.clone();
+        tokio::spawn(async move {
+            let router = api::router(pool_clone);
+            match tokio::net::TcpListener::bind(&bind_addr).await {
+                Ok(listener) => {
+                    tracing::info!(addr = %bind_addr, "API server listening");
+                    if let Err(e) = axum::serve(listener, router).await {
+                        tracing::error!(error = %e, "API server failed");
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                    tracing::warn!(
+                        addr = %bind_addr,
+                        "API port already in use; another instance (the service?) is serving it, skipping local API"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to bind API address");
+                }
+            }
+        });
+    }
 
     let headless = std::env::args().nth(1).is_some_and(|a| a == "--headless");
 
