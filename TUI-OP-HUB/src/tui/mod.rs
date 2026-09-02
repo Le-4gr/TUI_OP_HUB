@@ -3,7 +3,10 @@
 //! Covers: US-TUI-01..10, US-CMD-01..09, US-PROJ-01..07, US-SRCH-01..04,
 //! US-NF-10, US-DEP-02, US-APP-01..02.
 
+pub mod list_state;
 pub mod login_view;
+pub mod modern_app;
+pub mod modern_ui;
 
 use crate::config::{KeybindingsConfig, ThemeConfig};
 use crate::models::{CreateEntity, CreateProject, Entity, EntityType, Project, Secret, Tag};
@@ -421,7 +424,9 @@ async fn refresh_data(app: &mut App, pool: &SqlitePool) {
         }
         Tab::Secrets => {
             app.entities = Vec::new();
-            app.secrets = repository::list_secrets(pool, "default").await.unwrap_or_default();
+            app.secrets = repository::list_secrets(pool, "default")
+                .await
+                .unwrap_or_default();
             app.items = app.secrets.iter().map(|s| s.name.clone()).collect();
         }
     }
@@ -504,7 +509,9 @@ async fn handle_key(app: &mut App, key: KeyCode, pool: &SqlitePool) {
                 KeyCode::Char('v') => {
                     if app.tab == Tab::Secrets {
                         if let Some(s) = app.secrets.get(app.selected) {
-                            match crate::secrets::decrypt_for_user(pool, "default", &s.value_enc).await {
+                            match crate::secrets::decrypt_for_user(pool, "default", &s.value_enc)
+                                .await
+                            {
                                 Ok(val) => app.set_message(format!("{} = {}", s.name, val)),
                                 Err(e) => app.set_message(format!("✗ Decrypt failed: {}", e)),
                             }
@@ -931,7 +938,8 @@ async fn handle_secret_form(app: &mut App, key: KeyCode, pool: &SqlitePool) {
                 return;
             }
             match crate::secrets::encrypt_for_user(pool, "default", &form.value).await {
-                Ok(enc) => match repository::create_secret(pool, "default", &form.name, &enc).await {
+                Ok(enc) => match repository::create_secret(pool, "default", &form.name, &enc).await
+                {
                     Ok(s) => {
                         app.set_message(format!("✓ Secret created: {}", s.name));
                         app.mode = Mode::Normal;

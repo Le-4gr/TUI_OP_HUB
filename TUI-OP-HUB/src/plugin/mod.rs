@@ -119,18 +119,20 @@ impl Plugin for LuaPlugin {
         let lua = mlua::Lua::new();
 
         // Load the plugin script
-        let script = std::fs::read_to_string(&self.script_path)
-            .map_err(|e| AppError::Io(e))?;
+        let script = std::fs::read_to_string(&self.script_path).map_err(|e| AppError::Io(e))?;
 
-        lua.load(&script).exec()
+        lua.load(&script)
+            .exec()
             .map_err(|e| AppError::Other(format!("Lua execution error: {}", e)))?;
 
         // Call the command function
         let globals = lua.globals();
-        let func: mlua::Function = globals.get(command)
+        let func: mlua::Function = globals
+            .get(command)
             .map_err(|e| AppError::Other(format!("Command not found: {}", e)))?;
 
-        let result: String = func.call(args.to_vec())
+        let result: String = func
+            .call(args.to_vec())
             .map_err(|e| AppError::Other(format!("Command execution error: {}", e)))?;
 
         Ok(result)
@@ -157,8 +159,7 @@ impl PluginManager {
     pub async fn load_plugin(&self, plugin_path: &Path) -> AppResult<()> {
         // Read plugin manifest
         let manifest_path = plugin_path.join("plugin.toml");
-        let manifest_str = std::fs::read_to_string(&manifest_path)
-            .map_err(|e| AppError::Io(e))?;
+        let manifest_str = std::fs::read_to_string(&manifest_path).map_err(|e| AppError::Io(e))?;
 
         let manifest: PluginManifest = toml::from_str(&manifest_str)
             .map_err(|e| AppError::Other(format!("Invalid plugin manifest: {}", e)))?;
@@ -174,16 +175,8 @@ impl PluginManager {
         // Load based on plugin type
         match manifest.plugin_type.as_str() {
             "lua" => self.load_lua_plugin(plugin_path, manifest).await?,
-            "rust" => {
-                return Err(AppError::Other(
-                    "Rust plugins not yet implemented".into(),
-                ))
-            }
-            "python" => {
-                return Err(AppError::Other(
-                    "Python plugins not yet implemented".into(),
-                ))
-            }
+            "rust" => return Err(AppError::Other("Rust plugins not yet implemented".into())),
+            "python" => return Err(AppError::Other("Python plugins not yet implemented".into())),
             _ => {
                 return Err(AppError::Validation(format!(
                     "Unknown plugin type: {}",
@@ -213,7 +206,10 @@ impl PluginManager {
         self.register_plugin(&manifest).await?;
 
         // Add to loaded plugins
-        self.plugins.write().await.insert(plugin_id, Box::new(plugin));
+        self.plugins
+            .write()
+            .await
+            .insert(plugin_id, Box::new(plugin));
 
         tracing::info!(plugin_id = %manifest.id, "Loaded Lua plugin");
         Ok(())
@@ -226,7 +222,9 @@ impl PluginManager {
             .fetch_optional(&*self.pool)
             .await?;
 
-        Ok(row.map(|r| r.try_get::<i32, _>("approved").unwrap_or(0) != 0).unwrap_or(false))
+        Ok(row
+            .map(|r| r.try_get::<i32, _>("approved").unwrap_or(0) != 0)
+            .unwrap_or(false))
     }
 
     /// Register a plugin in the database
@@ -241,7 +239,7 @@ impl PluginManager {
                 name = excluded.name,
                 version = excluded.version,
                 capabilities = excluded.capabilities
-            "#
+            "#,
         )
         .bind(&manifest.id)
         .bind(&manifest.name)
@@ -261,7 +259,7 @@ impl PluginManager {
             INSERT INTO plugin_approvals (plugin_id, user_id, approved)
             VALUES (?, ?, 1)
             ON CONFLICT(plugin_id, user_id) DO UPDATE SET approved = 1
-            "#
+            "#,
         )
         .bind(plugin_id)
         .bind(user_id)
@@ -302,13 +300,11 @@ impl PluginManager {
     /// Scan plugin directory and load all approved plugins
     pub async fn load_all_plugins(&self) -> AppResult<()> {
         if !self.plugin_dir.exists() {
-            std::fs::create_dir_all(&self.plugin_dir)
-                .map_err(|e| AppError::Io(e))?;
+            std::fs::create_dir_all(&self.plugin_dir).map_err(|e| AppError::Io(e))?;
             return Ok(());
         }
 
-        let entries = std::fs::read_dir(&self.plugin_dir)
-            .map_err(|e| AppError::Io(e))?;
+        let entries = std::fs::read_dir(&self.plugin_dir).map_err(|e| AppError::Io(e))?;
 
         for entry in entries {
             let entry = entry.map_err(|e| AppError::Io(e))?;

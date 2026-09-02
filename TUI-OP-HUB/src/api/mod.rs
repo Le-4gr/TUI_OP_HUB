@@ -341,8 +341,18 @@ pub struct UpdateSecretReq {
     pub value: String,
 }
 
+/// Resolve the API's default user to a `user_profiles.id` (creating the profile
+/// row if needed). Secrets are keyed by profile id, not by username.
+async fn default_user_id(pool: &sqlx::SqlitePool) -> Result<String, String> {
+    repository::get_or_create_user(pool, "default")
+        .await
+        .map(|p| p.id)
+        .map_err(|e| e.to_string())
+}
+
 async fn list_secrets_handler(State(state): State<AppState>) -> Result<Json<Vec<Secret>>, String> {
-    repository::list_secrets(&state.pool, "default")
+    let user_id = default_user_id(&state.pool).await?;
+    repository::list_secrets(&state.pool, &user_id)
         .await
         .map(Json)
         .map_err(|e| e.to_string())
@@ -352,9 +362,10 @@ async fn create_secret_handler(
     State(state): State<AppState>,
     Json(req): Json<CreateSecretReq>,
 ) -> Result<Json<Secret>, String> {
+    let user_id = default_user_id(&state.pool).await?;
     // encrypt value server-side
-    match crate::secrets::encrypt_for_user(&state.pool, "default", &req.value).await {
-        Ok(enc) => repository::create_secret(&state.pool, "default", &req.name, &enc)
+    match crate::secrets::encrypt_for_user(&state.pool, &user_id, &req.value).await {
+        Ok(enc) => repository::create_secret(&state.pool, &user_id, &req.name, &enc)
             .await
             .map(Json)
             .map_err(|e| e.to_string()),
@@ -370,7 +381,7 @@ async fn get_secret_handler(
         .await
         .map_err(|e| e.to_string())?;
     // decrypt before returning
-    match crate::secrets::decrypt_for_user(&state.pool, "default", &s.value_enc).await {
+    match crate::secrets::decrypt_for_user_id(&state.pool, &s.user_id, &s.value_enc).await {
         Ok(val) => Ok(Json(
             serde_json::json!({"id": s.id, "name": s.name, "value": val}),
         )),

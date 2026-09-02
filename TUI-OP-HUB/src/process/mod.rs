@@ -91,7 +91,11 @@ impl ProcessManager {
             .collect();
 
         // Sort by CPU usage descending (US-PROC-06)
-        processes.sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap_or(std::cmp::Ordering::Equal));
+        processes.sort_by(|a, b| {
+            b.cpu_usage
+                .partial_cmp(&a.cpu_usage)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         processes
     }
 
@@ -120,9 +124,9 @@ impl ProcessManager {
             cmd.args(&parts[1..]);
         }
 
-        let child = cmd.spawn().map_err(|e| {
-            AppError::Other(format!("Failed to start process: {}", e))
-        })?;
+        let child = cmd
+            .spawn()
+            .map_err(|e| AppError::Other(format!("Failed to start process: {}", e)))?;
 
         let pid = child
             .id()
@@ -136,10 +140,10 @@ impl ProcessManager {
     pub fn stop_process(&mut self, pid: u32) -> AppResult<()> {
         use sysinfo::ProcessesToUpdate;
         let pid_obj = sysinfo::Pid::from_u32(pid);
-        
+
         // Refresh to get the latest process info
         self.system.refresh_processes(ProcessesToUpdate::All, true);
-        
+
         // Get the process and kill it
         if let Some(process) = self.system.process(pid_obj) {
             if process.kill() {
@@ -191,6 +195,7 @@ mod tests {
     fn test_filter_processes() {
         let mut pm = ProcessManager::new();
         let filtered = pm.filter_processes("init");
-        assert!(filtered.len() >= 0);
+        // Filtering must not crash and must never return more than available
+        assert!(filtered.len() <= pm.list_processes().len());
     }
 }

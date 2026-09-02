@@ -42,7 +42,9 @@ impl EncryptionKey {
             .hash_password(password.as_bytes(), &salt_string)
             .map_err(|e| AppError::Other(format!("Key derivation error: {}", e)))?;
 
-        let hash_bytes = hash.hash.ok_or_else(|| AppError::Other("No hash generated".into()))?;
+        let hash_bytes = hash
+            .hash
+            .ok_or_else(|| AppError::Other("No hash generated".into()))?;
         let mut key = [0u8; 32];
         key.copy_from_slice(&hash_bytes.as_bytes()[..32]);
 
@@ -58,6 +60,56 @@ pub struct AuthManager {
 impl AuthManager {
     pub fn new(pool: Arc<SqlitePool>) -> Self {
         Self { pool }
+    }
+
+    /// Create a new user with username and password
+    pub async fn create_user(&self, username: &str, password: &str) -> AppResult<String> {
+        // Generate user ID
+        let user_id = uuid::Uuid::new_v4().to_string();
+
+        // Generate salt
+        let salt = SaltString::generate(&mut OsRng);
+        let salt_bytes = salt.as_str().as_bytes();
+
+        // Hash password with Argon2id
+        let argon2 = Argon2::default();
+        let password_hash = argon2
+            .hash_password(password.as_bytes(), &salt)
+            .map_err(|e| AppError::Other(format!("Password hashing error: {}", e)))?
+            .to_string();
+
+        // Derive encryption key from password
+        let encryption_key = EncryptionKey::from_password(password, salt_bytes)?;
+
+        // Insert user profile
+        sqlx::query(
+            r#"
+            INSERT INTO user_profiles (id, username, auth_method, password_hash, salt, created_at, updated_at)
+            VALUES (?, ?, 'password', ?, ?, datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(&user_id)
+        .bind(username)
+        .bind(&password_hash)
+        .bind(salt.as_str())
+        .execute(&*self.pool)
+        .await?;
+
+        // Store user encryption key
+        let key_b64 = general_purpose::STANDARD.encode(encryption_key.as_bytes());
+        sqlx::query(
+            r#"
+            INSERT INTO user_keys (id, user_id, key_b64, created_at)
+            VALUES (?, ?, ?, datetime('now'))
+            "#,
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&user_id)
+        .bind(&key_b64)
+        .execute(&*self.pool)
+        .await?;
+
+        Ok(user_id)
     }
 
     /// Set a master password for a user
@@ -96,7 +148,36 @@ impl AuthManager {
         Ok(())
     }
 
-    /// Verify a password for a user
+    /// Verify a password for a user by username
+    pub async fn verify_password_by_username(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> AppResult<bool> {
+        let row = sqlx::query("SELECT password_hash FROM user_profiles WHERE username = ?")
+            .bind(username)
+            .fetch_optional(&*self.pool)
+            .await?;
+
+        let Some(row) = row else {
+            return Ok(false);
+        };
+
+        let password_hash_str: Option<String> = row.try_get("password_hash").ok();
+        let password_hash_str = match password_hash_str {
+            Some(hash) => hash,
+            None => return Ok(false),
+        };
+
+        let parsed_hash = PasswordHash::new(&password_hash_str)
+            .map_err(|e| AppError::Other(format!("Invalid password hash: {}", e)))?;
+
+        Ok(Argon2::default()
+            .verify_password(password.as_bytes(), &parsed_hash)
+            .is_ok())
+    }
+
+    /// Verify a password for a user by user ID
     pub async fn verify_password(&self, user_id: &str, password: &str) -> AppResult<bool> {
         let row = sqlx::query("SELECT password_hash FROM user_profiles WHERE id = ?")
             .bind(user_id)
@@ -139,7 +220,8 @@ impl AuthManager {
             .fetch_one(&*self.pool)
             .await?;
 
-        let salt_str: String = row.try_get("salt")
+        let salt_str: String = row
+            .try_get("salt")
             .map_err(|_| AppError::Other("No salt found".into()))?;
         Ok(salt_str.as_bytes().to_vec())
     }
@@ -247,7 +329,8 @@ pub fn encrypt_value(plaintext: &str, key: &EncryptionKey) -> AppResult<String> 
 
 /// Decrypt a value with the given key
 pub fn decrypt_value(encrypted: &str, key: &EncryptionKey) -> AppResult<String> {
-    let combined = general_purpose::STANDARD.decode(encrypted)
+    let combined = general_purpose::STANDARD
+        .decode(encrypted)
         .map_err(|e| AppError::Other(format!("Base64 decode error: {}", e)))?;
 
     if combined.len() < 24 {

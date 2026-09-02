@@ -310,4 +310,140 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.steps_completed, 1);
     }
+
+    // ── Workflow definition parsing (visual builder JSON + Lua fallback) ────
+
+    fn entity_with_content(name: &str, content: &str) -> Entity {
+        Entity {
+            id: "wf-1".to_string(),
+            name: name.to_string(),
+            description: None,
+            content: Some(content.to_string()),
+            type_id: "wf".to_string(),
+            project_id: None,
+            metadata_json: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    /// Scenario: a visual workflow saved as JSON parses back into steps
+    #[test]
+    fn given_json_definition_when_parsed_then_steps_preserved() {
+        let content = r#"{
+            "name": "nightly",
+            "description": "backup then clean",
+            "steps": [
+                {"name": "backup", "script": "print('backing up')", "depends_on": []},
+                {"name": "cleanup", "script": "print('cleaning')", "depends_on": []}
+            ],
+            "variables": {}
+        }"#;
+        let entity = entity_with_content("nightly", content);
+
+        let definition = WorkflowDefinition::from_entity(&entity).unwrap();
+        assert_eq!(definition.steps.len(), 2);
+        assert_eq!(definition.steps[0].name, "backup");
+        assert_eq!(definition.steps[1].name, "cleanup");
+    }
+
+    /// Scenario: a plain Lua workflow falls back to a single "main" step
+    #[test]
+    fn given_plain_lua_when_parsed_then_single_main_step() {
+        let entity = entity_with_content("scripted", "log('hello')");
+
+        let definition = WorkflowDefinition::from_entity(&entity).unwrap();
+        assert_eq!(definition.steps.len(), 1);
+        assert_eq!(definition.steps[0].name, "main");
+        assert!(definition.steps[0].script.contains("hello"));
+    }
+
+    /// Scenario: a workflow entity without content is a validation error
+    #[test]
+    fn given_entity_without_content_when_parsed_then_validation_error() {
+        let mut entity = entity_with_content("empty", "x");
+        entity.content = None;
+        assert!(WorkflowDefinition::from_entity(&entity).is_err());
+    }
+
+    /// Scenario: a JSON workflow executes all steps in order
+    #[tokio::test]
+    async fn given_json_workflow_when_executed_then_all_steps_complete() {
+        let pool = Arc::new(sqlx::SqlitePool::connect(":memory:").await.unwrap());
+        let engine = WorkflowEngine::new(pool.clone()).unwrap();
+
+        let definition = WorkflowDefinition {
+            name: "two steps".to_string(),
+            description: None,
+            steps: vec![
+                WorkflowStep {
+                    name: "first".to_string(),
+                    script: "print('one')".to_string(),
+                    depends_on: vec![],
+                },
+                WorkflowStep {
+                    name: "second".to_string(),
+                    script: "log('two')".to_string(),
+                    depends_on: vec![],
+                },
+            ],
+            variables: HashMap::new(),
+        };
+        let context = create_workflow_context("wf-1".to_string(), pool, None);
+
+        let result = engine.execute_workflow(&definition, context).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.steps_completed, 2);
+        assert!(result.output.contains("first"));
+        assert!(result.output.contains("second"));
+    }
+
+    /// Scenario: a failing step stops the workflow with an error result
+    #[tokio::test]
+    async fn given_failing_step_when_executed_then_reports_error() {
+        let pool = Arc::new(sqlx::SqlitePool::connect(":memory:").await.unwrap());
+        let engine = WorkflowEngine::new(pool.clone()).unwrap();
+
+        let definition = WorkflowDefinition {
+            name: "broken".to_string(),
+            description: None,
+            steps: vec![WorkflowStep {
+                name: "bad".to_string(),
+                script: "error('boom')".to_string(),
+                depends_on: vec![],
+            }],
+            variables: HashMap::new(),
+        };
+        let context = create_workflow_context("wf-2".to_string(), pool, None);
+
+        let result = engine.execute_workflow(&definition, context).await.unwrap();
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap().contains("boom"));
+        assert_eq!(result.steps_completed, 0);
+    }
+
+    /// Scenario: executing a non-workflow entity by id is rejected
+    #[tokio::test]
+    async fn given_command_entity_when_executed_as_workflow_then_validation_error() {
+        let pool = Arc::new(sqlx::SqlitePool::connect(":memory:").await.unwrap());
+        crate::db::run_migrations(&pool).await.unwrap();
+
+        let entity = repository::create_entity(
+            &pool,
+            &crate::models::CreateEntity {
+                name: "just a command".to_string(),
+                description: None,
+                content: Some("ls".to_string()),
+                type_id: "cmd".to_string(),
+                project_id: None,
+                tags: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = execute_workflow_by_id(pool, &entity.id, None).await;
+        assert!(result.is_err());
+    }
 }

@@ -148,3 +148,32 @@ pub struct ScheduledTask {
     pub created_at: String,
     pub updated_at: String,
 }
+
+// Display implementations for TUI rendering
+impl std::fmt::Display for Entity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} - {}",
+            self.name,
+            self.description.as_deref().unwrap_or("No description")
+        )
+    }
+}
+
+impl std::fmt::Display for Project {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} - {}",
+            self.name,
+            self.description.as_deref().unwrap_or("No description")
+        )
+    }
+}
+
+impl std::fmt::Display for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.name, self.user_id)
+    }
+}

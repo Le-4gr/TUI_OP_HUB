@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tui_op_hub::api;
 use tui_op_hub::config::AppConfig;
 use tui_op_hub::db;
-use tui_op_hub::tui::{self, App};
+use tui_op_hub::tui::modern_app::ModernApp;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -33,12 +33,9 @@ async fn main() -> anyhow::Result<()> {
     });
 
     if config.tui.enabled {
-        let mut app = App::new(
-            &config.database.path,
-            config.theme.clone(),
-            config.keybindings.clone(),
-        );
-        tui::run(&mut app, pool).await?;
+        // Use modern UI with login/signup
+        let mut app = ModernApp::new(pool);
+        app.run().await?;
     } else {
         tracing::info!("TUI disabled, running headless. Press Ctrl+C to shut down.");
         tokio::signal::ctrl_c().await?;

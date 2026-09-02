@@ -171,7 +171,10 @@ impl ConfigManager {
     ) -> HashMap<String, Vec<&'a ConfigEntry>> {
         let mut groups: HashMap<String, Vec<&'a ConfigEntry>> = HashMap::new();
         for entry in entries {
-            let key = entry.project_id.clone().unwrap_or_else(|| "ungrouped".to_string());
+            let key = entry
+                .project_id
+                .clone()
+                .unwrap_or_else(|| "ungrouped".to_string());
             groups.entry(key).or_default().push(entry);
         }
         groups

@@ -74,7 +74,9 @@ impl WorkflowScheduler {
                     let task_clone = task.clone();
 
                     tokio::spawn(async move {
-                        if let Err(e) = execute_scheduled_workflow(pool_clone.clone(), &task_clone).await {
+                        if let Err(e) =
+                            execute_scheduled_workflow(pool_clone.clone(), &task_clone).await
+                        {
                             tracing::error!(
                                 workflow_id = %task_clone.workflow_id,
                                 error = %e,
@@ -83,7 +85,9 @@ impl WorkflowScheduler {
                         }
 
                         // Update next run time
-                        if let Err(e) = update_next_run(pool_clone, schedules_clone, &task_clone).await {
+                        if let Err(e) =
+                            update_next_run(pool_clone, schedules_clone, &task_clone).await
+                        {
                             tracing::error!(
                                 task_id = %task_clone.id,
                                 error = %e,
@@ -115,7 +119,7 @@ impl WorkflowScheduler {
             SELECT id, workflow_id, cron_expr, last_run, next_run, enabled
             FROM scheduled_tasks
             WHERE enabled = 1
-            "#
+            "#,
         )
         .fetch_all(&*self.pool)
         .await?;
@@ -129,11 +133,15 @@ impl WorkflowScheduler {
             let cron_expr: String = task.try_get("cron_expr")?;
             let last_run: Option<String> = task.try_get("last_run").ok();
             let next_run: String = task.try_get("next_run")?;
-            
+
             let schedule = Schedule::from_str(&cron_expr)
                 .map_err(|e| AppError::Validation(format!("Invalid cron expression: {}", e)))?;
 
-            let last_run_dt = last_run.as_deref().and_then(|s| DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.with_timezone(&Utc)));
+            let last_run_dt = last_run.as_deref().and_then(|s| {
+                DateTime::parse_from_rfc3339(s)
+                    .ok()
+                    .map(|dt| dt.with_timezone(&Utc))
+            });
             let next_run_dt = DateTime::parse_from_rfc3339(&next_run)
                 .map_err(|e| AppError::Other(format!("Invalid next_run timestamp: {}", e)))?
                 .with_timezone(&Utc);
@@ -172,7 +180,7 @@ impl WorkflowScheduler {
             r#"
             INSERT INTO scheduled_tasks (id, workflow_id, cron_expr, next_run, enabled)
             VALUES (?, ?, ?, ?, 1)
-            "#
+            "#,
         )
         .bind(&id)
         .bind(&workflow_id)
@@ -192,7 +200,10 @@ impl WorkflowScheduler {
             enabled: true,
         };
 
-        self.schedules.write().await.insert(id.clone(), scheduled_task);
+        self.schedules
+            .write()
+            .await
+            .insert(id.clone(), scheduled_task);
 
         tracing::info!(task_id = %id, "Added scheduled task");
         Ok(id)
@@ -302,18 +313,20 @@ mod tests {
 
     #[test]
     fn test_cron_parsing() {
+        // Note: the `cron` crate expects a seconds field (6 or 7 fields).
+
         // Every minute
-        let schedule = Schedule::from_str("* * * * *").unwrap();
+        let schedule = Schedule::from_str("* * * * * *").unwrap();
         let next = schedule.upcoming(Utc).next().unwrap();
         assert!(next > Utc::now());
 
-        // Every hour
-        let schedule = Schedule::from_str("0 * * * *").unwrap();
+        // Every hour (at second 0)
+        let schedule = Schedule::from_str("0 0 * * * *").unwrap();
         let next = schedule.upcoming(Utc).next().unwrap();
         assert!(next > Utc::now());
 
         // Daily at midnight
-        let schedule = Schedule::from_str("0 0 * * *").unwrap();
+        let schedule = Schedule::from_str("0 0 0 * * *").unwrap();
         let next = schedule.upcoming(Utc).next().unwrap();
         assert!(next > Utc::now());
     }
