@@ -65,8 +65,54 @@ pub fn bundle_to_json(bundle: &KnowledgeBundle) -> AppResult<String> {
 }
 
 /// Parse a bundle from JSON text (what the user loads from a file).
+/// Parse import JSON **leniently**. Accepted shapes:
+///
+/// 1. A full [`KnowledgeBundle`] (as produced by export)
+/// 2. A bare JSON array of entities — the shape an AI generates from the
+///    prompt in `docs/IMPORT_EXPORT.md` (missing bundle fields are defaulted)
+/// 3. An object with only an `entities` array (`{"entities": [...]}`)
+///
+/// Defaults applied for missing fields: `version = 1`, `exported_at = now`,
+/// `secret_mode = "excluded"`, empty `secrets`.
 pub fn bundle_from_json(text: &str) -> AppResult<KnowledgeBundle> {
-    serde_json::from_str(text).map_err(|e| AppError::Validation(format!("invalid bundle: {e}")))
+    let value: serde_json::Value = serde_json::from_str(text)
+        .map_err(|e| AppError::Validation(format!("invalid JSON: {e}")))?;
+
+    // 1. Full bundle
+    if let Ok(bundle) = serde_json::from_value::<KnowledgeBundle>(value.clone()) {
+        return Ok(bundle);
+    }
+
+    // 2. Bare array of entities
+    if value.is_array() {
+        let entities: Vec<SharedEntity> = serde_json::from_value(value)
+            .map_err(|e| AppError::Validation(format!("invalid entity array: {e}")))?;
+        return Ok(defaulted_bundle(entities));
+    }
+
+    // 3. Object with an `entities` array (possibly missing other fields)
+    if let Some(obj) = value.as_object() {
+        if let Some(entities) = obj.get("entities") {
+            let entities: Vec<SharedEntity> = serde_json::from_value(entities.clone())
+                .map_err(|e| AppError::Validation(format!("invalid entities: {e}")))?;
+            return Ok(defaulted_bundle(entities));
+        }
+    }
+
+    Err(AppError::Validation(
+        "expected a bundle, an array of entities, or an object with an `entities` array".into(),
+    ))
+}
+
+/// A bundle filled with the safe defaults for lenient imports.
+fn defaulted_bundle(entities: Vec<SharedEntity>) -> KnowledgeBundle {
+    KnowledgeBundle {
+        version: 1,
+        exported_at: chrono::Utc::now().to_rfc3339(),
+        entities,
+        secrets: Vec::new(),
+        secret_mode: "excluded".to_string(),
+    }
 }
 
 /// Export the knowledge base to a portable bundle.
@@ -254,4 +300,69 @@ pub async fn import_secrets(
     }
 
     Ok((imported, skipped))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: a full exported bundle parses unchanged
+    #[test]
+    fn given_full_bundle_when_parsed_then_fields_preserved() {
+        let text = r#"{
+            "version": 1,
+            "exported_at": "2026-01-01T00:00:00Z",
+            "secret_mode": "excluded",
+            "entities": [
+                {"name": "ls", "type_id": "cmd", "description": "list",
+                 "content": "ls -la", "parent": null}
+            ],
+            "secrets": []
+        }"#;
+        let bundle = bundle_from_json(text).unwrap();
+        assert_eq!(bundle.version, 1);
+        assert_eq!(bundle.entities.len(), 1);
+        assert_eq!(bundle.entities[0].name, "ls");
+        assert_eq!(bundle.secret_mode, "excluded");
+    }
+
+    /// Scenario: a bare AI-generated entity array imports with defaults
+    #[test]
+    fn given_bare_entity_array_when_parsed_then_defaults_applied() {
+        let script = "#!/bin/sh\nrsync -a ~/ /mnt/nas";
+        let text = format!(
+            "[\n  {{\"name\": \"docker ps\", \"type_id\": \"cmd\", \"description\": \"list containers\", \"content\": \"docker ps\"}},\n  {{\"name\": \"backup\", \"type_id\": \"script\", \"content\": {:?}}}\n]",
+            script
+        );
+        let bundle = bundle_from_json(&text).unwrap();
+        assert_eq!(bundle.version, 1);
+        assert_eq!(bundle.secret_mode, "excluded");
+        assert!(bundle.secrets.is_empty());
+        assert_eq!(bundle.entities.len(), 2);
+        assert_eq!(bundle.entities[0].type_id, "cmd");
+        assert_eq!(bundle.entities[1].description, None);
+        assert_eq!(bundle.entities[1].content.as_deref(), Some(script));
+    }
+
+    /// Scenario: an entities-only object imports with defaults
+    #[test]
+    fn given_entities_only_object_when_parsed_then_defaults_applied() {
+        let text = r#"{"entities": [
+            {"name": "htop", "type_id": "app", "content": "htop"}
+        ]}"#;
+        let bundle = bundle_from_json(text).unwrap();
+        assert_eq!(bundle.entities.len(), 1);
+        assert_eq!(bundle.entities[0].type_id, "app");
+        assert_eq!(bundle.secret_mode, "excluded");
+    }
+
+    /// Scenario: malformed input is rejected with a useful message
+    #[test]
+    fn given_garbage_when_parsed_then_validation_error() {
+        assert!(bundle_from_json("not json").is_err());
+        assert!(bundle_from_json("{}").is_err()); // object without entities
+        assert!(bundle_from_json(r#"{"entities": "nope"}"#).is_err());
+        // entity missing required fields
+        assert!(bundle_from_json(r#"[{"name": "x"}]"#).is_err());
+    }
 }

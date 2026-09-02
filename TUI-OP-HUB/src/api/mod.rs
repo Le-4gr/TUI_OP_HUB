@@ -580,10 +580,15 @@ async fn export_handler(
 }
 
 /// Import a knowledge bundle: merges by (name, type); existing entries win.
+/// Accepts lenient shapes: a full bundle, a bare array of entities, or an
+/// object with only an `entities` array (see `share::bundle_from_json`).
 async fn import_handler(
     State(state): State<AppState>,
-    Json(bundle): Json<crate::share::KnowledgeBundle>,
+    body: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, String> {
+    let text =
+        String::from_utf8(body.to_vec()).map_err(|_| "body is not valid UTF-8".to_string())?;
+    let bundle = crate::share::bundle_from_json(&text).map_err(|e| e.to_string())?;
     let (imported, skipped) = crate::share::import_knowledge(&state.pool, &bundle)
         .await
         .map_err(|e| e.to_string())?;

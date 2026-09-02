@@ -7,6 +7,13 @@
 
 ## 🎯 Session 16 (current): terminal fix, visible search bar, import/export TUI, keybinds update
 
+> **Update 5 (same session):** Better file import (US-CMD-01). `I` in the TUI now opens a
+> **path-input popup** (default `~/tui-op-hub-export.json` pre-filled, `~` expansion, edit +
+> Enter) instead of importing a fixed file. `share::bundle_from_json` parses **leniently**:
+> full bundle, bare AI-generated entity arrays, or `entities`-only objects (defaults applied).
+> API `POST /import` accepts raw bodies in all three shapes too. Tests: +4 share unit tests,
+> +1 TUI popup end-to-end test, +1 BDD bare-array scenario. 132 lib + 41 BDD = 173 pass.
+
 > **Update 4 (same session):** Release/install flow with always-on backend (US-DEP-04).
 > `--install-service` is now a full idempotent setup: generates the master key into
 > `~/.config/tui-op-hub/env` (mode 600, never overwritten), unit references `EnvironmentFile=`,

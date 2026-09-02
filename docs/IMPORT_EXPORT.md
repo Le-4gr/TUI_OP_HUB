@@ -73,7 +73,18 @@ editor. Secrets are **never exported by default**.
 | Key | Action |
 |:---|:---|
 | `x` | **Export** everything (secrets excluded) to `~/tui-op-hub-export.json` |
-| `I` | **Import** from `~/tui-op-hub-export.json` — merge by (name, type), local entries always win |
+| `I` | **Import** from any file — a path-input popup opens with the default path pre-filled; edit it (Backspace), type any path (`~` expands to `$HOME`), `Enter` imports |
+
+### Accepted import formats (lenient)
+
+The importer accepts three JSON shapes — so an AI-generated file works as-is:
+
+1. **Full bundle** — the schema below, exactly as export produces
+2. **Bare entity array** — just `[ {"name": ..., "type_id": ...}, ... ]`
+   (missing bundle fields are defaulted: `version 1`, `secret_mode "excluded"`, no secrets)
+3. **Entities-only object** — `{"entities": [ ... ]}` without the other fields
+
+All shapes merge by (name, type) with the same local-wins rule.
 
 ### Over the REST API (default `127.0.0.1:3001`)
 

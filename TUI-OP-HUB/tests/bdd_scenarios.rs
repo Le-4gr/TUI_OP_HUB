@@ -1444,3 +1444,32 @@ async fn given_invalid_cron_when_validated_then_error_and_nothing_persisted() {
         .unwrap()
         .is_empty());
 }
+
+/// Scenario: an AI-generated bare entity array imports without a wrapper
+/// Given a JSON file containing only an array of entities (no bundle wrapper),
+/// when parsed and imported, then every entity lands in the database with
+/// defaulted bundle metadata.
+#[tokio::test]
+async fn given_bare_entity_array_when_imported_then_entities_landed() {
+    let pool = given_fresh_database().await;
+    let text = r#"[
+        {"name": "ai cmd", "type_id": "cmd", "description": "from AI",
+         "content": "echo generated", "parent": null},
+        {"name": "ai app", "type_id": "app", "content": " firefox"}
+    ]"#;
+    let bundle = share::bundle_from_json(text).unwrap();
+    assert_eq!(bundle.secret_mode, "excluded");
+
+    let (imported, skipped) = share::import_knowledge(&pool, &bundle).await.unwrap();
+    assert_eq!(imported, 2);
+    assert_eq!(skipped, 0);
+
+    let items = repository::list_entities(&pool, Some("cmd"), None)
+        .await
+        .unwrap();
+    assert!(items.iter().any(|e| e.name == "ai cmd"));
+    let apps = repository::list_entities(&pool, Some("app"), None)
+        .await
+        .unwrap();
+    assert!(apps.iter().any(|e| e.name == "ai app"));
+}

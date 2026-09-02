@@ -158,6 +158,7 @@ pub struct ModernApp {
     project_form: ProjectFormState,
     project_detail: Option<ProjectDetailState>,
     cron_input: Option<String>,
+    import_input: Option<String>,
     workflow_form: WorkflowFormState,
     secret_form: SecretFormState,
     // Search state
@@ -256,6 +257,7 @@ impl ModernApp {
             project_form: ProjectFormState::default(),
             project_detail: None,
             cron_input: None,
+            import_input: None,
             workflow_form: WorkflowFormState::default(),
             secret_form: SecretFormState::default(),
             // Initialize search state
@@ -533,6 +535,9 @@ impl ModernApp {
         }
         if self.options_popup.is_some() {
             self.render_options_popup(f);
+        }
+        if let Some(path) = &self.import_input {
+            self.render_import_input(f, path);
         }
         if let Some(cron) = &self.cron_input {
             self.render_cron_input(f, cron);
@@ -1164,6 +1169,26 @@ impl ModernApp {
             }
             return;
         }
+        if let Some(path) = self.import_input.as_mut() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.import_input = None;
+                }
+                KeyCode::Enter => {
+                    let entered = path.clone();
+                    self.import_input = None;
+                    self.import_knowledge_from_path(&entered).await;
+                }
+                KeyCode::Backspace => {
+                    path.pop();
+                }
+                KeyCode::Char(c) => {
+                    path.push(c);
+                }
+                _ => {}
+            }
+            return;
+        }
         if let Some(cron) = self.cron_input.as_mut() {
             match key.code {
                 KeyCode::Esc => {
@@ -1571,8 +1596,8 @@ impl ModernApp {
                 }
             }
             KeyCode::Char('I') => {
-                // Import knowledge base from JSON (sharing)
-                self.import_knowledge_base().await;
+                // Import knowledge base from a file path (default pre-filled)
+                self.import_input = Some(default_import_path());
             }
             KeyCode::Char('k') => {
                 // SSH/GPG key generation (US-SEC-01) — notify when the tools
@@ -1874,6 +1899,32 @@ impl ModernApp {
         );
     }
 
+    /// Import path popup (US-CMD-01): type or edit a file path, Enter imports.
+    fn render_import_input(&self, f: &mut Frame, value: &str) {
+        let area = self.centered_rect(70, 7, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.success))
+            .title(" Import knowledge base ")
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(inner);
+        f.render_widget(Paragraph::new(format!("{}\u{2588}", value)), rows[0]);
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "~ expands to $HOME  |  bundle, entity array or {entities:[...]}  |  Enter: import \u{b7} Esc: cancel",
+                Style::default().fg(self.ui.theme.border),
+            )),
+            rows[1],
+        );
+    }
+
     /// Cron input popup (US-WF-07): type a cron expression and press Enter.
     fn render_cron_input(&self, f: &mut Frame, value: &str) {
         let area = self.centered_rect(56, 7, f);
@@ -2150,6 +2201,44 @@ impl ModernApp {
     }
 
     // ── Knowledge-base import/export (US-CMD-01, sharing) ────────────────
+
+    /// Import a knowledge bundle from the path typed in the popup.
+    /// Accepts full bundles, bare entity arrays and `entities`-only objects.
+    async fn import_knowledge_from_path(&mut self, entered: &str) {
+        let expanded = expand_tilde(entered);
+        let path = std::path::PathBuf::from(expanded);
+        if !path.exists() {
+            self.status_message = Some(format!("\u{2717} No file at {}", path.display()));
+            return;
+        }
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.status_message = Some(format!("\u{2717} Read failed: {}", e));
+                return;
+            }
+        };
+        let bundle = match crate::share::bundle_from_json(&text) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status_message = Some(format!("\u{2717} Invalid bundle: {}", e));
+                return;
+            }
+        };
+        match crate::share::import_knowledge(&*self.pool, &bundle).await {
+            Ok((imported, skipped)) => {
+                self.status_message = Some(format!(
+                    "\u{2713} Imported {} entities ({} skipped) from {}",
+                    imported,
+                    skipped,
+                    path.display()
+                ));
+                let _ = self.fetch_stats().await;
+                self.refresh_current_tab().await;
+            }
+            Err(e) => self.status_message = Some(format!("\u{2717} Import failed: {}", e)),
+        }
+    }
 
     /// Export the knowledge base to `~/tui-op-hub-export.json`.
     /// Excludes secrets by default for safety.
@@ -5000,6 +5089,26 @@ where
 }
 
 /// Index of a theme preset name (unknown names map to the first preset).
+/// The pre-filled path for the import popup.
+fn default_import_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    format!("{home}/tui-op-hub-export.json")
+}
+
+/// Expand a leading `~` (or `~/`) to `$HOME`.
+fn expand_tilde(path: &str) -> String {
+    if path == "~" {
+        return std::env::var("HOME").unwrap_or_else(|_| path.to_string());
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if !home.is_empty() {
+            return format!("{home}/{rest}");
+        }
+    }
+    path.to_string()
+}
+
 fn dirs_home() -> std::path::PathBuf {
     std::env::var("HOME")
         .map(|h| std::path::PathBuf::from(h).join("projects"))
@@ -6132,5 +6241,56 @@ mod tests {
         // Esc closes the detail view
         app.handle_key(key(KeyCode::Esc)).await;
         assert!(app.project_detail.is_none());
+    }
+
+    // ── Import popup (path input) ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn given_import_popup_when_path_entered_then_file_imported() {
+        let mut app = test_app_db().await;
+        app.ui.state = AppState::Commands;
+
+        // Write a bare AI-style entity array to a temp file
+        let dir = std::env::temp_dir().join(format!("tui-op-hub-import-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("ai-bundle.json");
+        std::fs::write(
+            &file,
+            r#"[{"name": "popup cmd", "type_id": "cmd", "content": "echo hi"}]"#,
+        )
+        .unwrap();
+
+        // Open the popup (pre-filled with the default path) and type the temp path
+        app.handle_key(key(KeyCode::Char('I'))).await;
+        assert!(app.import_input.is_some());
+        // Clear the pre-filled default so the typed path stands alone
+        app.import_input = Some(String::new());
+        for c in file.to_string_lossy().chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Enter)).await;
+
+        assert!(app.import_input.is_none(), "popup closed");
+        app.fetch_commands().await.unwrap();
+        assert!(app
+            .commands_list
+            .items
+            .iter()
+            .any(|e| e.name == "popup cmd"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn given_path_with_tilde_when_expanded_then_home_substituted() {
+        std::env::set_var(
+            "HOME",
+            std::env::var("HOME").unwrap_or_else(|_| "/home/test".to_string()),
+        );
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(expand_tilde("~"), home);
+        assert_eq!(expand_tilde("~/x.json"), format!("{home}/x.json"));
+        assert_eq!(expand_tilde("/abs/path"), "/abs/path");
+        assert_eq!(expand_tilde("relative"), "relative");
     }
 }
