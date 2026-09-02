@@ -159,6 +159,8 @@ pub enum AppState {
     Login,
     Dashboard,
     Commands,
+    Apps,
+    Scripts,
     Projects,
     Workflows,
     Secrets,

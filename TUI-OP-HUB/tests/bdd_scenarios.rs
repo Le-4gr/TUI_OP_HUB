@@ -1118,3 +1118,107 @@ async fn given_file_backed_workflow_when_executed_then_definition_loaded_from_fi
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ============================================================================
+// Feature: Entity type tabs & project detail (US-CMD-01, US-PROJ-02, US-PROJ-07)
+// ============================================================================
+
+/// Scenario: the Commands / Apps / Scripts tabs each list only their own type
+/// Given entities of all three types exist, when each tab's list is fetched,
+/// then every tab shows exactly the entities of its type.
+#[tokio::test]
+async fn given_entities_of_three_types_when_tab_listed_then_only_matching_type_shown() {
+    let pool = given_fresh_database().await;
+    for (name, ty) in [
+        ("bdd-cmd", "cmd"),
+        ("bdd-script", "script"),
+        ("bdd-app", "app"),
+    ] {
+        repository::create_entity(
+            &pool,
+            &CreateEntity {
+                name: name.to_string(),
+                description: None,
+                content: Some("echo hi".to_string()),
+                type_id: ty.to_string(),
+                project_id: None,
+                tags: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    for (ty, expected_name) in [
+        ("cmd", "bdd-cmd"),
+        ("script", "bdd-script"),
+        ("app", "bdd-app"),
+    ] {
+        let items = repository::list_entities(&pool, Some(ty), None)
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 1, "type {ty} should list exactly one");
+        assert_eq!(items[0].name, expected_name);
+        assert_eq!(items[0].type_id, ty);
+    }
+}
+
+/// Scenario: a project detail shows all its entities and nothing else
+/// Given a project with two entities and an unrelated orphan entity, when the
+/// project's contents are listed, then exactly the two project entities return.
+#[tokio::test]
+async fn given_project_with_entities_when_detail_opened_then_project_entities_listed() {
+    let pool = given_fresh_database().await;
+    let project = repository::create_project(
+        &pool,
+        &CreateProject {
+            name: "bdd-project".to_string(),
+            description: Some("BDD detail".to_string()),
+        },
+    )
+    .await
+    .unwrap();
+
+    for (name, ty) in [("proj-cmd", "cmd"), ("proj-script", "script")] {
+        repository::create_entity(
+            &pool,
+            &CreateEntity {
+                name: name.to_string(),
+                description: None,
+                content: None,
+                type_id: ty.to_string(),
+                project_id: Some(project.id.clone()),
+                tags: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    // Orphan entity in no project
+    repository::create_entity(
+        &pool,
+        &CreateEntity {
+            name: "orphan".to_string(),
+            description: None,
+            content: None,
+            type_id: "cmd".to_string(),
+            project_id: None,
+            tags: None,
+            metadata_json: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let entities = repository::list_entities_by_project(&pool, &project.id)
+        .await
+        .unwrap();
+    assert_eq!(entities.len(), 2);
+    assert!(entities
+        .iter()
+        .all(|e| e.project_id.as_deref() == Some(project.id.as_str())));
+    assert!(entities.iter().any(|e| e.name == "proj-cmd"));
+    assert!(entities.iter().any(|e| e.name == "proj-script"));
+}

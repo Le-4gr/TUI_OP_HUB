@@ -230,12 +230,12 @@
 | ID | Story | Priority | Points |
 |:---|:---|:---:|:---:|
 | `US-PROJ-01` | As a **User**, I want to **create a project**, so that I can group related resources together. | 🔴 | 3 |
-| `US-PROJ-02` | As a **User**, I want a project to **contain scripts, environments, configs, workflows, and secret references**, so that everything for a project is in one place. | 🔴 | 5 |
+| `US-PROJ-02` | As a **User**, I want a project to **contain scripts, environments, configs, workflows, and secret references**, so that everything for a project is in one place. | 🟡 | 5 |
 | `US-PROJ-03` | As a **User**, I want **isolation** between projects, so that one project's settings don't leak into another. | 🟡 | 5 |
 | `US-PROJ-04` | As a **User**, I want to **switch** between projects quickly, so that I can context-shift without friction. | 🔴 | 2 |
 | `US-PROJ-05` | As a **User**, I want **reproducible project setups**, so that I can recreate the same environment on another machine. | 🟢 | 8 |
 | `US-PROJ-06` | As a **User**, I want to **delete or archive** a project, so that my workspace stays uncluttered. | 🟡 | 2 |
-| `US-PROJ-07` | As a **User**, I want to view a **project dashboard** summarizing its resources, so that I can understand its state at a glance. | 🟡 | 5 |
+| `US-PROJ-07` | As a **User**, I want to view a **project dashboard** summarizing its resources, so that I can understand its state at a glance. | ✅ | 5 |
 
 ---
 

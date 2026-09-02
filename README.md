@@ -15,7 +15,7 @@ A terminal-based operations hub for command management, workflow automation, and
 - **Encrypted Secrets**: XChaCha20Poly1305 AEAD cipher with per-user key management
 - **User Profiles**: Multi-user support with individual encryption keys
 - **REST API**: Axum-based HTTP API for full CRUD and workflow execution
-- **TUI Dashboard**: Interactive terminal UI with 7 tabs (Dashboard, Commands, Projects, Tags, Search, Workflows, Secrets)
+- **TUI Dashboard**: Interactive terminal UI with 8 tabs (Dashboard, Commands, Apps, Scripts, Projects, Workflows, Secrets, Settings) — number keys 1-8, Enter on a project opens its detail view
 
 ### Phase 2 🔄 In progress
 

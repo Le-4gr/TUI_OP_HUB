@@ -7,6 +7,17 @@
 
 ## 🎯 Session 16 (current): terminal fix, visible search bar, import/export TUI, keybinds update
 
+> **Update 2 (same session):** Added **Apps** and **Scripts** tabs — the TUI now has
+> 8 tabs (1=Dashboard, 2=Commands, 3=Apps, 4=Scripts, 5=Projects, 6=Workflows,
+> 7=Secrets, 8=Settings). All three entity tabs share one list state filtered by
+> `type_id` (cmd/script/app); `n` pre-sets the form type to the current tab.
+> Finished the **Projects flow**: Enter opens a project detail popup (US-PROJ-07)
+> showing description + all project entities with type icons, Up/Down navigation,
+> `c` copy entity content, `o` open workspace editor, Esc close. Fixed duplicated
+> rows in the keybinds overlay, updated footer hints (1-8 tabs, Projects Enter/O).
+> Tests: +4 unit tests (tab filtering, number-key mapping, form type preset,
+> project detail) + `test_app_db` helper + 2 BDD scenarios. 119 lib + 35 BDD = 154 pass.
+
 > **Update (same session):** backtick now opens a **NEW terminal window** instead of
 > suspending the TUI. The run loop spawns a detached terminal emulator
 > (overrides: `TUI_OP_HUB_TERMINAL` / `TERMINAL`; fallback order: alacritty, kitty,
