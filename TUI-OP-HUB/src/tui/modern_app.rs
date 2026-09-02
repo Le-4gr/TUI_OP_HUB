@@ -189,6 +189,7 @@ pub struct ModernApp {
     options_popup: Option<(String, Vec<(String, String)>)>,
     // Keybind helper overlay (? key; US-TUI-09)
     keybinds_overlay: bool,
+    wants_terminal: bool,
     needs_full_redraw: bool,
     // Overlay states (forms, visual builder, popups)
     visual_form: Option<VisualWorkflowState>,
@@ -256,6 +257,7 @@ impl ModernApp {
             new_project_field_idx: 0,
             options_popup: None,
             keybinds_overlay: false,
+            wants_terminal: false,
             needs_full_redraw: true,
             // Overlays start closed
             visual_form: None,
@@ -386,6 +388,19 @@ impl ModernApp {
         let mut terminal = Terminal::new(backend)?;
 
         loop {
+            // Dev terminal: suspend TUI, run shell, restore
+            if self.wants_terminal {
+                self.wants_terminal = false;
+                terminal.clear()?;
+                disable_raw_mode()?;
+                execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+                let _ = tokio::process::Command::new(&shell).status().await;
+                execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                enable_raw_mode()?;
+                terminal.clear()?;
+                self.status_message = Some("\u{2713} Back from terminal".to_string());
+            }
             if self.needs_full_redraw {
                 terminal.clear()?;
                 self.needs_full_redraw = false;
@@ -1411,7 +1426,7 @@ impl ModernApp {
             }
             KeyCode::Char('`') => {
                 // Drop into a subshell (embedded terminal)
-                self.spawn_terminal().await;
+                self.wants_terminal = true;
             }
             KeyCode::Char('R') => {
                 // Run with elevated privileges (sudo/doas/su)
@@ -1775,9 +1790,41 @@ impl ModernApp {
 
             f.render_widget(list, chunks[1]);
         }
-
-        // Footer: keybind hints for this screen
-        self.render_keybind_footer(f, chunks[2], &self.keybind_hints());
+        // Search bar replaces the footer while search is active
+        if self.search_state.active {
+            f.render_widget(Clear, chunks[2]);
+            let sb = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(self.ui.theme.warning))
+                .title(" Search ")
+                .style(Style::default().bg(self.ui.theme.bg));
+            let si = sb.inner(chunks[2]);
+            f.render_widget(sb, chunks[2]);
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        "/ ",
+                        Style::default()
+                            .fg(self.ui.theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{}\u{2588}", self.search_state.query),
+                        Style::default()
+                            .fg(self.ui.theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "   Enter: apply \u{b7} Esc: cancel",
+                        Style::default().fg(self.ui.theme.border),
+                    ),
+                ])),
+                si,
+            );
+        } else {
+            self.render_keybind_footer(f, chunks[2], &self.keybind_hints());
+        }
     }
 
     // ── Knowledge-base import/export (US-CMD-01, sharing) ────────────────
