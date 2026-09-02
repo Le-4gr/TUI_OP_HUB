@@ -25,7 +25,7 @@ process monitoring, package management, environment/config management, SSH host 
 plugin system, scheduled tasks, and cross-machine sync.
 
 **Local-first philosophy**: SQLite database, single ~6 MB static binary, no external runtime
-dependencies, XDG-standard config (`~/.config/tui-op-hub/config.toml`).
+dependencies, Hyprland-style config (`~/.config/tui-op-hub/config.conf`).
 
 ---
 
@@ -36,6 +36,12 @@ TUI-OP-HUB/                       # repo root (docs live here)
 ├── AGENTS.md                     # ← this file
 ├── WORK.md                       # live work log for AI agents (ongoing tasks, what/how)
 ├── README.md                     # user-facing readme (features, config, API)
+├── docs/                         # documentation (start at docs/INDEX.md)
+│   ├── INDEX.md                  # map of all documentation
+│   └── business/                 # business structure
+│       ├── VISION.md             # product vision & personas
+│       ├── ROADMAP.md            # phase plan
+│       └── GOVERNANCE.md         # roles, branching, definition of done
 ├── bp.md                         # business plan / product vision (source of truth for scope)
 ├── ARCHITECTURE.md               # system architecture, module responsibilities, data flow
 ├── USER_STORIES.md               # user stories with IDs (US-XXX-NN), priorities, phase status
@@ -51,7 +57,7 @@ TUI-OP-HUB/                       # repo root (docs live here)
         ├── main.rs               # entry point: config → DB pool → API spawn → TUI loop
         ├── lib.rs                # module declarations
         ├── error.rs              # AppError / AppResult
-        ├── config/               # AppConfig (TOML, themes, keybindings)
+        ├── config/               # AppConfig — Hyprland-style config.conf (themes, keybindings)
         ├── db/                   # SQLite pool (WAL) + migrations/
         │   └── migrations/       # 0001_init.sql, 0002_user_auth.sql
         ├── models/               # data models (entities, projects, secrets, plugins, ...)
@@ -201,7 +207,8 @@ When working on this repo, follow this loop:
    and what is next. Append your session to it when you finish (what you did, what broke,
    what's next).
 3. Identify the relevant user story ID(s) in `USER_STORIES.md` and read the story.
-3. Read `ARCHITECTURE.md` sections covering the modules you will touch.
+3. Read `ARCHITECTURE.md` sections covering the modules you will touch. For a map of all
+   documentation (including the business docs in `docs/business/`), see `docs/INDEX.md`.
 4. Trace the existing pattern: for a feature, find how a *similar* feature flows through
    `models/` → `repository/` → `api/` + `tui/` and mirror it.
 

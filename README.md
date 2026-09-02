@@ -42,45 +42,83 @@ export TUI_OP_HUB_USER="default"  # Optional
 
 ## Configuration
 
-Create `~/.config/tui-op-hub/config.toml` (or edit everything live in the **Settings
-screen** — press `6` or Tab to it, then `Ctrl+S` to persist):
-```toml
-[database]
-path = "tuihub.db"
-busy_timeout_ms = 5000
+Configuration lives in a **Hyprland-style** config file — `section { key = value }`
+blocks, `#` comments, quoted or bare values — at
+`~/.config/tui-op-hub/config.conf`. Missing keys fall back to defaults and unknown
+keys are ignored, so a minimal file is fine. Everything is also editable live in the
+**Settings screen** (`6`), then `Ctrl+S` to persist:
 
-[api]
-bind_addr = "127.0.0.1:3001"
+```ini
+# ~/.config/tui-op-hub/config.conf
+# Format: section { key = value } — like Hyprland/sway configs
 
-[tui]
-enabled = true
-page_size = 15
+general {
+    # External editor for the "open in editor" action (o on the Commands tab).
+    # Empty = use $EDITOR, falling back to "vi".
+    editor = ""
+    user = default
+}
 
-[general]
-# External editor used by the "open in editor" action (o on the Commands tab).
-# Empty = use $EDITOR, falling back to "vi".
-editor = ""
+database {
+    path = tuihub.db
+    busy_timeout_ms = 5000
+}
 
-[theme]
-# Preset: dark | light | nord | dracula | gruvbox (cycles with ←/→ in Settings)
-name = "dark"
-# Named colors or hex ("#rrggbb") overrides:
-fg = "white"
-bg = "black"
-accent = "cyan"
+api {
+    bind_addr = 127.0.0.1:3001
+}
 
-[keybindings]
-# Rebindable live in Settings (Enter on a key row, then press the new key)
-quit = "q"
-help = "?"
-search = "/"
-filter = "f"
-create = "n"
-edit = "e"
-delete = "d"
-copy = "c"
-run = "r"
+tui {
+    enabled = true
+    page_size = 15
+}
+
+theme {
+    # Preset: dark | light | nord | dracula | gruvbox
+    # Any other name = your own custom theme: set the colors below.
+    name = dark
+    fg = white
+    bg = black
+    accent = yellow
+    status_bg = blue
+}
+
+keybindings {
+    quit = q
+    help = ?
+    search = /
+    filter = f
+    create = n
+    edit = e
+    delete = d
+    copy = c
+    run = r
+}
 ```
+
+### Create your own theme
+
+Give `name` any value that is not a preset and set the colors you want (named colors
+or hex `#rrggbb`). Unset colors fall back to the default palette, and you can also
+override individual colors *on top of* a preset:
+
+```ini
+theme {
+    name = mynight   # custom — anything not in the preset list
+    fg = #e6edf3
+    bg = #0d1117
+    accent = #f78166
+    primary = #58a6ff      # optional overrides
+    success = #3fb950
+    warning = #d29922
+    error = #f85149
+    border = #30363d
+    highlight = #58a6ff
+}
+```
+
+You can even override a single color of a preset — keep `name = nord` and add
+`primary = #89dceb` to tint just the primary color.
 
 ### Settings screen (key `6`)
 | Key | Action |
@@ -88,7 +126,7 @@ run = "r"
 | ↑/↓ | Navigate setting rows |
 | Enter | Edit value (editor / page size) or start key rebind capture |
 | ←/→ | Cycle theme preset (applied live) |
-| Ctrl+S | Save settings to `config.toml` |
+| Ctrl+S | Save settings to `config.conf` |
 | Esc | Back to dashboard |
 
 ## Security
@@ -152,7 +190,7 @@ run = "r"
 ## Architecture
 
 **Core Modules**:
-- **config**: Configuration management with TOML
+- **config**: Configuration management (`config.conf`, Hyprland-style)
 - **db**: SQLite schema with migrations, WAL mode
 - **models**: Data structures with sqlx derives
 - **repository**: Data access layer with async operations
@@ -294,7 +332,7 @@ TUI-OP-HUB/
 | API | Axum |
 | TUI | Ratatui + Crossterm |
 | Clipboard | arboard |
-| Config | TOML (serde + toml) |
+| Config | Hyprland-style `config.conf` (custom parser) |
 | Logging | tracing + tracing-subscriber |
 | Errors | thiserror + anyhow |
 

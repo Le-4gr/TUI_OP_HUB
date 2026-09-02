@@ -472,20 +472,20 @@ fn given_custom_keybindings_when_resolved_then_actions_use_them() {
 
 /// Scenario: the theme config maps to the matching palette
 /// Given the nord preset, when the theme is built from config, then its colors
-/// differ from the default and unknown names fall back to the default.
+/// differ from the default; an unknown name builds a custom theme from the
+/// configured fg/bg/accent values.
 #[test]
 fn given_theme_preset_when_mapped_then_colors_change() {
-    // Unknown preset name falls back to the default palette
+    // Unknown preset name = custom theme: fg/bg/accent from the config apply
     let unknown = tui_op_hub::config::ThemeConfig {
         name: "does-not-exist".to_string(),
         ..Default::default()
     };
-    assert_eq!(
-        tui_op_hub::tui::modern_ui::ModernTheme::from_config(&unknown).bg,
-        tui_op_hub::tui::modern_ui::ModernTheme::default().bg
-    );
+    let custom = tui_op_hub::tui::modern_ui::ModernTheme::from_config(&unknown);
+    assert_eq!(custom.bg, unknown.bg_color());
+    assert_eq!(custom.fg, unknown.fg_color());
 
-    // A real preset maps to its distinct palette
+    // A real preset maps to its distinct palette (fg/bg are NOT re-applied)
     let nord = tui_op_hub::config::ThemeConfig {
         name: "nord".to_string(),
         ..Default::default()
@@ -494,5 +494,31 @@ fn given_theme_preset_when_mapped_then_colors_change() {
     assert_ne!(
         nord_theme.bg,
         tui_op_hub::tui::modern_ui::ModernTheme::default().bg
+    );
+}
+
+/// Scenario: a custom theme is defined entirely in the config file
+/// Given a theme config with a custom name and hex colors, when the theme is
+/// built, then the defined colors are used and unset ones fall back.
+#[test]
+fn given_custom_theme_colors_when_mapped_then_overrides_apply() {
+    let cfg = tui_op_hub::config::ThemeConfig {
+        name: "myscheme".to_string(),
+        bg: "#101010".to_string(),
+        fg: "#e0e0e0".to_string(),
+        accent: "#ff8800".to_string(),
+        primary: Some("#3366ff".to_string()),
+        error: Some("#cc0000".to_string()),
+        ..Default::default()
+    };
+    let theme = tui_op_hub::tui::modern_ui::ModernTheme::from_config(&cfg);
+
+    assert_eq!(theme.bg, ratatui::style::Color::Rgb(0x10, 0x10, 0x10));
+    assert_eq!(theme.primary, ratatui::style::Color::Rgb(0x33, 0x66, 0xff));
+    assert_eq!(theme.error, ratatui::style::Color::Rgb(0xcc, 0x00, 0x00));
+    // Unset optional color falls back to the default palette
+    assert_eq!(
+        theme.warning,
+        tui_op_hub::tui::modern_ui::ModernTheme::default().warning
     );
 }

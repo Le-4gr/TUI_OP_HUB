@@ -107,9 +107,49 @@ impl ModernTheme {
         }
     }
 
-    /// Build the TUI theme from the config file (falls back to the default).
+    /// Build the TUI theme from the config file (US-APP-01).
+    ///
+    /// - A known preset name gives the preset palette.
+    /// - Optional per-color overrides (`primary`…`highlight` in the `theme`
+    ///   section) are applied on top of the preset/default palette — this is
+    ///   how users create their own theme.
+    /// - `fg`/`bg`/`accent`/`status_bg` apply when the name is not a preset
+    ///   (i.e. a fully custom theme); presets keep their palette otherwise.
+    /// - Unknown preset names without any colors fall back to the default.
     pub fn from_config(cfg: &crate::config::ThemeConfig) -> Self {
-        Self::preset(&cfg.name).unwrap_or_default()
+        let is_preset = Self::preset(&cfg.name).is_some();
+        let mut theme = Self::preset(&cfg.name).unwrap_or_default();
+
+        // Per-color overrides (custom theming, US-APP-01)
+        if let Some(c) = &cfg.primary {
+            theme.primary = crate::config::parse_color(c);
+        }
+        if let Some(c) = &cfg.secondary {
+            theme.secondary = crate::config::parse_color(c);
+        }
+        if let Some(c) = &cfg.success {
+            theme.success = crate::config::parse_color(c);
+        }
+        if let Some(c) = &cfg.warning {
+            theme.warning = crate::config::parse_color(c);
+        }
+        if let Some(c) = &cfg.error {
+            theme.error = crate::config::parse_color(c);
+        }
+        if let Some(c) = &cfg.border {
+            theme.border = crate::config::parse_color(c);
+        }
+        if let Some(c) = &cfg.highlight {
+            theme.highlight = crate::config::parse_color(c);
+        }
+
+        // Base palette fields apply to fully custom themes only
+        if !is_preset {
+            theme.fg = cfg.fg_color();
+            theme.bg = cfg.bg_color();
+            theme.accent = cfg.accent_color();
+        }
+        theme
     }
 }
 

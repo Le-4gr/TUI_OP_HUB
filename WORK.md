@@ -5,7 +5,58 @@
 
 ---
 
-## 🎯 Session 3 (current): Settings screen — editor, defaults, theming, keybindings
+## 🎯 Session 4 (current): Hyprland-style config, custom theming, docs & business structure
+
+**Goal: Hyprland-style config file, user-defined themes, restructured docs — no
+functional changes; all tests still pass.**
+
+### What was done and how
+1. **Hyprland-style config file** (`src/config/mod.rs`):
+   - Replaced TOML with a custom `section { key = value }` parser
+     (`parse_hypr_config`): `#` full-line comments, quoted or bare values, one-line
+     `section { key = value }` blocks, unknown sections/keys ignored, missing keys
+     keep defaults, booleans accept `true/yes/on/1` / `false/no/off/0`
+   - `AppConfig::save()` now writes documented `config.conf` text (comments per key);
+     default path renamed `config.toml` → **`config.conf`**
+   - `AppConfig::load/save` signatures unchanged — main.rs/Settings call sites untouched
+   - Hex color values (`#101010`) survive round trips (quoted on write, never
+     comment-stripped)
+2. **Custom theming** (US-APP-01):
+   - `ThemeConfig` gained optional override colors: `primary`, `secondary`, `success`,
+     `warning`, `error`, `border`, `highlight` (unset = preset/default color)
+   - `ModernTheme::from_config`: known preset → preset palette; **any other name =
+     custom theme built from the config colors**; optional overrides also apply on top
+     of presets; `fg/bg/accent/status_bg` apply only to custom names (presets keep
+     their palette)
+   - Parse errors are impossible by design: unknown keys ignored, missing keys default
+3. **Docs & business structure**:
+   - New `docs/INDEX.md` — map of all documentation (users/agents/business assets)
+   - New `docs/business/`: `VISION.md` (problem, personas, principles),
+     `ROADMAP.md` (phases + status table), `GOVERNANCE.md` (roles, branching,
+     definition of done, decision process)
+   - README: full Hyprland config reference, "Create your own theme" section,
+     preset-tinting example; AGENTS.md: layout + config format notes
+
+### Compatibility notes
+- Old `config.toml` files are not auto-migrated: delete/rename it and let the app
+  write a fresh `config.conf` (Settings `Ctrl+S`), or hand-write the new format.
+  Behavior in-app is unchanged.
+- `KeybindingsConfig` serde/legacy helpers untouched; legacy `tui/mod.rs` theme
+  methods (`accent_color()`, `status_bg_color()`) untouched.
+
+### Tests
+- New/updated unit tests: hypr parsing (comments, quotes, unknown keys, one-line
+  sections, bool spellings), hypr round trip with custom theme colors,
+  hand-written-file load, temp paths renamed to `.conf`
+- New BDD scenario: `given_custom_theme_colors_when_mapped_then_overrides_apply`;
+  `given_theme_preset_when_mapped_then_colors_change` updated to the custom-theme
+  semantics (custom names apply fg/bg/accent)
+- **Validation**: `cargo fmt` ✔ · `clippy --all-targets` 0 errors ✔ · `cargo build` ✔
+  · `cargo test` → **83 passed / 0 failed** (70 lib + 13 BDD)
+
+---
+
+## 🎯 Session 3: Settings screen — editor, defaults, theming, keybindings (completed)
 
 **Goal: a real Settings screen where the user can change the text editor, defaults,
 theme and keybindings — persisted to `config.toml`.**
