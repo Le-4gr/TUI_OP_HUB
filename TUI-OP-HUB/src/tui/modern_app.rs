@@ -1017,6 +1017,7 @@ impl ModernApp {
                     && key.modifiers.is_empty()
                 {
                     self.open_login_user_manager();
+                    self.refresh_dev_user_list().await;
                     return;
                 }
                 if self.auth_mode == AuthMode::Login {
@@ -1346,6 +1347,14 @@ impl ModernApp {
                 // Processes: launch a known viewer (btop/htop/top) (US-PROC)
                 self.run_process_viewer().await;
             }
+            KeyCode::Char('D') if crate::auth::dev_mode_enabled() => {
+                // DEV: wipe entire database (users + entities + secrets)
+                self.dev_wipe_database().await;
+            }
+            KeyCode::Char('A') if crate::auth::dev_mode_enabled() => {
+                // DEV: delete all entities in the current tab
+                self.delete_all_in_tab().await;
+            }
             KeyCode::Char('m') => {
                 // Man page for the selected command (graceful when missing)
                 if self.ui.state == AppState::Commands {
@@ -1621,7 +1630,7 @@ impl ModernApp {
         let inner = header_block.inner(chunks[0]);
         f.render_widget(header_block, chunks[0]);
 
-        let header_text = Line::from(vec![
+        let mut header_text = vec![
             Span::styled("🎛️ ", Style::default().fg(self.ui.theme.accent)),
             Span::styled(
                 "TUI-OP-HUB",
@@ -1631,10 +1640,30 @@ impl ModernApp {
             ),
             Span::raw(" › "),
             Span::styled(title, Style::default().fg(color)),
-        ]);
+        ];
 
-        let header = Paragraph::new(header_text).alignment(Alignment::Center);
-        f.render_widget(header, inner);
+        // Live search bar while `/` is active (US-SRCH-01)
+        if self.search_state.active {
+            header_text.push(Span::raw("   "));
+            header_text.push(Span::styled(
+                "/",
+                Style::default()
+                    .fg(self.ui.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            header_text.push(Span::styled(
+                format!("{}│", self.search_state.query),
+                Style::default()
+                    .fg(self.ui.theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            header_text.push(Span::styled(
+                " (Enter: apply · Esc: cancel)",
+                Style::default().fg(self.ui.theme.border),
+            ));
+        }
+
+        let header = Paragraph::new(Line::from(header_text)).alignment(Alignment::Center);
 
         // List content
         let list_block = Block::default()
@@ -1839,35 +1868,26 @@ impl ModernApp {
 
     /// Re-fetch the current tab and keep only items matching the search query.
     async fn apply_search_filter(&mut self) {
-        let q = self.search_state.query.to_lowercase();
+        let q = self.search_state.query.clone();
         match self.ui.state {
             AppState::Commands => {
                 let _ = self.fetch_commands().await;
-                self.commands_list.items.retain(|e| {
-                    e.name.to_lowercase().contains(&q)
-                        || e.description
-                            .as_ref()
-                            .map_or(false, |d| d.to_lowercase().contains(&q))
+                self.commands_list.items = fuzzy_rank(&self.commands_list.items, &q, |e| {
+                    (e.name.as_str(), e.description.as_deref().unwrap_or(""))
                 });
                 self.commands_list.selected = 0;
             }
             AppState::Projects => {
                 let _ = self.fetch_projects().await;
-                self.projects_list.items.retain(|p| {
-                    p.name.to_lowercase().contains(&q)
-                        || p.description
-                            .as_ref()
-                            .map_or(false, |d| d.to_lowercase().contains(&q))
+                self.projects_list.items = fuzzy_rank(&self.projects_list.items, &q, |p| {
+                    (p.name.as_str(), p.description.as_deref().unwrap_or(""))
                 });
                 self.projects_list.selected = 0;
             }
             AppState::Workflows => {
                 let _ = self.fetch_workflows().await;
-                self.workflows_list.items.retain(|e| {
-                    e.name.to_lowercase().contains(&q)
-                        || e.description
-                            .as_ref()
-                            .map_or(false, |d| d.to_lowercase().contains(&q))
+                self.workflows_list.items = fuzzy_rank(&self.workflows_list.items, &q, |e| {
+                    (e.name.as_str(), e.description.as_deref().unwrap_or(""))
                 });
                 self.workflows_list.selected = 0;
             }
@@ -1875,7 +1895,7 @@ impl ModernApp {
                 let _ = self.fetch_secrets().await;
                 self.secrets_list
                     .items
-                    .retain(|s| s.name.to_lowercase().contains(&q));
+                    .retain(|s| s.name.to_lowercase().contains(&q.to_lowercase()));
                 self.secrets_list.selected = 0;
             }
             _ => {}
@@ -3134,7 +3154,85 @@ impl ModernApp {
 
     // ── Phase 2: processes, project environments, SSH/GPG keygen ───────────
 
-    /// Show the man page for the selected command (US-CMD-05). Suspends the
+    // ── Database operations (dev mode; US-NF) ──────────────────────────────
+
+    /// Wipe the entire database (users + entities + secrets). Dev mode only.
+    async fn dev_wipe_database(&mut self) {
+        let tables = [
+            "DELETE FROM entity_tags",
+            "DELETE FROM entities",
+            "DELETE FROM workflow_runs",
+            "DELETE FROM secrets",
+            "DELETE FROM user_keys",
+            "DELETE FROM user_profiles",
+            "DELETE FROM projects",
+            "DELETE FROM tags",
+            "DELETE FROM seed_meta",
+        ];
+        let mut wiped = 0;
+        for sql in &tables {
+            match sqlx::query(sql).execute(&*self.pool).await {
+                Ok(r) => wiped += r.rows_affected(),
+                Err(e) => {
+                    self.status_message = Some(format!("\u{2717} Wipe failed: {}", e));
+                    return;
+                }
+            }
+        }
+        self.status_message = Some(format!("\u{2713} DEV: database wiped ({} rows)", wiped));
+        // Clear in-memory lists too
+        self.commands_list.clear();
+        self.projects_list.clear();
+        self.workflows_list.clear();
+        self.secrets_list.clear();
+        self.stats = DashboardStats::default();
+        // Don't fetch — get_or_create_user would recreate a profile
+    }
+
+    /// Delete all entities of the given type (US-CMD-07 group delete).
+    async fn delete_entities_by_type(&mut self, type_id: &str, label: &str) {
+        let entities = repository::list_entities(&*self.pool, Some(type_id), None).await;
+        match entities {
+            Ok(list) => {
+                let count = list.len();
+                for e in &list {
+                    let _ = repository::delete_entity(&*self.pool, &e.id).await;
+                }
+                self.status_message = Some(format!("\u{2713} Deleted {} {}(s)", count, label));
+                let _ = self.fetch_stats().await;
+                self.refresh_current_tab().await;
+            }
+            Err(e) => self.status_message = Some(format!("\u{2717} {}", e)),
+        }
+    }
+
+    /// Delete all entities in the current tab (dev mode group delete).
+    async fn delete_all_in_tab(&mut self) {
+        match self.ui.state {
+            AppState::Commands => {
+                self.delete_entities_by_type("cmd", "command").await;
+                self.delete_entities_by_type("script", "script").await;
+                self.delete_entities_by_type("app", "app").await;
+            }
+            AppState::Projects => {
+                let projects = repository::list_projects(&*self.pool)
+                    .await
+                    .unwrap_or_default();
+                for p in &projects {
+                    let _ = repository::delete_project(&*self.pool, &p.id).await;
+                }
+                self.status_message = Some(format!("\u{2713} Deleted {} projects", projects.len()));
+                let _ = self.fetch_projects().await;
+            }
+            AppState::Workflows => {
+                self.delete_entities_by_type("wf", "workflow").await;
+            }
+            _ => {
+                self.status_message = Some("Multi-delete not available for this tab".to_string());
+            }
+        }
+        let _ = self.fetch_stats().await;
+    }
     /// TUI and runs `man <name>`; notifies gracefully when `man` is not
     /// installed or no entry exists instead of failing.
     async fn show_man_page(&mut self) {
@@ -3702,6 +3800,14 @@ impl ModernApp {
                 self.advanced.active = true;
                 self.advanced.error = None;
             }
+            KeyCode::Char('D') if crate::auth::dev_mode_enabled() => {
+                // DEV: wipe entire database
+                self.dev_wipe_database().await;
+            }
+            KeyCode::Char('A') if crate::auth::dev_mode_enabled() => {
+                // DEV: delete all entities in the current tab
+                self.delete_all_in_tab().await;
+            }
             KeyCode::Char('d') if crate::auth::dev_mode_enabled() => {
                 // Developer mode: wipe ALL users without logging in so auth
                 // state can be reset while testing (two-step confirm)
@@ -4253,6 +4359,36 @@ impl ModernApp {
             .into_iter()
             .map(|(k, l)| (k.to_string(), l.to_string()))
             .collect()
+    }
+
+    #[doc(hidden)]
+    pub fn bdd_dev_user_list(&self) -> Vec<String> {
+        self.dev_user_list
+            .iter()
+            .map(|u| u.username.clone())
+            .collect()
+    }
+
+    #[doc(hidden)]
+    pub fn bdd_search_active(&self) -> bool {
+        self.search_state.active
+    }
+
+    #[doc(hidden)]
+    pub fn bdd_command_list(&self) -> (Vec<String>, usize) {
+        let items = self
+            .commands_list
+            .items
+            .iter()
+            .map(|e| e.name.clone())
+            .collect();
+        (items, self.commands_list.total_count)
+    }
+
+    #[doc(hidden)]
+    pub async fn bdd_goto_commands(&mut self) {
+        self.ui.state = AppState::Commands;
+        let _ = self.fetch_commands().await;
     }
 }
 

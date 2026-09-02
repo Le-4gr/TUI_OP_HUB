@@ -370,6 +370,10 @@ or with `TUI_OP_HUB_DEV=1`:
   logging in** — auth state resets instantly while testing, and the next signup
   becomes admin again
 - REST: `GET /users` (list) and `DELETE /users` (wipe) are available in dev mode only
+- Dev DB ops: `Shift+D` wipes the entire DB, `Shift+A` deletes all entities in the
+  current tab — both dev-mode only, work on any screen
+- Login dev manager (`u` on login screen): lists users, `x` deletes user + secrets,
+  `r` resets password to `reset-me`
 
 ## Project Layout
 

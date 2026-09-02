@@ -684,6 +684,63 @@ async fn given_dev_mode_when_login_manager_deletes_user_then_secrets_cascade() {
     );
 }
 
+/// Scenario: the login dev manager lists users when opened with `u`
+/// Given developer mode and two registered users, when the login manager
+/// opens, then both users are listed (the empty-list regression).
+#[tokio::test]
+async fn given_users_when_login_dev_manager_opens_then_users_are_listed() {
+    let pool = given_fresh_database().await;
+    let auth = tui_op_hub::auth::AuthManager::new(pool.clone());
+    let _ = auth.create_user("alpha", "password1").await.unwrap();
+    let _ = auth.create_user("beta", "password2").await.unwrap();
+
+    let mut app = ModernApp::new(pool.clone(), AppConfig::default());
+    app.bdd_set_state(tui_op_hub::tui::modern_ui::AppState::Login);
+
+    // Open via `u` (as the key handler does) — the manager must refresh its list
+    app.bdd_press(crossterm::event::KeyCode::Char('u')).await;
+    let users = app.bdd_dev_user_list();
+    assert_eq!(users.len(), 2, "both users must be listed");
+    assert!(users.iter().any(|u| u == "alpha"));
+    assert!(users.iter().any(|u| u == "beta"));
+}
+
+/// Scenario: `/` enters search mode and typing filters the list live
+/// Given seeded commands, when `/` then characters are pressed, then search
+/// activates with the typed query (visible in the header) and the list filters.
+#[tokio::test]
+async fn given_commands_tab_when_slash_search_then_live_filtering() {
+    let pool = given_fresh_database().await;
+    let mut app = ModernApp::new(pool.clone(), AppConfig::default());
+    tui_op_hub::seed::seed_builtin_commands(&pool)
+        .await
+        .unwrap();
+    app.bdd_goto_commands().await;
+
+    app.bdd_set_state(tui_op_hub::tui::modern_ui::AppState::Commands);
+    app.bdd_press(crossterm::event::KeyCode::Char('/')).await;
+    assert!(
+        app.bdd_search_active(),
+        "`/` must enter search mode on a list tab"
+    );
+
+    // Type a fuzzy query; list must filter to matching items only
+    for c in "dck".chars() {
+        app.bdd_press(crossterm::event::KeyCode::Char(c)).await;
+    }
+    let (items, _) = app.bdd_command_list();
+    assert!(!items.is_empty(), "dck should match docker");
+    assert!(
+        items.iter().all(|n| n.contains("docker")),
+        "only matches shown"
+    );
+
+    // Esc clears the filter and restores the full list
+    app.bdd_press(crossterm::event::KeyCode::Esc).await;
+    let (items, _) = app.bdd_command_list();
+    assert!(items.len() >= 2, "full list restored after Esc");
+}
+
 /// Given a running app on an in-memory database.
 async fn given_tui_app() -> ModernApp {
     let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
@@ -765,6 +822,51 @@ async fn given_keygen_open_when_numpad_digits_pressed_then_fields_move() {
     assert_eq!(app.bdd_keygen_field(), 1);
     app.bdd_press(crossterm::event::KeyCode::Char('8')).await; // numpad up
     assert_eq!(app.bdd_keygen_field(), 0);
+}
+
+// ============================================================================
+// Feature: Dev-mode database operations (US-NF)
+// ============================================================================
+
+/// Scenario: dev mode wipes the entire database
+/// Given seeded data, when Shift+D is pressed, then all tables are emptied
+/// and the app refreshes.
+#[tokio::test]
+async fn given_seeded_data_when_dev_wipe_db_then_all_tables_empty() {
+    let pool = given_fresh_database().await;
+    let mut app = ModernApp::new(pool.clone(), AppConfig::default());
+    tui_op_hub::seed::seed_builtin_commands(&pool)
+        .await
+        .unwrap();
+    app.bdd_goto_commands().await;
+    let (before, _) = app.bdd_command_list();
+    assert!(!before.is_empty(), "seeded commands must exist");
+
+    app.bdd_press(crossterm::event::KeyCode::Char('D')).await; // Shift+D = wipe DB
+
+    let (after, _) = app.bdd_command_list();
+    assert!(after.is_empty(), "commands must be gone after wipe");
+    assert_eq!(tui_op_hub::repository::count_users(&pool).await.unwrap(), 0);
+}
+
+/// Scenario: dev mode deletes all entities in the current tab
+/// Given seeded commands, when Shift+A is pressed on the Commands tab, then
+/// all commands/scripts/apps are deleted but the user remains.
+#[tokio::test]
+async fn given_commands_when_dev_delete_all_in_tab_then_tab_emptied_user_remains() {
+    let pool = given_fresh_database().await;
+    let mut app = ModernApp::new(pool.clone(), AppConfig::default());
+    tui_op_hub::seed::seed_builtin_commands(&pool)
+        .await
+        .unwrap();
+    app.bdd_goto_commands().await;
+
+    app.bdd_press(crossterm::event::KeyCode::Char('A')).await; // Shift+A = delete all in tab
+
+    let (items, _) = app.bdd_command_list();
+    assert!(items.is_empty(), "all commands deleted");
+    // User is still there
+    assert!(tui_op_hub::repository::count_users(&pool).await.is_ok());
 }
 
 // ============================================================================

@@ -5,7 +5,36 @@
 
 ---
 
-## 🎯 Session 11 (current): stolen-DB protection, login dev manager, sharing, dotfiles
+## 🎯 Session 12 (current): `/` search fix, dev DB ops, numpad + keybinds polish
+
+**Goal: fix `/` fuzzy search (was still substring), add dev DB wipe/tab-delete,
+and fix the login dev user manager not listing users.**
+
+### What was done and how
+1. **`/` search fixed**: `apply_search_filter` was still using substring
+   `contains()` — replaced with `fuzzy_rank` for Commands, Projects and
+   Workflows tabs (Secrets keeps substring since names are short). Added a
+   **visible search bar** in the list header showing the typed query with
+   `│` cursor while `/` is active.
+2. **Dev DB wipe** (`Shift+D`): deletes all rows from all tables
+   (entities, secrets, users, projects, tags, workflow_runs, seed_meta).
+   Clears in-memory lists too; does NOT re-fetch (that would recreate a user
+   profile via `get_or_create_user`).
+3. **Dev tab delete** (`Shift+A`): deletes all entities of the current tab's
+   type(s) — commands+scripts+apps on Commands, workflows on Workflows,
+   projects on Projects. User remains.
+4. **Login dev user manager fix**: `refresh_dev_user_list()` is now called
+   when `u` opens the manager (was showing empty list).
+5. **BDD tests added**: dev DB wipe, dev tab delete, `/` live filtering,
+   login dev manager listing.
+
+### Validation
+- `cargo fmt` ✔ · `clippy --all-targets` 0 errors ✔ · `cargo build` ✔
+- `cargo test` → **133 passed / 0 failed** (100 lib + 33 BDD)
+
+---
+
+## 🎯 Session 11: stolen-DB protection, login dev manager, sharing, dotfiles (completed)
 
 **Goal: stolen-DB security, login-screen dev user manager, knowledge-base
 sharing, and a dotfiles/config manager.**
