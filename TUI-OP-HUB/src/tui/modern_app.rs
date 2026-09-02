@@ -3100,7 +3100,18 @@ impl ModernApp {
             KeyCode::Tab | KeyCode::Down | KeyCode::Enter if field != 2 => {
                 self.keygen.select_next_field();
             }
-            KeyCode::BackTab | KeyCode::Up => self.keygen.select_previous_field(),
+            KeyCode::Char('2') => {
+                self.keygen.select_next_field();
+            }
+            KeyCode::BackTab | KeyCode::Up | KeyCode::Char('8') => {
+                self.keygen.select_previous_field();
+            }
+            KeyCode::Char('4') if field == 3 => {
+                self.keygen.kind = (self.keygen.kind + KEYGEN_KINDS.len() - 1) % KEYGEN_KINDS.len();
+            }
+            KeyCode::Char('6') if field == 3 => {
+                self.keygen.kind = (self.keygen.kind + 1) % KEYGEN_KINDS.len();
+            }
             KeyCode::Left if field == 3 => {
                 self.keygen.kind = (self.keygen.kind + KEYGEN_KINDS.len() - 1) % KEYGEN_KINDS.len();
             }
@@ -3314,6 +3325,14 @@ impl ModernApp {
             KeyCode::Esc | KeyCode::Char('q') => self.ui.state = AppState::Dashboard,
             KeyCode::Up | KeyCode::BackTab => self.settings.select_previous(),
             KeyCode::Down | KeyCode::Tab => self.settings.select_next(),
+            KeyCode::Char('8') => self.settings.select_previous(), // numpad 8
+            KeyCode::Char('2') => self.settings.select_next(),     // numpad 2
+            KeyCode::Char('7') | KeyCode::Char('9') => self.settings.selected = 0, // numpad home
+            KeyCode::Char('1') | KeyCode::Char('3') => {
+                self.settings.selected = SETTINGS_ROWS.len().saturating_sub(1) // numpad end
+            }
+            KeyCode::Char('4') if row == SETTINGS_THEME_ROW => self.cycle_theme(-1), // numpad left
+            KeyCode::Char('6') if row == SETTINGS_THEME_ROW => self.cycle_theme(1),  // numpad right
             KeyCode::Char('a') => {
                 // Advanced mode: visual theme colors + database/API options
                 self.advanced.active = true;
@@ -3441,6 +3460,14 @@ impl ModernApp {
             KeyCode::Esc => self.advanced.active = false,
             KeyCode::Up | KeyCode::BackTab => self.advanced.select_previous(),
             KeyCode::Down | KeyCode::Tab => self.advanced.select_next(),
+            KeyCode::Char('8') => self.advanced.select_previous(), // numpad 8
+            KeyCode::Char('2') => self.advanced.select_next(),     // numpad 2
+            KeyCode::Char('7') | KeyCode::Char('9') => self.advanced.selected = 0, // numpad home
+            KeyCode::Char('1') | KeyCode::Char('3') => {
+                self.advanced.selected = ADVANCED_ROWS.len().saturating_sub(1) // numpad end
+            }
+            KeyCode::Char('4') if is_advanced_color_row(row) => self.cycle_advanced_color(-1),
+            KeyCode::Char('6') if is_advanced_color_row(row) => self.cycle_advanced_color(1),
             KeyCode::Left if is_advanced_color_row(row) => self.cycle_advanced_color(-1),
             KeyCode::Right if is_advanced_color_row(row) => self.cycle_advanced_color(1),
             KeyCode::Enter => {
@@ -3641,6 +3668,70 @@ fn preset_index(name: &str) -> usize {
         .iter()
         .position(|p| p.eq_ignore_ascii_case(name))
         .unwrap_or(0)
+}
+
+impl ModernApp {
+    /// Public hooks for BDD integration tests ([`tests/bdd_scenarios.rs`]).
+    /// They expose just enough state to drive and assert the TUI without a
+    /// terminal; marked `#[doc(hidden)]` to keep them out of user docs.
+    ///
+    /// [`tests/bdd_scenarios.rs`]: ../../tests/bdd_scenarios.rs
+    #[doc(hidden)]
+    pub async fn bdd_press(&mut self, code: KeyCode) {
+        self.handle_key(KeyEvent::new(code, KeyModifiers::empty()))
+            .await;
+    }
+
+    #[doc(hidden)]
+    pub fn bdd_open_settings(&mut self) {
+        self.ui.state = AppState::Settings;
+    }
+
+    #[doc(hidden)]
+    pub fn bdd_select_settings_row(&mut self, row: usize) {
+        self.settings.selected = row;
+        self.advanced.active = false;
+    }
+
+    #[doc(hidden)]
+    pub fn bdd_settings_selected(&self) -> usize {
+        self.settings.selected
+    }
+
+    #[doc(hidden)]
+    pub fn bdd_open_advanced(&mut self) {
+        self.ui.state = AppState::Settings;
+        self.advanced.active = true;
+    }
+
+    #[doc(hidden)]
+    pub fn bdd_advanced_selected(&self) -> usize {
+        self.advanced.selected
+    }
+
+    #[doc(hidden)]
+    pub fn bdd_theme_name(&self) -> String {
+        self.config.theme.name.clone()
+    }
+
+    #[doc(hidden)]
+    pub fn bdd_theme_bg(&self) -> String {
+        self.config.theme.bg.clone()
+    }
+
+    #[doc(hidden)]
+    pub fn bdd_open_keygen(&mut self) {
+        self.ui.state = AppState::Secrets;
+        self.keygen = KeygenState {
+            open: true,
+            ..Default::default()
+        };
+    }
+
+    #[doc(hidden)]
+    pub fn bdd_keygen_field(&self) -> usize {
+        self.keygen.focused_field
+    }
 }
 
 /// Run the external editor over `content` using a temp file and return the

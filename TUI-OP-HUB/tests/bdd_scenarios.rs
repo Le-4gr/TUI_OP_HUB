@@ -558,8 +558,95 @@ fn given_advanced_visual_edits_when_saved_then_persisted() {
 }
 
 // ============================================================================
-// Feature: Phase 2 — admin users, file-backed workflows (US-SEC, US-WF)
+// Feature: Numpad support in Settings screens (US-APP-06 usability)
 // ============================================================================
+
+use tui_op_hub::config::AppConfig;
+use tui_op_hub::tui::list_state::{ADVANCED_ROWS, SETTINGS_ROWS};
+use tui_op_hub::tui::modern_app::ModernApp;
+
+/// Given a running app on an in-memory database.
+async fn given_tui_app() -> ModernApp {
+    let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
+    ModernApp::new(std::sync::Arc::new(pool), AppConfig::default())
+}
+
+/// Scenario: numpad navigation works in the Settings screen
+/// Given the Settings screen, when numpad digits are pressed (`2` down,
+/// `8` up, `1`/`3` last row), then the selection moves exactly like the
+/// arrow keys would — the keypad is not dead there anymore.
+#[tokio::test]
+async fn given_settings_open_when_numpad_digits_pressed_then_selection_moves() {
+    let mut app = given_tui_app().await;
+    app.bdd_open_settings();
+    let last = SETTINGS_ROWS.len() - 1;
+
+    app.bdd_press(crossterm::event::KeyCode::Char('2')).await; // numpad down
+    assert_eq!(app.bdd_settings_selected(), 1);
+    app.bdd_press(crossterm::event::KeyCode::Char('8')).await; // numpad up
+    assert_eq!(app.bdd_settings_selected(), 0);
+
+    app.bdd_press(crossterm::event::KeyCode::Char('1')).await; // numpad end
+    assert_eq!(app.bdd_settings_selected(), last);
+    app.bdd_press(crossterm::event::KeyCode::Char('7')).await; // numpad home
+    assert_eq!(app.bdd_settings_selected(), 0);
+}
+
+/// Scenario: numpad left/right cycles the theme preset
+/// Given the Theme row, when numpad `6`/`4` is pressed, then the preset
+/// cycles forward/backward like `→`/`←` do.
+#[tokio::test]
+async fn given_theme_row_when_numpad_left_right_then_preset_cycles() {
+    let mut app = given_tui_app().await;
+    app.bdd_open_settings();
+    app.bdd_select_settings_row(2); // theme row
+    assert_eq!(app.bdd_theme_name(), "dark");
+
+    app.bdd_press(crossterm::event::KeyCode::Char('6')).await; // numpad right
+    assert_eq!(app.bdd_theme_name(), "light");
+    app.bdd_press(crossterm::event::KeyCode::Char('4')).await; // numpad left
+    assert_eq!(app.bdd_theme_name(), "dark");
+}
+
+/// Scenario: numpad navigation and color cycling work in Advanced mode
+/// Given the Advanced screen, when numpad digits are pressed, then rows move
+/// and the focused color cycles through the palette.
+#[tokio::test]
+async fn given_advanced_open_when_numpad_digits_pressed_then_nav_and_colors_work() {
+    let mut app = given_tui_app().await;
+    app.bdd_open_advanced();
+    let last = ADVANCED_ROWS.len() - 1;
+
+    // Navigation
+    app.bdd_press(crossterm::event::KeyCode::Char('2')).await;
+    assert_eq!(app.bdd_advanced_selected(), 1);
+    app.bdd_press(crossterm::event::KeyCode::Char('1')).await; // numpad end
+    assert_eq!(app.bdd_advanced_selected(), last);
+
+    // Color cycling on the bg row (row 1): black -> white -> black
+    app.bdd_press(crossterm::event::KeyCode::Char('7')).await; // home
+    app.bdd_press(crossterm::event::KeyCode::Char('2')).await; // down to bg
+    assert_eq!(app.bdd_theme_bg(), "black");
+    app.bdd_press(crossterm::event::KeyCode::Char('6')).await; // numpad right
+    assert_eq!(app.bdd_theme_bg(), "white");
+    app.bdd_press(crossterm::event::KeyCode::Char('4')).await; // numpad left
+    assert_eq!(app.bdd_theme_bg(), "black");
+}
+
+/// Scenario: numpad navigation works in the keygen form
+/// Given the SSH/GPG keygen form, when numpad `2`/`8` is pressed, then the
+/// focused field moves; `4`/`6` on the Kind row cycles the key kind.
+#[tokio::test]
+async fn given_keygen_open_when_numpad_digits_pressed_then_fields_move() {
+    let mut app = given_tui_app().await;
+    app.bdd_open_keygen();
+    assert_eq!(app.bdd_keygen_field(), 0);
+
+    app.bdd_press(crossterm::event::KeyCode::Char('2')).await; // numpad down
+    assert_eq!(app.bdd_keygen_field(), 1);
+    app.bdd_press(crossterm::event::KeyCode::Char('8')).await; // numpad up
+    assert_eq!(app.bdd_keygen_field(), 0);
+}
 
 /// Scenario: the first user is admin and admins manage users
 /// Given a fresh database, when the first user signs up, then they are admin;

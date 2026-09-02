@@ -5,7 +5,36 @@
 
 ---
 
-## 🎯 Session 6 (current): Phase 2 kick-off
+## 🎯 Session 7 (current): numpad support in Settings + BDD tests
+
+**Goal: make the numpad work in the Settings screens (previously only Esc did
+anything) and cover the TUI screens with BDD tests.**
+
+### What was done and how
+1. **Numpad fix** (`handle_settings_key`, `handle_advanced_key`, `handle_keygen_key`):
+   with NumLock on, keypad keys arrive as plain digits and were ignored — now:
+   `2`=down, `8`=up, `4`=left, `6`=right (theme preset / color cycling),
+   `7`/`9`=first row, `1`/`3`=last row. Works in Settings, Advanced mode and the
+   keygen form; with NumLock off the keypad sends real arrows which already worked.
+2. **BDD hooks**: `ModernApp` gained `#[doc(hidden)] pub bdd_*` methods
+   (`bdd_press`, `bdd_open_settings/advanced/keygen`, `bdd_select_*`,
+   `bdd_theme_name/bg`, `bdd_settings_selected`, `bdd_advanced_selected`,
+   `bdd_keygen_field`) so `tests/bdd_scenarios.rs` can drive the TUI over the
+   public API without a terminal.
+3. **New BDD scenarios** (`Feature: Numpad support in Settings screens`):
+   - settings navigation via numpad digits (`2`/`8`/`1`/`7`)
+   - theme preset cycling via numpad `4`/`6` on the Theme row
+   - Advanced mode: numpad navigation + bg color cycling `black → white → black`
+   - keygen form field navigation via numpad `2`/`8`
+4. README: numpad key notes for Settings and Advanced mode.
+
+### Validation
+- `cargo fmt` ✔ · `clippy --all-targets` 0 errors ✔ · `cargo build` ✔
+- `cargo test` → **109 passed / 0 failed** (89 lib + 20 BDD)
+
+---
+
+## 🎯 Session 6: Phase 2 kick-off (completed)
 
 **Goal: start Phase 2 and implement the user's requested features.**
 

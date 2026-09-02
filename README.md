@@ -135,6 +135,9 @@ You can even override a single color of a preset — keep `name = nord` and add
 `primary = #89dceb` to tint just the primary color.
 
 ### Settings screen (key `6`)
+The **numpad works everywhere** here (NumLock on sends digits): `2`/`8` move,
+`4`/`6` cycle, `7`/`9` jump to the first row, `1`/`3` jump to the last row.
+
 | Key | Action |
 |:----|:-------|
 | ↑/↓ | Navigate setting rows |
@@ -159,6 +162,8 @@ A visual config editor with live preview:
 | Backspace | Reset: optional colors back to `(preset)`, others to defaults |
 | Ctrl+S | Save everything to `config.conf` |
 | Esc | Back to Settings |
+
+Numpad: `2`/`8` navigate, `4`/`6` cycle colors, `7`/`9` first row, `1`/`3` last row.
 
 ## Security
 
