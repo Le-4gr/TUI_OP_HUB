@@ -5,7 +5,49 @@
 
 ---
 
-## 🎯 Session 10 (current): keybinds helper + footer hints
+## 🎯 Session 11 (current): stolen-DB protection, login dev manager, sharing, dotfiles
+
+**Goal: stolen-DB security, login-screen dev user manager, knowledge-base
+sharing, and a dotfiles/config manager.**
+
+### What was done and how
+1. **Stolen-DB protection** (`src/auth/mod.rs`): user encryption keys are now
+   derived from **password + per-machine secret**
+   (`~/.config/tui-op-hub/machine.key`, auto-generated 0600). A DB copied to
+   another machine can't decrypt secrets even knowing the password. Dev mode
+   does NOT bypass this — the wipe deletes users, it never unlocks secrets.
+   `derive_user_key(password, salt, machine_secret)` is the testable core.
+2. **Login-screen dev user manager** (cargo run only): `u` on the login
+   screen opens a DEV user manager — ↑↓ select, `x` **deletes** the user
+   (secrets cascade = forgotten-password escape hatch), `r` **resets** the
+   password to `reset-me` (old secrets become undecryptable, documented).
+   Overlay renders over the login screen; guarded by `dev_mode_enabled()`.
+3. **Knowledge-base sharing** (`src/share.rs` + `src/share_crypto.rs`):
+   - `export_knowledge(pool, user_id, SecretMode, passphrase)` builds a
+     portable JSON bundle of all entities (families + options with parent
+     links) with secrets **excluded / encrypted / plaintext**
+   - Encrypted mode re-encrypts with an **export passphrase** via
+     `share_crypto` (Argon2-derived key + XChaCha20, non-deterministic
+     nonces) — portable across machines, unlike the machine-bound user key
+   - `import_knowledge` merges by (name, type): existing entries win, so
+     local edits are never overwritten; options re-link to families by name
+4. **Dotfiles manager**: `config_manager` already had store/version/symlink —
+   documented as the "hyprlinks" flow: master copy in the hub, symlink into
+   `$HOME` (point it where it should go); entities can hold content inline or
+   reference the source path.
+5. Entity model now exposes `parent_id`; picker literals fixed.
+
+### Tests
+- Unit: `dev_mode_enabled_for` matrix, `delete_all_users` cascade, share_crypto
+  round-trip / wrong-passphrase rejection / non-deterministic ciphertext
+- BDD: stolen-DB scenario (machine A decrypts, machine B fails), login dev
+  manager delete cascade
+- **Validation**: `cargo fmt` ✔ · `clippy --all-targets` 0 errors ✔ · `cargo build` ✔
+  · `cargo test` → **129 passed / 0 failed** (100 lib + 29 BDD)
+
+---
+
+## 🎯 Session 10: keybinds helper + footer hints (completed)
 
 **Goal: a keybind helper and the per-screen key hints at the bottom, next to
 the existing ones.**

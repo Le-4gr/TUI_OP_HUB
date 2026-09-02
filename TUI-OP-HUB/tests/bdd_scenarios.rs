@@ -625,6 +625,65 @@ fn given_any_state_when_hints_requested_then_hints_are_non_empty() {
 // Feature: Numpad support in Settings screens (US-APP-06 usability)
 // ============================================================================
 
+/// Scenario: a stolen database is useless without the machine key
+/// Given a user whose key was derived with machine secret A, when the same
+/// password+salt is derived with machine secret B (a different machine), then
+/// the ciphertext cannot be decrypted.
+#[tokio::test]
+async fn given_stolen_db_on_other_machine_when_decrypted_then_fails() {
+    let machine_a = [1u8; 32];
+    let machine_b = [2u8; 32];
+
+    let salt = "usersalt";
+    // Original machine: secrets encrypted under password+machineA
+    let key_a = tui_op_hub::auth::derive_user_key("hunter2", salt, &machine_a).unwrap();
+    let ct = tui_op_hub::auth::encrypt_value("my-token", &key_a).unwrap();
+
+    // Thief copies the DB to machine B and knows the password — still fails
+    let key_b = tui_op_hub::auth::derive_user_key("hunter2", salt, &machine_b).unwrap();
+    assert!(tui_op_hub::auth::decrypt_value(&ct, &key_b).is_err());
+
+    // The original machine still decrypts fine
+    assert_eq!(
+        tui_op_hub::auth::decrypt_value(&ct, &key_a).unwrap(),
+        "my-token"
+    );
+}
+
+/// Scenario: developer mode wipes users without login (covered end-to-end via
+/// the Settings screen in the earlier scenario; here the login-manager path).
+#[tokio::test]
+async fn given_dev_mode_when_login_manager_deletes_user_then_secrets_cascade() {
+    let pool = given_fresh_database().await;
+    let auth = tui_op_hub::auth::AuthManager::new(pool.clone());
+    let user_id = auth.create_user("victim", "password1").await.unwrap();
+    repository::get_or_create_user(&pool, "victim")
+        .await
+        .unwrap();
+    let enc = secrets::encrypt_for_user(&pool, &user_id, "data")
+        .await
+        .unwrap();
+    repository::create_secret(&pool, &user_id, "s", &enc)
+        .await
+        .unwrap();
+
+    // Simulate the login dev manager's delete action
+    repository::delete_user(&pool, &user_id).await.unwrap();
+    assert!(repository::list_secrets(&pool, &user_id)
+        .await
+        .unwrap()
+        .is_empty());
+    // The user's secrets are gone with them; password verification no longer
+    // succeeds for the deleted profile.
+    let verify = auth
+        .verify_password_by_username("victim", "password1")
+        .await;
+    assert!(
+        verify.is_err() || matches!(&verify, Ok(false)),
+        "deleted user must not verify"
+    );
+}
+
 /// Given a running app on an in-memory database.
 async fn given_tui_app() -> ModernApp {
     let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();

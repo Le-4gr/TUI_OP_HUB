@@ -12,6 +12,9 @@ pub struct Entity {
     pub metadata_json: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Parent command family (options are children of a `cmd`; US-CMD-01).
+    #[sqlx(default)]
+    pub parent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

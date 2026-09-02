@@ -250,6 +250,7 @@ LOG_LEVEL=debug
             metadata_json: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
+            parent_id: None,
         };
 
         let env = Environment::from_entity(&entity).unwrap();

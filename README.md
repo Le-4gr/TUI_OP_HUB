@@ -38,6 +38,20 @@ A terminal-based operations hub for command management, workflow automation, and
   from **any** screen (Esc/`?` closes it); every screen's footer shows its
   context-specific key hints (New/Edit/Delete/Run/Copy/Editor/Options/Man/
   Visual/Shell/Keygen/Find/…)
+- **Stolen-DB protection** (US-SEC): user encryption keys are bound to the
+  machine via `~/.config/tui-op-hub/machine.key` — a stolen `tuihub.db`
+  can't be decrypted elsewhere, even knowing the password; dev mode does
+  **not** bypass this (it deletes, never unlocks)
+- **Login-screen dev manager** (US-NF, cargo run only): press `u` on the login
+  screen to select users, **delete** them (secrets cascade) or **reset** a
+  forgotten password to `reset-me`
+- **Knowledge-base sharing** (`share` module): export commands/scripts/apps/
+  options/workflows to portable JSON with secrets **excluded**, **encrypted**
+  with an export passphrase (portable), or **plaintext** (opt-in); import
+  merges by name+type and never overwrites local edits
+- **Config file manager** (`config_manager`): store dotfiles centrally
+  (versioned), and **symlink** them into place (Hyprland-style "hyprlinks": the
+  DB holds the master copy, `$HOME` gets the link — point it where it should go)
 - **Seeded knowledge base**: common command families (git, docker, systemctl,
   **rc-service/rc-update for OpenRC**, ssh, curl, grep, find, tar, python3, cargo, …)
   are prepopulated with their **options as structured child entities** (flag +

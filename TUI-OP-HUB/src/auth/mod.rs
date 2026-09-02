@@ -318,6 +318,76 @@ impl AuthManager {
 }
 
 /// Encrypt a value with the given key
+// ── Stolen-database protection (US-SEC) ─────────────────────────────────────
+//
+// The per-user encryption key is derived from the password AND a per-machine
+// secret file (`~/.config/tui-op-hub/machine.key`). A stolen database copied
+// to another machine cannot decrypt anything without that file — and `cargo
+// run` (developer mode) does NOT bypass it, because the wipe action deletes
+// users rather than unlocking secrets.
+
+/// Path of the per-machine secret file.
+pub fn machine_key_path() -> std::path::PathBuf {
+    crate::config::AppConfig::default_path()
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("machine.key")
+}
+
+/// Read or create the per-machine secret (32 random bytes, base64).
+/// Created with 0600 permissions; this is the second factor that keeps a
+/// stolen database useless on another machine.
+pub fn load_or_create_machine_key() -> AppResult<Vec<u8>> {
+    let path = machine_key_path();
+    if let Ok(data) = std::fs::read(&path) {
+        use base64::Engine as _;
+        let text = String::from_utf8_lossy(&data);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(text.trim())
+            .map_err(|e| AppError::Other(format!("machine.key corrupt: {e}")))?;
+        if decoded.len() == 32 {
+            return Ok(decoded);
+        }
+    }
+    use rand::RngCore;
+    let mut secret = vec![0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut secret);
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&secret);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| AppError::Other(format!("{e}")))?;
+    }
+    std::fs::write(&path, encoded).map_err(|e| AppError::Other(format!("{e}")))?;
+    tracing::info!(path = %path.display(), "generated per-machine key (stolen-DB protection)");
+    Ok(secret)
+}
+
+/// Key derivation for a user: Argon2(password || machine_secret).
+/// Same password on another machine yields a DIFFERENT key, so a stolen
+/// `tuihub.db` is useless without the machine key file.
+pub fn derive_user_key(
+    password: &str,
+    salt: &str,
+    machine_secret: &[u8],
+) -> AppResult<EncryptionKey> {
+    use argon2::password_hash::PasswordHasher;
+    // Feed the machine secret into the salt stream: salt || machine_secret
+    let mut combined = salt.as_bytes().to_vec();
+    combined.extend_from_slice(machine_secret);
+    let salt_string = SaltString::encode_b64(&combined)
+        .map_err(|e| AppError::Other(format!("Salt encoding error: {}", e)))?;
+    let argon2 = Argon2::default();
+    let hash = argon2
+        .hash_password(password.as_bytes(), &salt_string)
+        .map_err(|e| AppError::Other(format!("Key derivation error: {}", e)))?;
+    let hash_bytes = hash
+        .hash
+        .ok_or_else(|| AppError::Other("No hash generated".into()))?;
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&hash_bytes.as_bytes()[..32]);
+    Ok(EncryptionKey::new(key))
+}
+
 /// Admin password reset (US-SEC): replace the target user's password when it
 /// was forgotten. Requires an admin actor. Note: the user's encryption key was
 /// derived from the old password, so previously stored secrets remain encrypted

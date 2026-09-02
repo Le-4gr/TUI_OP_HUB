@@ -528,6 +528,7 @@ mod tests {
                 metadata_json: None,
                 created_at: String::new(),
                 updated_at: String::new(),
+                parent_id: None,
             }],
             selected: 0,
         };

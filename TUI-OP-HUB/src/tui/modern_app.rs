@@ -166,6 +166,11 @@ pub struct ModernApp {
     keygen: KeygenState,
     // Developer mode: two-step confirmation for wiping all users
     dev_confirm_wipe: bool,
+    // Login-screen dev user manager (cargo run only)
+    dev_user_manager: bool,
+    dev_user_list: Vec<crate::models::UserProfile>,
+    dev_user_selected: usize,
+    dev_user_error: Option<String>,
     // Structured options popup for a command family (parent name, options)
     options_popup: Option<(String, Vec<(String, String)>)>,
     // Keybind helper overlay (? key; US-TUI-09)
@@ -221,6 +226,10 @@ impl ModernApp {
             advanced: AdvancedState::default(),
             keygen: KeygenState::default(),
             dev_confirm_wipe: false,
+            dev_user_manager: false,
+            dev_user_list: Vec::new(),
+            dev_user_selected: 0,
+            dev_user_error: None,
             options_popup: None,
             keybinds_overlay: false,
             // Overlays start closed
@@ -415,6 +424,10 @@ impl ModernApp {
     fn render_base(&self, f: &mut Frame) {
         match self.ui.state {
             AppState::Login => {
+                if self.dev_user_manager {
+                    self.render_login_user_manager(f);
+                    return;
+                }
                 if self.auth_mode == AuthMode::Login {
                     self.render_login(f);
                 } else {
@@ -995,6 +1008,17 @@ impl ModernApp {
 
         match self.ui.state {
             AppState::Login => {
+                if self.dev_user_manager {
+                    self.handle_login_dev_users_key(key).await;
+                    return;
+                }
+                if crate::auth::dev_mode_enabled()
+                    && key.code == KeyCode::Char('u')
+                    && key.modifiers.is_empty()
+                {
+                    self.open_login_user_manager();
+                    return;
+                }
                 if self.auth_mode == AuthMode::Login {
                     self.handle_login_key(key).await;
                 } else {
@@ -3234,6 +3258,26 @@ impl ModernApp {
         self.status_message = Some(format!("Project shell for '{}' closed", project.name));
     }
 
+    /// Login-screen dev user manager input (US-NF): navigate, delete, reset.
+    async fn handle_login_dev_users_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.dev_user_manager = false,
+            KeyCode::Up => {
+                if self.dev_user_selected > 0 {
+                    self.dev_user_selected -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if self.dev_user_selected + 1 < self.dev_user_list.len() {
+                    self.dev_user_selected += 1;
+                }
+            }
+            KeyCode::Char('x') => self.dev_delete_selected_user().await,
+            KeyCode::Char('r') => self.dev_reset_selected_password().await,
+            _ => {}
+        }
+    }
+
     /// Keygen form input (US-SEC-01): name/email/passphrase/kind + generate.
     async fn handle_keygen_key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -3407,7 +3451,132 @@ impl ModernApp {
         );
     }
 
-    /// Keygen form renderer (US-SEC-01).
+    // ── Login-screen dev user manager (US-NF, cargo run only) ──────────────
+
+    /// Open the dev user manager (login screen, dev mode only): `u` lists
+    /// users and lets you delete them or reset their password without login.
+    fn open_login_user_manager(&mut self) {
+        self.dev_user_manager = true;
+        self.dev_user_list = Vec::new();
+        self.dev_user_selected = 0;
+        self.dev_user_error = None;
+        self.dev_confirm_wipe = false;
+    }
+
+    /// Refresh the user list shown in the dev manager.
+    async fn refresh_dev_user_list(&mut self) {
+        self.dev_user_list = repository::list_user_profiles(&*self.pool)
+            .await
+            .unwrap_or_default();
+        if self.dev_user_selected >= self.dev_user_list.len() {
+            self.dev_user_selected = self.dev_user_list.len().saturating_sub(1);
+        }
+    }
+
+    /// Delete the selected user (secrets cascade; US-SEC forgotten password).
+    async fn dev_delete_selected_user(&mut self) {
+        let Some(user) = self.dev_user_list.get(self.dev_user_selected).cloned() else {
+            return;
+        };
+        match repository::delete_user(&*self.pool, &user.id).await {
+            Ok(()) => {
+                self.dev_user_error = Some(format!(
+                    "\u{2713} Deleted '{}' (secrets removed)",
+                    user.username
+                ));
+            }
+            Err(e) => self.dev_user_error = Some(format!("\u{2717} {}", e)),
+        }
+        self.refresh_dev_user_list().await;
+    }
+
+    /// Reset the selected user's password to `reset-me` (US-SEC forgotten
+    /// password). Existing secrets stay encrypted with the old key and can no
+    /// longer be decrypted — documented escape hatch.
+    async fn dev_reset_selected_password(&mut self) {
+        let Some(user) = self.dev_user_list.get(self.dev_user_selected).cloned() else {
+            return;
+        };
+        let salt = argon2::password_hash::SaltString::generate(
+            &mut argon2::password_hash::rand_core::OsRng,
+        );
+        let argon2 = argon2::Argon2::default();
+        use argon2::PasswordHasher;
+        let hash = match argon2.hash_password(b"reset-me", &salt) {
+            Ok(h) => h.to_string(),
+            Err(e) => {
+                self.dev_user_error = Some(format!("\u{2717} {}", e));
+                return;
+            }
+        };
+        match repository::set_password_hash(&*self.pool, &user.id, &hash, salt.as_str()).await {
+            Ok(()) => {
+                self.dev_user_error = Some(format!(
+                    "\u{2713} '{}' password reset to 'reset-me' (old secrets unrecoverable)",
+                    user.username
+                ));
+            }
+            Err(e) => self.dev_user_error = Some(format!("\u{2717} {}", e)),
+        }
+    }
+
+    /// Render the dev user manager (login screen; cargo run only).
+    fn render_login_user_manager(&self, f: &mut Frame) {
+        let area = self.centered_rect(60, 16, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .title(" \u{1f527} DEV: User Manager (no login) ")
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.warning))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+
+        let mut lines: Vec<Line> = Vec::new();
+        if self.dev_user_list.is_empty() {
+            lines.push(Line::from(Span::raw("No users. Create one via signup.")));
+        }
+        for (i, user) in self.dev_user_list.iter().enumerate() {
+            let selected = i == self.dev_user_selected;
+            let marker = if selected { "\u{25b6} " } else { "  " };
+            let admin = if user.is_admin { " [admin]" } else { "" };
+            let style = if selected {
+                Style::default()
+                    .fg(self.ui.theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(self.ui.theme.fg)
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{}{}{}", marker, user.username, admin),
+                style,
+            )));
+        }
+        if let Some(err) = &self.dev_user_error {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                err.clone(),
+                Style::default().fg(self.ui.theme.success),
+            )));
+        }
+        f.render_widget(Paragraph::new(lines), chunks[0]);
+
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "\u{2191}\u{2193} select \u{b7} x delete user+secrets \u{b7} r reset pw \u{2192} 'reset-me' \u{b7} Esc back",
+                Style::default().fg(self.ui.theme.border),
+            ))
+            .alignment(Alignment::Center),
+            chunks[1],
+        );
+    }
     fn render_keygen_form(&self, f: &mut Frame) {
         let area = self.centered_rect(60, 16, f);
         f.render_widget(Clear, area);
@@ -4465,6 +4634,7 @@ mod tests {
                     metadata_json: None,
                     created_at: String::new(),
                     updated_at: String::new(),
+                    parent_id: None,
                 }],
                 selected: 0,
             }),
