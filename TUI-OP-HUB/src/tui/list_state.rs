@@ -345,6 +345,76 @@ impl SettingsState {
     }
 }
 
+// ── Advanced settings screen (visual config, US-APP-01) ─────────────────────
+
+/// Advanced rows: 11 theme colors, then database/API options.
+pub const ADVANCED_ROWS: [&str; 14] = [
+    "fg",
+    "bg",
+    "accent",
+    "status_bg",
+    "primary",
+    "secondary",
+    "success",
+    "warning",
+    "error",
+    "border",
+    "highlight",
+    "db_path",
+    "api_bind",
+    "busy_timeout",
+];
+
+/// Rows `0..ADVANCED_COLOR_ROW_COUNT` are theme colors (visual swatch editor).
+pub const ADVANCED_COLOR_ROW_COUNT: usize = 11;
+
+/// Palette used by the `←`/`→` visual color cycling (named + hex entries).
+pub const ADVANCED_PALETTE: [&str; 14] = [
+    "black", "white", "red", "green", "yellow", "blue", "magenta", "cyan", "gray", "darkgray",
+    "#ff6600", "#3fb950", "#58a6ff", "#f85149",
+];
+
+/// True when the advanced row is a theme color (swatch + cycle editor).
+pub fn is_advanced_color_row(row: usize) -> bool {
+    row < ADVANCED_COLOR_ROW_COUNT
+}
+
+/// True when the advanced row is an optional theme override (clearable).
+pub fn is_advanced_optional_color(row: usize) -> bool {
+    row >= 4 && is_advanced_color_row(row) // primary…highlight
+}
+
+/// Advanced settings sub-screen: visual theme color editor (swatches, live
+/// `←`/`→` palette cycling, hex text editing) plus database/API options.
+/// Opened from the Settings screen with `a`.
+#[derive(Debug, Clone, Default)]
+pub struct AdvancedState {
+    pub active: bool,
+    pub selected: usize,
+    /// A text value is being edited (buffer holds the draft).
+    pub editing: bool,
+    pub buffer: String,
+    pub error: Option<String>,
+}
+
+impl AdvancedState {
+    pub fn select_next(&mut self) {
+        if self.selected + 1 < ADVANCED_ROWS.len() {
+            self.selected += 1;
+        }
+    }
+
+    pub fn select_previous(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    pub fn row_name(&self) -> &'static str {
+        ADVANCED_ROWS.get(self.selected).copied().unwrap_or("")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,6 +647,41 @@ mod tests {
         assert_eq!(PROJECT_FORM_FIELDS, 2);
         assert_eq!(WORKFLOW_FORM_FIELDS, 3);
         assert_eq!(SECRET_FORM_FIELDS, 2);
+    }
+
+    // ── Advanced settings state (visual config) ─────────────────────────────
+
+    #[test]
+    fn advanced_state_navigation_clamps() {
+        let mut adv = AdvancedState::default();
+        adv.select_previous(); // clamp at top
+        assert_eq!(adv.selected, 0);
+        for _ in 0..(ADVANCED_ROWS.len() + 5) {
+            adv.select_next();
+        }
+        assert_eq!(adv.selected, ADVANCED_ROWS.len() - 1, "clamped at bottom");
+        adv.select_next(); // still clamped
+        assert_eq!(adv.selected, ADVANCED_ROWS.len() - 1);
+        assert_eq!(adv.row_name(), "busy_timeout");
+    }
+
+    #[test]
+    fn advanced_rows_split_colors_and_system_options() {
+        assert_eq!(ADVANCED_ROWS.len(), 14);
+        assert!(is_advanced_color_row(0), "fg is a color row");
+        assert!(is_advanced_color_row(ADVANCED_COLOR_ROW_COUNT - 1));
+        assert!(!is_advanced_color_row(ADVANCED_COLOR_ROW_COUNT));
+        assert_eq!(ADVANCED_ROWS[ADVANCED_COLOR_ROW_COUNT], "db_path");
+
+        // primary…highlight are optional (clearable back to preset)
+        assert!(!is_advanced_optional_color(0), "fg is not optional");
+        assert!(is_advanced_optional_color(4), "primary is optional");
+        assert!(is_advanced_optional_color(10), "highlight is optional");
+        assert!(!is_advanced_optional_color(11), "db_path is not a color");
+
+        // Palette must contain at least one hex and one named color
+        assert!(ADVANCED_PALETTE.iter().any(|c| c.starts_with('#')));
+        assert!(ADVANCED_PALETTE.iter().any(|c| !c.starts_with('#')));
     }
 }
 

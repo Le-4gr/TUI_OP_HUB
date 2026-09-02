@@ -5,7 +5,49 @@
 
 ---
 
-## 🎯 Session 4 (current): Hyprland-style config, custom theming, docs & business structure
+## 🎯 Session 5 (current): Advanced mode — visual config editor in Settings
+
+**Goal: an Advanced mode inside Settings with a visual style/config editor
+(color swatches, live palette cycling, hex editing) plus system options.**
+
+### What was done and how
+1. **State** (`src/tui/list_state.rs`):
+   - `ADVANCED_ROWS` (14 rows): 11 theme colors (`fg`, `bg`, `accent`, `status_bg`,
+     `primary`, `secondary`, `success`, `warning`, `error`, `border`, `highlight`)
+     then `db_path`, `api_bind`, `busy_timeout`
+   - `ADVANCED_PALETTE` (named + hex colors) for visual `←`/`→` cycling
+   - `is_advanced_color_row` / `is_advanced_optional_color` helpers +
+     `AdvancedState` (active/selected/editing/buffer/error, clamped navigation)
+2. **Behavior** (`src/tui/modern_app.rs`):
+   - `a` in Settings opens Advanced; `Esc` returns to Settings (state stays `Settings`,
+     render dispatches on `advanced.active`)
+   - Color rows show a **live swatch** (`██` styled with the actual color);
+     `←`/`→`/`Enter` cycle through the palette **applied instantly to the running
+     theme**; `Enter` (or any row) also supports exact text input (hex `#rrggbb`,
+     paths, numbers); `Backspace` resets — optional colors back to `(preset)`,
+     base palette fields and system options to their defaults
+   - System rows: database path, API bind address (non-empty validation) and
+     busy timeout (number validation); all changes mark the config dirty and
+     `Ctrl+S` persists to `config.conf` from anywhere
+   - Design fix found by tests: `fg`/`bg`/`accent` are applied **directly** to the
+     live theme (not via `from_config`), because preset names intentionally ignore
+     those base fields — the visual editor must give instant feedback regardless
+3. **Docs**: README Settings section gains the Advanced-mode tables.
+
+### Tests
+- Unit (`list_state`): advanced navigation clamping, color/optional/system row
+  classification, palette contains named + hex entries
+- Behavioral (`modern_app`): `a` opens/`Esc` closes Advanced, color cycling updates
+  config **and** live theme, hex text edit stores + applies an optional override,
+  Backspace clears to preset, busy timeout validation (rejects `5000x`, accepts fix)
+- BDD: `given_advanced_visual_edits_when_saved_then_persisted` — cycled color + hex
+  override + system options survive a save/load round trip in Hyprland format
+- **Validation**: `cargo fmt` ✔ · `clippy --all-targets` 0 errors ✔ · `cargo build` ✔
+  · `cargo test` → **90 passed / 0 failed** (76 lib + 14 BDD)
+
+---
+
+## 🎯 Session 4: Hyprland-style config, custom theming, docs & business structure (completed)
 
 **Goal: Hyprland-style config file, user-defined themes, restructured docs — no
 functional changes; all tests still pass.**

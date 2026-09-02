@@ -74,10 +74,10 @@ impl Default for DatabaseConfig {
         }
     }
 }
-fn default_db_path() -> String {
+pub(crate) fn default_db_path() -> String {
     "tuihub.db".to_string()
 }
-fn default_busy_timeout() -> u64 {
+pub(crate) fn default_busy_timeout() -> u64 {
     5000
 }
 fn default_user() -> String {
@@ -96,7 +96,7 @@ impl Default for ApiConfig {
         }
     }
 }
-fn default_api_addr() -> String {
+pub(crate) fn default_api_addr() -> String {
     "127.0.0.1:0".to_string()
 }
 
@@ -179,16 +179,16 @@ impl Default for ThemeConfig {
 fn default_theme_name() -> String {
     "dark".to_string()
 }
-fn default_fg() -> String {
+pub(crate) fn default_fg() -> String {
     "white".to_string()
 }
-fn default_bg() -> String {
+pub(crate) fn default_bg() -> String {
     "black".to_string()
 }
-fn default_accent() -> String {
+pub(crate) fn default_accent() -> String {
     "yellow".to_string()
 }
-fn default_status_bg() -> String {
+pub(crate) fn default_status_bg() -> String {
     "blue".to_string()
 }
 

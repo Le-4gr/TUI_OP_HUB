@@ -159,6 +159,8 @@ pub struct ModernApp {
     search_state: SearchState,
     // Settings screen state
     settings: SettingsState,
+    // Advanced settings sub-screen (visual config)
+    advanced: AdvancedState,
     // Overlay states (forms, visual builder, popups)
     visual_form: Option<VisualWorkflowState>,
     confirm_delete: Option<ConfirmDelete>,
@@ -207,6 +209,7 @@ impl ModernApp {
             // Initialize search state
             search_state: SearchState::default(),
             settings: SettingsState::default(),
+            advanced: AdvancedState::default(),
             // Overlays start closed
             visual_form: None,
             confirm_delete: None,
@@ -414,7 +417,11 @@ impl ModernApp {
             }
             AppState::Settings => {
                 // Dedicated settings screen (US-APP-01/02/06)
-                self.render_settings_screen(f);
+                if self.advanced.active {
+                    self.render_advanced_screen(f);
+                } else {
+                    self.render_settings_screen(f);
+                }
             }
             AppState::Help => {
                 // Delegate to UI for help
@@ -2976,6 +2983,11 @@ impl ModernApp {
 
     /// Settings input: navigate rows, edit values, capture keybindings, save.
     async fn handle_settings_key(&mut self, key: KeyEvent) {
+        // Advanced sub-screen (visual config) sits on top of Settings
+        if self.advanced.active {
+            self.handle_advanced_key(key).await;
+            return;
+        }
         // Ctrl+S persists the config to disk from anywhere in Settings
         if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.save_settings().await;
@@ -3024,6 +3036,11 @@ impl ModernApp {
             KeyCode::Esc | KeyCode::Char('q') => self.ui.state = AppState::Dashboard,
             KeyCode::Up | KeyCode::BackTab => self.settings.select_previous(),
             KeyCode::Down | KeyCode::Tab => self.settings.select_next(),
+            KeyCode::Char('a') => {
+                // Advanced mode: visual theme colors + database/API options
+                self.advanced.active = true;
+                self.advanced.error = None;
+            }
             KeyCode::Left if row == SETTINGS_THEME_ROW => self.cycle_theme(-1),
             KeyCode::Right if row == SETTINGS_THEME_ROW => self.cycle_theme(1),
             KeyCode::Enter => match row {
@@ -3114,6 +3131,229 @@ impl ModernApp {
             }
             Err(e) => self.settings.error = Some(format!("Save failed: {}", e)),
         }
+    }
+
+    // ── Advanced mode: visual config editor (US-APP-01) ────────────────────
+
+    /// Advanced screen input: visual color cycling, text editing, reset.
+    async fn handle_advanced_key(&mut self, key: KeyEvent) {
+        // Ctrl+S persists from anywhere in Advanced mode
+        if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.save_settings().await;
+            return;
+        }
+
+        // A text value is being edited
+        if self.advanced.editing {
+            match key.code {
+                KeyCode::Esc => self.advanced.editing = false,
+                KeyCode::Enter => self.apply_advanced_text(),
+                KeyCode::Backspace => {
+                    self.advanced.buffer.pop();
+                }
+                KeyCode::Char(c) => self.advanced.buffer.push(c),
+                _ => {}
+            }
+            return;
+        }
+
+        let row = self.advanced.selected;
+        let name = ADVANCED_ROWS.get(row).copied().unwrap_or("");
+        match key.code {
+            KeyCode::Esc => self.advanced.active = false,
+            KeyCode::Up | KeyCode::BackTab => self.advanced.select_previous(),
+            KeyCode::Down | KeyCode::Tab => self.advanced.select_next(),
+            KeyCode::Left if is_advanced_color_row(row) => self.cycle_advanced_color(-1),
+            KeyCode::Right if is_advanced_color_row(row) => self.cycle_advanced_color(1),
+            KeyCode::Enter => {
+                // Edit any value inline (hex colors, db path, api bind, timeout)
+                self.advanced.editing = true;
+                self.advanced.buffer = self.advanced_value(row);
+            }
+            KeyCode::Backspace | KeyCode::Delete if is_advanced_color_row(row) => {
+                self.reset_advanced_color(row);
+            }
+            KeyCode::Backspace => {
+                // Reset non-color advanced option to its default
+                self.reset_advanced_option(name);
+            }
+            _ => {}
+        }
+    }
+
+    /// Current value of an advanced row (for display and editing).
+    fn advanced_value(&self, row: usize) -> String {
+        let name = ADVANCED_ROWS.get(row).copied().unwrap_or("");
+        match name {
+            "fg" => self.config.theme.fg.clone(),
+            "bg" => self.config.theme.bg.clone(),
+            "accent" => self.config.theme.accent.clone(),
+            "status_bg" => self.config.theme.status_bg.clone(),
+            "primary" => self.config.theme.primary.clone().unwrap_or_default(),
+            "secondary" => self.config.theme.secondary.clone().unwrap_or_default(),
+            "success" => self.config.theme.success.clone().unwrap_or_default(),
+            "warning" => self.config.theme.warning.clone().unwrap_or_default(),
+            "error" => self.config.theme.error.clone().unwrap_or_default(),
+            "border" => self.config.theme.border.clone().unwrap_or_default(),
+            "highlight" => self.config.theme.highlight.clone().unwrap_or_default(),
+            "db_path" => self.config.database.path.clone(),
+            "api_bind" => self.config.api.bind_addr.clone(),
+            "busy_timeout" => self.config.database.busy_timeout_ms.to_string(),
+            _ => String::new(),
+        }
+    }
+
+    /// Apply the edited text buffer to the advanced row.
+    fn apply_advanced_text(&mut self) {
+        let name = self.advanced.row_name();
+        let value = self.advanced.buffer.trim().to_string();
+        match name {
+            "busy_timeout" => match value.parse::<u64>() {
+                Ok(n) => {
+                    self.config.database.busy_timeout_ms = n;
+                    self.advanced.editing = false;
+                    self.advanced.error = None;
+                    self.settings.dirty = true;
+                    self.status_message =
+                        Some("✓ Busy timeout applied (Ctrl+S to persist)".to_string());
+                }
+                _ => self.advanced.error = Some("Busy timeout must be a number".to_string()),
+            },
+            "fg" | "bg" | "accent" | "status_bg" | "primary" | "secondary" | "success"
+            | "warning" | "error" | "border" | "highlight" => {
+                self.set_advanced_color(name, value.clone());
+                self.advanced.editing = false;
+                self.advanced.error = None;
+                self.settings.dirty = true;
+                self.status_message = Some(format!("✓ {} = {} (Ctrl+S to persist)", name, value));
+            }
+            "db_path" => {
+                if value.is_empty() {
+                    self.advanced.error = Some("Database path cannot be empty".to_string());
+                } else {
+                    self.config.database.path = value;
+                    self.advanced.editing = false;
+                    self.advanced.error = None;
+                    self.settings.dirty = true;
+                    self.status_message =
+                        Some("✓ Database path applied (Ctrl+S to persist)".to_string());
+                }
+            }
+            "api_bind" => {
+                if value.is_empty() {
+                    self.advanced.error = Some("Bind address cannot be empty".to_string());
+                } else {
+                    self.config.api.bind_addr = value;
+                    self.advanced.editing = false;
+                    self.advanced.error = None;
+                    self.settings.dirty = true;
+                    self.status_message =
+                        Some("✓ Bind address applied (Ctrl+S to persist)".to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Set a theme color and refresh the live theme.
+    ///
+    /// Base palette fields (`fg`/`bg`/`accent`) are applied directly to the
+    /// running theme so the visual editor gives instant feedback even when a
+    /// preset is active; optional overrides (`primary`…`highlight`) are
+    /// re-derived through `from_config`.
+    fn set_advanced_color(&mut self, name: &str, value: String) {
+        match name {
+            "fg" => {
+                self.config.theme.fg = value.clone();
+                self.ui.theme.fg = crate::config::parse_color(&value);
+            }
+            "bg" => {
+                self.config.theme.bg = value.clone();
+                self.ui.theme.bg = crate::config::parse_color(&value);
+            }
+            "accent" => {
+                self.config.theme.accent = value.clone();
+                self.ui.theme.accent = crate::config::parse_color(&value);
+            }
+            "status_bg" => {
+                self.config.theme.status_bg = value.clone();
+            }
+            "primary" => self.config.theme.primary = Some(value),
+            "secondary" => self.config.theme.secondary = Some(value),
+            "success" => self.config.theme.success = Some(value),
+            "warning" => self.config.theme.warning = Some(value),
+            "error" => self.config.theme.error = Some(value),
+            "border" => self.config.theme.border = Some(value),
+            "highlight" => self.config.theme.highlight = Some(value),
+            _ => {}
+        }
+        if !matches!(name, "fg" | "bg" | "accent" | "status_bg") {
+            self.ui.theme = ModernTheme::from_config(&self.config.theme);
+        }
+        self.settings.dirty = true;
+    }
+
+    /// Cycle an advanced color row through [`ADVANCED_PALETTE`] (US-APP-01).
+    /// Applied live to the running theme.
+    fn cycle_advanced_color(&mut self, dir: i32) {
+        let row = self.advanced.selected;
+        let name = ADVANCED_ROWS.get(row).copied().unwrap_or("");
+        if name.is_empty() {
+            return;
+        }
+        let current = self.advanced_value(row);
+        let len = ADVANCED_PALETTE.len() as i32;
+        let idx = ADVANCED_PALETTE
+            .iter()
+            .position(|c| c.eq_ignore_ascii_case(&current))
+            .map(|i| i as i32)
+            .unwrap_or(0);
+        let next = (idx + dir).rem_euclid(len) as usize;
+        self.set_advanced_color(name, ADVANCED_PALETTE[next].to_string());
+        self.advanced.error = None;
+        self.status_message = Some(format!(
+            "✓ {} = {} (Ctrl+S to persist)",
+            name, ADVANCED_PALETTE[next]
+        ));
+    }
+
+    /// Clear a theme color override: optional colors go back to the preset,
+    /// base palette fields return to their defaults.
+    fn reset_advanced_color(&mut self, row: usize) {
+        let name = ADVANCED_ROWS.get(row).copied().unwrap_or("");
+        match name {
+            "primary" => self.config.theme.primary = None,
+            "secondary" => self.config.theme.secondary = None,
+            "success" => self.config.theme.success = None,
+            "warning" => self.config.theme.warning = None,
+            "error" => self.config.theme.error = None,
+            "border" => self.config.theme.border = None,
+            "highlight" => self.config.theme.highlight = None,
+            "fg" => self.config.theme.fg = crate::config::default_fg(),
+            "bg" => self.config.theme.bg = crate::config::default_bg(),
+            "accent" => self.config.theme.accent = crate::config::default_accent(),
+            "status_bg" => self.config.theme.status_bg = crate::config::default_status_bg(),
+            _ => {}
+        }
+        self.ui.theme = ModernTheme::from_config(&self.config.theme);
+        self.advanced.error = None;
+        self.settings.dirty = true;
+        self.status_message = Some(format!("✓ {} reset (Ctrl+S to persist)", name));
+    }
+
+    /// Reset a non-color advanced option to its built-in default.
+    fn reset_advanced_option(&mut self, name: &str) {
+        match name {
+            "db_path" => self.config.database.path = crate::config::default_db_path(),
+            "api_bind" => self.config.api.bind_addr = crate::config::default_api_addr(),
+            "busy_timeout" => {
+                self.config.database.busy_timeout_ms = crate::config::default_busy_timeout()
+            }
+            _ => {}
+        }
+        self.advanced.error = None;
+        self.settings.dirty = true;
+        self.status_message = Some(format!("✓ {} reset (Ctrl+S to persist)", name));
     }
 }
 
@@ -3262,13 +3502,109 @@ impl ModernApp {
         f.render_widget(Paragraph::new(lines), chunks[0]);
 
         let footer = if self.settings.dirty {
-            "↑↓ navigate · Enter edit · ←/→ theme · Ctrl+S SAVE · Esc back  (unsaved changes)"
+            "↑↓ navigate · Enter edit · ←/→ theme · a: advanced · Ctrl+S SAVE · Esc back  (unsaved)"
         } else {
-            "↑↓ navigate · Enter edit · ←/→ theme · Ctrl+S save · Esc back"
+            "↑↓ navigate · Enter edit · ←/→ theme · a: advanced · Ctrl+S save · Esc back"
         };
         f.render_widget(
             Paragraph::new(Span::styled(
                 footer,
+                Style::default().fg(self.ui.theme.border),
+            ))
+            .alignment(Alignment::Center),
+            chunks[1],
+        );
+    }
+
+    /// Full-screen Advanced settings: visual theme colors + system options.
+    fn render_advanced_screen(&self, f: &mut Frame) {
+        let area = f.area();
+        let block = Block::default()
+            .title(" ⚙️ Advanced Settings ")
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.secondary))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+
+        let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+            "Theme colors  (←/→ cycle, Backspace resets)",
+            Style::default()
+                .fg(self.ui.theme.highlight)
+                .add_modifier(Modifier::BOLD),
+        ))];
+        if let Some(err) = &self.advanced.error {
+            lines.push(Line::from(Span::styled(
+                err.clone(),
+                Style::default()
+                    .fg(self.ui.theme.error)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
+
+        for (row, name) in ADVANCED_ROWS.iter().enumerate() {
+            if row == ADVANCED_COLOR_ROW_COUNT {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "System",
+                    Style::default()
+                        .fg(self.ui.theme.highlight)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
+            let selected = row == self.advanced.selected;
+            let label = match *name {
+                "fg" => "Text (fg)".to_string(),
+                "bg" => "Background".to_string(),
+                "accent" => "Accent".to_string(),
+                "status_bg" => "Status bar bg".to_string(),
+                "db_path" => "Database path".to_string(),
+                "api_bind" => "API bind address".to_string(),
+                "busy_timeout" => "DB busy timeout (ms)".to_string(),
+                other => format!("{} color", other),
+            };
+            let raw = self.advanced_value(row);
+            let value = if self.advanced.editing && selected {
+                format!("{}|", self.advanced.buffer)
+            } else if is_advanced_optional_color(row) && raw.is_empty() {
+                "(preset)".to_string()
+            } else {
+                raw.clone()
+            };
+            let prefix = if selected { "▶ " } else { "  " };
+            let style = if selected {
+                Style::default()
+                    .fg(self.ui.theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(self.ui.theme.fg)
+            };
+            let mut spans = vec![Span::styled(format!("{}{:<22}", prefix, label), style)];
+            if is_advanced_color_row(row) {
+                // Visual swatch: shows the actual color next to its name
+                let swatch_style = if self.advanced.editing && selected {
+                    Style::default().fg(self.ui.theme.fg)
+                } else {
+                    Style::default().fg(crate::config::parse_color(&raw))
+                };
+                spans.push(Span::styled("██ ", swatch_style));
+            }
+            spans.push(Span::styled(value, style));
+            lines.push(Line::from(spans));
+        }
+
+        f.render_widget(Paragraph::new(lines), chunks[0]);
+
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "↑↓ navigate · ←/→ cycle color · Enter edit · Backspace reset · Ctrl+S save · Esc back",
                 Style::default().fg(self.ui.theme.border),
             ))
             .alignment(Alignment::Center),
@@ -3587,5 +3923,93 @@ mod tests {
         assert_eq!(loaded.general.editor, "helix");
         assert_eq!(loaded.tui.page_size, 40);
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Advanced mode (visual config) ───────────────────────────────────────
+
+    /// Scenario: open Advanced mode from Settings
+    /// Given the Settings screen, when `a` is pressed, then the advanced
+    /// visual config screen opens (and Esc returns to Settings).
+    #[tokio::test]
+    async fn given_settings_when_a_pressed_then_advanced_opens() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Settings;
+
+        app.handle_key(key(KeyCode::Char('a'))).await;
+        assert!(app.advanced.active);
+
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert!(!app.advanced.active);
+        assert_eq!(app.ui.state, AppState::Settings, "stays in Settings");
+    }
+
+    /// Scenario: cycle a color in Advanced mode
+    /// Given the bg row in Advanced mode, when → is pressed, then the config
+    /// bg color changes and the live theme is refreshed.
+    #[tokio::test]
+    async fn given_advanced_when_color_cycled_then_config_and_theme_update() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Settings;
+        app.handle_key(key(KeyCode::Char('a'))).await; // open advanced
+        app.advanced.selected = 1; // bg row
+        let before = app.config.theme.bg.clone();
+
+        app.handle_key(key(KeyCode::Right)).await;
+
+        let after = app.config.theme.bg.clone();
+        assert_ne!(before, after, "cycling must change the color");
+        assert!(app.settings.dirty);
+        // Live theme reflects the new bg
+        assert_eq!(app.ui.theme.bg, crate::config::parse_color(&after));
+    }
+
+    /// Scenario: set a hex color via text editing in Advanced mode
+    /// Given the primary row, when edited to a hex value, then the optional
+    /// override is stored and applied to the live theme.
+    #[tokio::test]
+    async fn given_advanced_when_hex_color_edited_then_override_applies() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Settings;
+        app.handle_key(key(KeyCode::Char('a'))).await;
+        app.advanced.selected = 4; // primary row (optional override)
+
+        app.handle_key(key(KeyCode::Backspace)).await; // clear to preset
+        assert!(app.config.theme.primary.is_none());
+
+        app.handle_key(key(KeyCode::Enter)).await; // start editing
+        for c in "#3366ff".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Enter)).await; // apply
+
+        assert_eq!(
+            app.config.theme.primary.as_deref(),
+            Some("#3366ff"),
+            "hex override stored"
+        );
+        assert_eq!(app.ui.theme.primary, crate::config::parse_color("#3366ff"));
+    }
+
+    /// Scenario: edit and validate the busy timeout in Advanced mode
+    /// Given the busy_timeout row, when a non-number is applied, then an error
+    /// shows and the value is unchanged; a valid number applies.
+    #[tokio::test]
+    async fn given_advanced_when_busy_timeout_edited_then_validated() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Settings;
+        app.handle_key(key(KeyCode::Char('a'))).await;
+        app.advanced.selected = 13; // busy_timeout row
+
+        app.handle_key(key(KeyCode::Enter)).await; // edit ("5000")
+        app.handle_key(key(KeyCode::Char('x'))).await; // "5000x"
+        app.handle_key(key(KeyCode::Enter)).await; // rejected
+        assert!(app.advanced.error.is_some());
+        assert_eq!(app.config.database.busy_timeout_ms, 5000);
+
+        // Fix the value: backspace removes 'x', then apply
+        app.handle_key(key(KeyCode::Backspace)).await;
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert!(app.advanced.error.is_none());
+        assert_eq!(app.config.database.busy_timeout_ms, 5000);
     }
 }

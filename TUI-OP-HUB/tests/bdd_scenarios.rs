@@ -522,3 +522,37 @@ fn given_custom_theme_colors_when_mapped_then_overrides_apply() {
         tui_op_hub::tui::modern_ui::ModernTheme::default().warning
     );
 }
+
+/// Scenario: advanced visual config persists to the config file
+/// Given the advanced screen with a cycled color and edited option, when the
+/// config is saved, then the palette and system options load back from disk.
+#[test]
+fn given_advanced_visual_edits_when_saved_then_persisted() {
+    let mut cfg = tui_op_hub::config::AppConfig::default();
+
+    // Simulate the visual color cycling on the bg row and a hex override
+    let palette_next = "#ff6600";
+    cfg.theme.bg = palette_next.to_string();
+    cfg.theme.primary = Some("#58a6ff".to_string());
+    cfg.database.busy_timeout_ms = 2500;
+    cfg.database.path = "custom.db".to_string();
+
+    let path =
+        std::env::temp_dir().join(format!("tui-op-hub-bdd-adv-{}.conf", uuid::Uuid::new_v4()));
+    cfg.save(&path).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let loaded = tui_op_hub::config::AppConfig::load(&path).unwrap();
+    let _ = std::fs::remove_file(&path);
+
+    // Hyprland-style file carries the visual edits
+    assert!(text.contains("bg = \"#ff6600\""));
+    assert!(text.contains("primary = \"#58a6ff\""));
+    assert_eq!(loaded.theme.bg, "#ff6600");
+    assert_eq!(loaded.theme.primary.as_deref(), Some("#58a6ff"));
+    assert_eq!(loaded.database.busy_timeout_ms, 2500);
+    assert_eq!(loaded.database.path, "custom.db");
+
+    // And the theme engine maps them onto the live palette
+    let theme = tui_op_hub::tui::modern_ui::ModernTheme::from_config(&loaded.theme);
+    assert_eq!(theme.primary, ratatui::style::Color::Rgb(0x58, 0xa6, 0xff));
+}

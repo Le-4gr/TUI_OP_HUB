@@ -126,8 +126,25 @@ You can even override a single color of a preset — keep `name = nord` and add
 | ↑/↓ | Navigate setting rows |
 | Enter | Edit value (editor / page size) or start key rebind capture |
 | ←/→ | Cycle theme preset (applied live) |
+| a | **Advanced mode** — visual theme color editor + system options |
 | Ctrl+S | Save settings to `config.conf` |
 | Esc | Back to dashboard |
+
+### Advanced mode (press `a` in Settings)
+A visual config editor with live preview:
+
+| Section | Rows |
+|:---|:---|
+| Theme colors | `fg`, `bg`, `accent`, `status_bg`, `primary`, `secondary`, `success`, `warning`, `error`, `border`, `highlight` — each row shows a **live color swatch** |
+| System | Database path, API bind address, DB busy timeout |
+
+| Key | Action |
+|:----|:-------|
+| ←/→ | **Cycle the row's color** through the palette (applied live) |
+| Enter | Type an exact value (named color or hex `#rrggbb`, paths, numbers) |
+| Backspace | Reset: optional colors back to `(preset)`, others to defaults |
+| Ctrl+S | Save everything to `config.conf` |
+| Esc | Back to Settings |
 
 ## Security
 
