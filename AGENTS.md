@@ -17,8 +17,15 @@ developer's/power-user's daily tooling into one keyboard-driven app:
   (`run_command`, `query_entity`, `emit_event`, `log`) and run-history tracking
 - **Secrets management** — XChaCha20Poly1305 AEAD encryption, per-user keys, multi-user profiles
 - **REST API** — Axum HTTP server on localhost (default `127.0.0.1:3001`) mirroring the core features
-- **Modern TUI** — ratatui + crossterm UI with login screen, dashboard, and 7 tabs
-  (Dashboard, Commands, Projects, Tags, Search, Workflows, Secrets)
+- **Knowledge import/export** — portable JSON bundles (full bundle, bare AI-generated
+  entity array, or `entities`-only object — all import leniently); see `docs/IMPORT_EXPORT.md`
+- **Cron scheduling** — workflows run on cron expressions via the built-in scheduler daemon
+- **Background service** — systemd user service (or cron/any init) runs the hub headless
+  (`--headless`: scheduler + API); the TUI runs on demand and coexists with the service
+- **Modern TUI** — ratatui + crossterm UI with login screen, dashboard, and 8 tabs
+  (Dashboard, Commands, Apps, Scripts, Projects, Workflows, Secrets, Settings);
+  number keys 1-8, `Enter` on a project opens its detail view, `` ` `` opens a new
+  terminal window, `/` search with a visible search bar, `I`/`x` import/export
 
 **Long-term vision** (see `bp.md`): a unified "system control center" that will also cover
 process monitoring, package management, environment/config management, SSH host management,
@@ -36,8 +43,12 @@ TUI-OP-HUB/                       # repo root (docs live here)
 ├── AGENTS.md                     # ← this file
 ├── WORK.md                       # live work log for AI agents (ongoing tasks, what/how)
 ├── README.md                     # user-facing readme (features, config, API)
+├── install.sh                    # release installer: build + install binary + enable service
+├── INSTALL.md                    # quick install instructions (repo root)
 ├── docs/                         # documentation (start at docs/INDEX.md)
 │   ├── INDEX.md                  # map of all documentation
+│   ├── INSTALL.md                # service/TUI coexistence, secrets key, non-systemd inits
+│   ├── IMPORT_EXPORT.md          # knowledge bundle schema, AI prompt template, cron workflows
 │   └── business/                 # business structure
 │       ├── VISION.md             # product vision & personas
 │       ├── ROADMAP.md            # phase plan
@@ -59,15 +70,26 @@ TUI-OP-HUB/                       # repo root (docs live here)
         ├── error.rs              # AppError / AppResult
         ├── config/               # AppConfig — Hyprland-style config.conf (themes, keybindings)
         ├── db/                   # SQLite pool (WAL) + migrations/
-        │   └── migrations/       # 0001_init.sql, 0002_user_auth.sql
+        │   └── migrations/       # 0001_init, 0002_user_auth, 0003_phase2, 0004_tooling
         ├── models/               # data models (entities, projects, secrets, plugins, ...)
         ├── repository/           # data access layer (all SQL lives here)
-        ├── api/                  # axum routes/handlers
+        ├── api/                  # axum routes/handlers (entities, projects, workflows,
+        │                         # schedules, export/import)
         ├── tui/                  # ratatui UI (modern_app, modern_ui, login_view, list_state)
         ├── secrets/              # encryption helpers
         ├── auth/                 # Argon2 password auth, per-user EncryptionKey (zeroized)
         ├── workflow/             # Lua workflow engine
-        ├── scheduler/            # cron-based WorkflowScheduler daemon (cron crate)
+        ├── scheduler/            # cron-based WorkflowScheduler daemon (cron crate);
+        │                         # validate_cron normalizes classic 5-field crontab syntax
+        ├── service/              # systemd user-unit generation/install, cron watchdog line;
+        │                         # CLI flags --headless/--install-service/--print-unit (US-DEP-04)
+        ├── share.rs              # knowledge export/import (KnowledgeBundle, lenient parsing)
+        ├── share_crypto.rs       # passphrase-based portable encryption for secret export
+        ├── project_workspace.rs  # project workspace editors (open project in IDE)
+        ├── privilege.rs          # sudo/doas/su detection for privileged runs
+        ├── keygen/               # SSH/GPG key generation UI
+        ├── fuzzy.rs              # fuzzy matcher used by list search
+        ├── seed.rs, seed_data.rs # idempotent seed data (commands, options, apps)
         ├── plugin/               # plugin system (Capability model, loading)
         ├── process/              # sysinfo-based process/resource monitoring
         ├── environment/          # environment variable management
@@ -120,11 +142,24 @@ cargo test                            # everything: unit + BDD scenarios
 cargo test --test bdd_scenarios       # BDD integration scenarios only
 cargo test repository::               # one module's tests only
 
-# Run (secrets key required for secret functionality):
+# Run the TUI (secrets key required for secret functionality):
 export TUI_OP_HUB_SECRETS_KEY="$(openssl rand -base64 32)"
 export TUI_OP_HUB_USER="default"        # optional
 ./target/release/tui-op-hub
+
+# CLI flags (parsed in main.rs, no clap):
+./target/release/tui-op-hub --headless            # scheduler + API, no TUI
+./target/release/tui-op-hub --print-unit          # show systemd user unit
+./target/release/tui-op-hub --install-service     # idempotent full setup
+./target/release/tui-op-hub --uninstall-service
+
+# Release install (build + binary + enabled background service):
+./install.sh                                      # from the repo root
 ```
+
+Note: the TUI and the `--headless` service can run **simultaneously** — they share the
+SQLite DB (WAL); if the API port is taken, the second instance logs a warning and skips
+starting its own API (never panic on AddrInUse).
 
 Environment variables:
 - `TUI_OP_HUB_SECRETS_KEY` — base64 32-byte master key for secret encryption
@@ -157,6 +192,13 @@ Environment variables:
    `ARCHITECTURE.md`, and the phase status in `USER_STORIES.md`.
 8. **Tests are part of the feature**: every behavior change ships with unit tests in the
    touched module and a BDD scenario in `tests/bdd_scenarios.rs` (see §7 Step 4).
+9. **Service/TUI coexistence**: the background service (`--headless`) and the TUI share the
+   SQLite DB (WAL). Never panic on API `AddrInUse` — log a warning and skip the local API
+   (see `main.rs`). Anything that must never break the TUI loop (spawn processes, edit files)
+   belongs in `run()` or a dedicated method, not inline key handlers.
+10. **Filesystem side effects must be injectable**: functions that write under `$HOME`
+   (see `src/service/mod.rs`) have `*_in(home)` variants so tests use temp dirs and never
+   touch the real home directory. Idempotency matters: setup routines must be safe to re-run.
 
 ---
 
@@ -164,20 +206,25 @@ Environment variables:
 
 ### ✅ Phase 1 — Complete (v0.2.0)
 Entity CRUD, projects, tags, FTS5 search, Lua workflows + run history, encrypted secrets,
-user profiles, REST API, modern TUI (login + 7 tabs), Argon2-based auth (migration 0002),
+user profiles, REST API, modern TUI (login + 8 tabs), Argon2-based auth (migration 0002),
 config/theming/keybindings.
 
 ### 🔄 Phase 2 — Foundation ready, integration pending (the active TODO list)
 Models, schema, DB functions, and module skeletons exist; **TUI/API integration is missing**:
 
-- [ ] **Scheduler** (`src/scheduler/`): wire `WorkflowScheduler` daemon into `main.rs`;
-      cron parsing works; needs TUI management + start/stop from API (US-WF-07)
+- [x] **Scheduler** (`src/scheduler/`): daemon wired into `main.rs`; cron validation with
+      5-field normalization; API `POST /workflows/{id}/schedule`, `GET/DELETE /schedules`;
+      TUI `s` key on Workflows (US-WF-07 ✅)
+- [x] **Systemd integration**: `src/service/` + `--install-service`/`--headless`; enabled by
+      `./install.sh`; TUI coexists with the service (US-DEP-04 ✅)
+- [x] **Knowledge import/export** with lenient formats + path popup (`I`) and API
+      `GET /export` / `POST /import` (US-CMD-01)
+- [x] **Project detail view** (`Enter` on Projects tab) — US-PROJ-07
 - [ ] **Plugins** (`src/plugin/`): implement approval workflow UI + enforcement (US-PLG-05/06),
       plugin command registration + TUI listing (US-PLG-07/10)
 - [ ] **SSH host manager**: TUI + quick-connect over existing models/DB functions
       (US-SSH-01..06); SSH key storage + ssh-agent integration (US-SEC-01/05)
 - [ ] **Workflow stop/cancel** for running workflows (US-WF-09)
-- [ ] **Systemd integration** (US-DEP-04)
 
 ### 🟢 Phase 3+ — Not started (future)
 - Process management TUI (`src/process/` backend exists via sysinfo) — US-PROC-01..07
@@ -192,8 +239,8 @@ Models, schema, DB functions, and module skeletons exist; **TUI/API integration 
 ### 🧹 Housekeeping
 - Remove stale `*.sync-conflict-*` files (Syncthing duplicates)
 - `Cargo.toml` has empty `repository` field
-- Expand test coverage (tests currently exist in only a few modules:
-  shell_exports, environment_parsing, simple_lua_script areas)
+- Expand test coverage further (repository, tui, share, scheduler, service now have
+  solid coverage; plugin/, process/, environment/ are still thin)
 
 ---
 
@@ -207,9 +254,9 @@ When working on this repo, follow this loop:
    and what is next. Append your session to it when you finish (what you did, what broke,
    what's next).
 3. Identify the relevant user story ID(s) in `USER_STORIES.md` and read the story.
-3. Read `ARCHITECTURE.md` sections covering the modules you will touch. For a map of all
+4. Read `ARCHITECTURE.md` sections covering the modules you will touch. For a map of all
    documentation (including the business docs in `docs/business/`), see `docs/INDEX.md`.
-4. Trace the existing pattern: for a feature, find how a *similar* feature flows through
+5. Trace the existing pattern: for a feature, find how a *similar* feature flows through
    `models/` → `repository/` → `api/` + `tui/` and mirror it.
 
 ### Step 2 — Plan
@@ -237,6 +284,9 @@ When working on this repo, follow this loop:
       workflows, TUI state).
     - Behavioral TUI tests: build a `ModernApp` on an in-memory pool and drive
       `handle_key(KeyEvent::new(...))` — no terminal needed (see `modern_app::tests`).
+      For DB-backed TUI tests use the `test_app_db()` helper (pool + migrations);
+      remember the app starts in the `Login` state — set `app.ui.state` before
+      driving keys, and note service/TUI coexistence rules (§5 rule 9).
 11. Run from `TUI-OP-HUB/TUI-OP-HUB/` — all four must pass before you are done:
     ```bash
     cargo fmt
@@ -282,4 +332,10 @@ When working on this repo, follow this loop:
 - ❌ Edit already-applied migration files
 - ❌ Ship a behavior change without tests (unit + BDD scenario)
 - ❌ Leave work uncommitted or commit with failing tests
+- ❌ Trust a scripted edit without verifying it: after any scripted patch, `grep` the file
+  for the expected markers (and re-check after `cargo fmt`). Several edits have been lost
+  this way — verify, then compile, then test
+- ❌ Use `\u{...}` escapes inside Python heredoc patch scripts: Python decodes `\u` as a
+  unicode escape and silently mangles or rejects the script. Write real UTF-8 characters
+  (✓, —, 💻) or raw strings instead
 
