@@ -16,6 +16,9 @@ A terminal-based operations hub for command management, workflow automation, and
 - **User Profiles**: Multi-user support with individual encryption keys
 - **REST API**: Axum-based HTTP API for full CRUD and workflow execution
 - **TUI Dashboard**: Interactive terminal UI with 8 tabs (Dashboard, Commands, Apps, Scripts, Projects, Workflows, Secrets, Settings) — number keys 1-8, Enter on a project opens its detail view
+- ✅ Knowledge **import/export**: portable JSON bundles (see [`docs/IMPORT_EXPORT.md`](docs/IMPORT_EXPORT.md)) — AI-generatable
+- ✅ **Cron scheduling** (US-WF-07): run workflows on cron expressions via the built-in scheduler daemon
+- ✅ **systemd / cron compatibility** (US-DEP-04): `tui-op-hub --install-service` runs the hub headless
 
 ### Phase 2 🔄 In progress
 

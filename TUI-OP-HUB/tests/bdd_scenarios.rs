@@ -13,6 +13,7 @@ use tui_op_hub::db;
 use tui_op_hub::models::{CreateEntity, CreateProject, WorkflowRun};
 use tui_op_hub::repository;
 use tui_op_hub::secrets;
+use tui_op_hub::share;
 use tui_op_hub::tui::list_state::{
     build_workflow_definition, parse_tags_text, VisualStep, VisualWorkflowState,
 };
@@ -1221,4 +1222,225 @@ async fn given_project_with_entities_when_detail_opened_then_project_entities_li
         .all(|e| e.project_id.as_deref() == Some(project.id.as_str())));
     assert!(entities.iter().any(|e| e.name == "proj-cmd"));
     assert!(entities.iter().any(|e| e.name == "proj-script"));
+}
+
+// ============================================================================
+// Feature: Knowledge-base import/export round trip (US-CMD-01, US-SEC-02)
+// ============================================================================
+
+/// Scenario: exporting and re-importing on a fresh database restores entities
+/// Given a knowledge base with commands, scripts and apps, when it is exported
+/// (secrets excluded) and imported into a fresh database, then every entity
+/// comes back with its content and type.
+#[tokio::test]
+async fn given_knowledge_base_when_exported_then_import_restores_entities() {
+    let pool = given_fresh_database().await;
+    for (name, ty) in [
+        ("Export cmd", "cmd"),
+        ("Export script", "script"),
+        ("Export app", "app"),
+    ] {
+        repository::create_entity(
+            &pool,
+            &CreateEntity {
+                name: name.to_string(),
+                description: Some("before export".to_string()),
+                content: Some(format!("content of {name}")),
+                type_id: ty.to_string(),
+                project_id: None,
+                tags: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    // Export with secrets excluded (the safe default)
+    let bundle = share::export_knowledge(&pool, None, share::SecretMode::Exclude, None)
+        .await
+        .unwrap();
+    assert!(bundle.entities.len() >= 3);
+    assert!(
+        bundle.secrets.is_empty(),
+        "excluded mode exports no secrets"
+    );
+    assert_eq!(bundle.secret_mode, "excluded");
+
+    // Import into a fresh database (simulating another machine)
+    let fresh = given_fresh_database().await;
+    let (imported, skipped) = share::import_knowledge(&fresh, &bundle).await.unwrap();
+    assert!(
+        imported >= 3,
+        "at least the 3 entities import, got {imported}"
+    );
+    assert_eq!(skipped, 0);
+
+    // And the content round-trips
+    let restored = repository::list_entities(&fresh, Some("script"), None)
+        .await
+        .unwrap();
+    assert!(restored
+        .iter()
+        .any(|e| e.name == "Export script"
+            && e.content.as_deref() == Some("content of Export script")));
+}
+
+/// Scenario: importing never overwrites local edits
+/// Given a local entity named the same as one in the bundle, when the bundle
+/// is imported, then the local version wins and the item is counted skipped.
+#[tokio::test]
+async fn given_conflicting_name_when_imported_then_local_version_wins() {
+    let pool = given_fresh_database().await;
+    repository::create_entity(
+        &pool,
+        &CreateEntity {
+            name: "shared name".to_string(),
+            description: None,
+            content: Some("LOCAL".to_string()),
+            type_id: "cmd".to_string(),
+            project_id: None,
+            tags: None,
+            metadata_json: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let bundle = share::KnowledgeBundle {
+        version: 1,
+        exported_at: "2026-01-01T00:00:00Z".to_string(),
+        entities: vec![share::SharedEntity {
+            name: "shared name".to_string(),
+            type_id: "cmd".to_string(),
+            description: None,
+            content: Some("INCOMING".to_string()),
+            parent: None,
+        }],
+        secrets: vec![],
+        secret_mode: "excluded".to_string(),
+    };
+
+    let (imported, skipped) = share::import_knowledge(&pool, &bundle).await.unwrap();
+    assert_eq!(imported, 0);
+    assert_eq!(skipped, 1);
+
+    let items = repository::list_entities(&pool, Some("cmd"), None)
+        .await
+        .unwrap();
+    let kept = items.iter().find(|e| e.name == "shared name").unwrap();
+    assert_eq!(kept.content.as_deref(), Some("LOCAL"));
+}
+
+/// Scenario: command options (children) re-attach to their parent on import
+/// Given a bundle with a command and an option child, when imported into a
+/// fresh database, then the child links to the imported parent by name.
+#[tokio::test]
+async fn given_bundle_with_option_child_when_imported_then_child_links_to_parent() {
+    let pool = given_fresh_database().await;
+    let bundle = share::KnowledgeBundle {
+        version: 1,
+        exported_at: "2026-01-01T00:00:00Z".to_string(),
+        entities: vec![
+            share::SharedEntity {
+                name: "git commit".to_string(),
+                type_id: "cmd".to_string(),
+                description: Some("record changes".to_string()),
+                content: Some("git commit".to_string()),
+                parent: None,
+            },
+            share::SharedEntity {
+                name: "--amend".to_string(),
+                type_id: "opt".to_string(),
+                description: Some("rewrite the last commit".to_string()),
+                content: Some("--amend".to_string()),
+                parent: Some("git commit".to_string()),
+            },
+        ],
+        secrets: vec![],
+        secret_mode: "excluded".to_string(),
+    };
+
+    let (imported, skipped) = share::import_knowledge(&pool, &bundle).await.unwrap();
+    assert_eq!(imported, 2);
+    assert_eq!(skipped, 0);
+
+    let parent = repository::get_entity_by_name_and_type(&pool, "git commit", "cmd")
+        .await
+        .unwrap();
+    let children = repository::list_child_entities(&pool, &parent.id)
+        .await
+        .unwrap();
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].name, "--amend");
+}
+
+// ============================================================================
+// Feature: Cron workflow scheduling (US-WF-07)
+// ============================================================================
+
+/// Scenario: scheduling a workflow persists a task the daemon can load
+/// Given a workflow entity, when a cron schedule is created, then it is
+/// listed with the normalized expression and can be deleted again.
+#[tokio::test]
+async fn given_workflow_when_scheduled_then_task_persists_and_deletes() {
+    let pool = given_fresh_database().await;
+    let wf = repository::create_entity(
+        &pool,
+        &CreateEntity {
+            name: "nightly backup".to_string(),
+            description: None,
+            content: Some("print('backing up')".to_string()),
+            type_id: "wf".to_string(),
+            project_id: None,
+            tags: None,
+            metadata_json: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    // Classic 5-field crontab syntax must be accepted and normalized
+    let (normalized, _) = tui_op_hub::scheduler::validate_cron("30 2 * * *").unwrap();
+    assert_eq!(normalized, "0 30 2 * * *", "seconds field prepended");
+
+    let task = repository::create_scheduled_task(&pool, &wf.id, &normalized)
+        .await
+        .unwrap();
+    assert_eq!(task.cron_expr, "0 30 2 * * *");
+    assert!(task.enabled);
+
+    let listed = repository::list_scheduled_tasks(&pool).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].workflow_id, wf.id);
+
+    repository::delete_scheduled_task(&pool, &task.id)
+        .await
+        .unwrap();
+    assert!(repository::list_scheduled_tasks(&pool)
+        .await
+        .unwrap()
+        .is_empty());
+    // Deleting again is a NotFound error
+    assert!(repository::delete_scheduled_task(&pool, &task.id)
+        .await
+        .is_err());
+}
+
+/// Scenario: invalid cron expressions are rejected before persisting
+/// Given garbage cron input, when validated, then an error is returned and
+/// nothing is stored.
+#[tokio::test]
+async fn given_invalid_cron_when_validated_then_error_and_nothing_persisted() {
+    let pool = given_fresh_database().await;
+    assert!(tui_op_hub::scheduler::validate_cron("not a cron").is_err());
+    assert!(tui_op_hub::scheduler::validate_cron("99 99 99 99 99").is_err());
+    assert!(tui_op_hub::scheduler::validate_cron("").is_err());
+    // Valid aliases still work
+    assert!(tui_op_hub::scheduler::validate_cron("@daily").is_ok());
+    assert!(tui_op_hub::scheduler::validate_cron("0 9 * * MON").is_ok());
+    assert!(repository::list_scheduled_tasks(&pool)
+        .await
+        .unwrap()
+        .is_empty());
 }

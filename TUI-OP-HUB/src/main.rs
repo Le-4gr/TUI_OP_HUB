@@ -5,8 +5,70 @@ use tui_op_hub::config::AppConfig;
 use tui_op_hub::db;
 use tui_op_hub::tui::modern_app::ModernApp;
 
+/// Minimal CLI flags (no clap dependency): `--help`, `--headless`,
+/// `--print-unit`, `--install-service`, `--uninstall-service` (US-DEP-04).
+fn handle_cli_flags() -> Option<bool> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty() {
+        return None;
+    }
+    match args[0].as_str() {
+        "--help" | "-h" => {
+            println!(
+                "tui-op-hub \u{2014} terminal operations hub\n\n\
+                 Usage: tui-op-hub [FLAG]\n\n\
+                 Flags:\n\
+                   (none)              Launch the interactive TUI\n\
+                   --headless          Run without the TUI (scheduler + API only)\n\
+                   --print-unit        Print the systemd user unit file\n\
+                   --install-service   Install + enable the systemd user service\n\
+                   --uninstall-service Disable + remove the systemd user service\n\
+                   --help              Show this help"
+            );
+            Some(true) // handled: exit successfully
+        }
+        "--print-unit" => {
+            println!("{}", tui_op_hub::service::systemd_user_unit());
+            Some(true)
+        }
+        "--install-service" => match tui_op_hub::service::install_service() {
+            Ok(path) => {
+                println!("\u{2713} Installed {}", path.display());
+                println!(
+                    "  Enable/start: systemctl --user enable --now {0}",
+                    tui_op_hub::service::SERVICE_NAME
+                );
+                println!("  Provide the key: systemctl --user set-environment TUI_OP_HUB_SECRETS_KEY=<base64-32-bytes>");
+                Some(true)
+            }
+            Err(e) => {
+                eprintln!("\u{2717} Install failed: {e}");
+                Some(false)
+            }
+        },
+        "--uninstall-service" => match tui_op_hub::service::uninstall_service() {
+            Ok(()) => {
+                println!("\u{2713} Service uninstalled");
+                Some(true)
+            }
+            Err(e) => {
+                eprintln!("\u{2717} Uninstall failed: {e}");
+                Some(false)
+            }
+        },
+        other => {
+            eprintln!("Unknown flag: {other} (try --help)");
+            Some(false)
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if let Some(true) = handle_cli_flags() {
+        return Ok(());
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -44,7 +106,9 @@ async fn main() -> anyhow::Result<()> {
         axum::serve(listener, router).await.unwrap();
     });
 
-    if config.tui.enabled {
+    let headless = std::env::args().nth(1).is_some_and(|a| a == "--headless");
+
+    if config.tui.enabled && !headless {
         // Use modern UI with login/signup
         let mut app = ModernApp::new(pool, config);
         app.run().await?;

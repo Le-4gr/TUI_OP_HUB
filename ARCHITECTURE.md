@@ -270,6 +270,34 @@ pub struct WorkflowResult {
 }
 ```
 
+### 9. Service Module (`src/service/mod.rs`) — US-DEP-04
+
+**Responsibility**: init-system integration without external dependencies.
+
+- `systemd_user_unit()`: generates a systemd **user** unit running
+  `tui-op-hub --headless` (scheduler + REST API, no TUI), `Restart=on-failure`.
+  The unit never embeds `TUI_OP_HUB_SECRETS_KEY`; it is provided via
+  `systemctl --user set-environment` or `EnvironmentFile=`.
+- `install_service()` / `uninstall_service()`: write/remove
+  `~/.config/systemd/user/tui-op-hub.service` and best-effort
+  `systemctl --user daemon-reload` + `enable --now`.
+- `cron_line()`: a cron watchdog line for cron-only systems.
+
+**CLI flags** (parsed in `main.rs`, no clap): `--help`, `--headless`,
+`--print-unit`, `--install-service`, `--uninstall-service`.
+
+### 10. Scheduler (`src/scheduler/mod.rs`) — US-WF-07
+
+**Responsibility**: execute cron-scheduled workflows.
+
+- `validate_cron(expr) -> (normalized, Schedule)`: accepts classic 5-field
+  crontab syntax (normalized by prepending a `0` seconds field), 6/7-field
+  `cron`-crate syntax and `@daily`-style aliases.
+- `WorkflowScheduler`: daemon started from `main.rs`; loads enabled tasks from
+  the `scheduled_tasks` table, executes due workflows and records run history.
+- API: `POST /workflows/{id}/schedule`, `GET /schedules`, `DELETE /schedules/{id}`.
+- TUI: Workflows tab → `s` opens a cron input popup on the selected workflow.
+
 ## Data Flow Examples
 
 ### Create Secret (TUI)

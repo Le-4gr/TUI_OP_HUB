@@ -22,6 +22,25 @@ pub struct ScheduledTask {
     pub enabled: bool,
 }
 
+/// Validate a cron expression and return the **normalized** expression plus
+/// the parsed schedule.
+///
+/// Accepts classic 5-field crontab syntax (`0 9 * * MON`), the `cron` crate's
+/// 6/7-field syntax with seconds, and the `@hourly`/`@daily`/... aliases.
+/// Classic 5-field input is normalized by prepending a `0` seconds field, so
+/// the stored expression always reloads cleanly in the scheduler daemon.
+pub fn validate_cron(expr: &str) -> AppResult<(String, Schedule)> {
+    let trimmed = expr.trim();
+    let normalized = if trimmed.starts_with('@') || trimmed.split_whitespace().count() >= 6 {
+        trimmed.to_string()
+    } else {
+        format!("0 {trimmed}")
+    };
+    let schedule = Schedule::from_str(&normalized)
+        .map_err(|e| AppError::Validation(format!("Invalid cron expression: {}", e)))?;
+    Ok((normalized, schedule))
+}
+
 /// Workflow scheduler daemon
 pub struct WorkflowScheduler {
     pool: Arc<SqlitePool>,

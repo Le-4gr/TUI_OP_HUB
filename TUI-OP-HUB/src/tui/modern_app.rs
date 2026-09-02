@@ -157,6 +157,7 @@ pub struct ModernApp {
     command_form: CommandFormState,
     project_form: ProjectFormState,
     project_detail: Option<ProjectDetailState>,
+    cron_input: Option<String>,
     workflow_form: WorkflowFormState,
     secret_form: SecretFormState,
     // Search state
@@ -254,6 +255,7 @@ impl ModernApp {
             command_form: CommandFormState::default(),
             project_form: ProjectFormState::default(),
             project_detail: None,
+            cron_input: None,
             workflow_form: WorkflowFormState::default(),
             secret_form: SecretFormState::default(),
             // Initialize search state
@@ -349,6 +351,32 @@ impl ModernApp {
         let total = entities.len();
         self.commands_list.set_items(entities, total);
         Ok(())
+    }
+
+    /// Validate the entered cron expression and persist a scheduled task for
+    /// the selected workflow (US-WF-07). The scheduler daemon picks it up on
+    /// its next poll.
+    async fn save_workflow_schedule(&mut self, expr: &str) {
+        let (normalized, _) = match crate::scheduler::validate_cron(expr) {
+            Ok(v) => v,
+            Err(e) => {
+                self.status_message = Some(format!("\u{2717} {}", e));
+                return;
+            }
+        };
+        let Some(entity) = self.workflows_list.get_selected() else {
+            self.status_message = Some("Nothing selected".to_string());
+            return;
+        };
+        match repository::create_scheduled_task(&*self.pool, &entity.id, &normalized).await {
+            Ok(task) => {
+                self.status_message = Some(format!(
+                    "\u{2713} Scheduled (cron: {}) \u{2014} id {}",
+                    task.cron_expr, task.id
+                ));
+            }
+            Err(e) => self.status_message = Some(format!("\u{2717} {}", e)),
+        }
     }
 
     /// Open the detail popup for the selected project: description plus every
@@ -505,6 +533,9 @@ impl ModernApp {
         }
         if self.options_popup.is_some() {
             self.render_options_popup(f);
+        }
+        if let Some(cron) = &self.cron_input {
+            self.render_cron_input(f, cron);
         }
         if let Some(detail) = &self.project_detail {
             self.render_project_detail(f, detail);
@@ -1133,6 +1164,26 @@ impl ModernApp {
             }
             return;
         }
+        if let Some(cron) = self.cron_input.as_mut() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.cron_input = None;
+                }
+                KeyCode::Enter => {
+                    let expr = cron.clone();
+                    self.cron_input = None;
+                    self.save_workflow_schedule(&expr).await;
+                }
+                KeyCode::Backspace => {
+                    cron.pop();
+                }
+                KeyCode::Char(c) => {
+                    cron.push(c);
+                }
+                _ => {}
+            }
+            return;
+        }
         if self.search_state.active {
             self.handle_search_key(key).await;
             return;
@@ -1565,6 +1616,16 @@ impl ModernApp {
                 // Open a new terminal window (run loop spawns it)
                 self.wants_terminal = true;
             }
+            KeyCode::Char('s') => {
+                // Workflows: schedule the selected workflow on a cron expression (US-WF-07)
+                if self.ui.state == AppState::Workflows {
+                    if self.workflows_list.get_selected().is_some() {
+                        self.cron_input = Some(String::new());
+                    } else {
+                        self.status_message = Some("Nothing selected".to_string());
+                    }
+                }
+            }
             KeyCode::Char('R') => {
                 // Run with elevated privileges (sudo/doas/su)
                 if matches!(
@@ -1810,6 +1871,32 @@ impl ModernApp {
             &self.commands_list.items,
             self.commands_list.selected,
             self.ui.theme.primary,
+        );
+    }
+
+    /// Cron input popup (US-WF-07): type a cron expression and press Enter.
+    fn render_cron_input(&self, f: &mut Frame, value: &str) {
+        let area = self.centered_rect(56, 7, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.accent))
+            .title(" Schedule workflow (cron) ")
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(inner);
+        f.render_widget(Paragraph::new(format!("{}\u{2588}", value)), rows[0]);
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "e.g. 0 9 * * MON  |  @daily  |  Enter: save \u{b7} Esc: cancel",
+                Style::default().fg(self.ui.theme.border),
+            )),
+            rows[1],
         );
     }
 
@@ -2216,6 +2303,7 @@ impl ModernApp {
             AppState::Workflows => vec![
                 ("\u{2191}\u{2193}", "Navigate"),
                 ("n", "New"),
+                ("s", "Cron"),
                 ("e", "Edit"),
                 ("d", "Delete"),
                 ("r", "Run"),

@@ -639,6 +639,21 @@ pub async fn list_scheduled_tasks(
     .map_err(AppError::Database)
 }
 
+/// Delete a scheduled task by id (US-WF-07).
+pub async fn delete_scheduled_task(pool: &SqlitePool, id: &str) -> AppResult<()> {
+    let res = sqlx::query("DELETE FROM scheduled_tasks WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound {
+            entity: "scheduled_task",
+            id: id.to_string(),
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,6 +7,18 @@
 
 ## 🎯 Session 16 (current): terminal fix, visible search bar, import/export TUI, keybinds update
 
+> **Update 3 (same session):** Cron + init-system + import/export docs (US-WF-07, US-DEP-04).
+> New `src/service/mod.rs`: systemd user-unit generation/install/uninstall + cron watchdog
+> line; CLI flags `--headless`, `--print-unit`, `--install-service`, `--uninstall-service`
+> (no clap, manual parsing in `main.rs`). `validate_cron` normalizes classic 5-field crontab
+> to the `cron` crate's seconds-field syntax; API endpoints `POST /workflows/{id}/schedule`,
+> `GET /schedules`, `DELETE /schedules/{id}`, `GET /export`, `POST /import`; repo fn
+> `delete_scheduled_task`; TUI `s` on Workflows opens a cron input popup. New doc:
+> `docs/IMPORT_EXPORT.md` (bundle schema + AI prompt template for generating commands/
+> scripts/apps + cron/systemd setup). Tests: 4 service unit tests, 5 new BDD scenarios
+> (export/import round trip, local-wins merge, option re-attachment, schedule CRUD,
+> invalid cron rejection). 123 lib + 40 BDD = 163 pass.
+
 > **Update 2 (same session):** Added **Apps** and **Scripts** tabs — the TUI now has
 > 8 tabs (1=Dashboard, 2=Commands, 3=Apps, 4=Scripts, 5=Projects, 6=Workflows,
 > 7=Secrets, 8=Settings). All three entity tabs share one list state filtered by

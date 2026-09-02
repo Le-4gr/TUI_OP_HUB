@@ -64,7 +64,7 @@
 - 🔄 `US-PLG-07`, `US-PLG-10`: Plugin command registration and TUI listing
 - 🔄 `US-SSH-01` through `US-SSH-06`: SSH host manager TUI and quick-connect
 - 🔄 `US-WF-09`: Workflow stop/cancel for running workflows
-- 🔄 `US-DEP-04`: Systemd integration
+- ✅ `US-DEP-04`: Systemd integration (user service, `--install-service`, `--headless` daemon mode)
 - 🔄 Admin user management TUI panel (backend + API done)
 
 **Not Yet Started** (Future/P2+):
@@ -136,7 +136,7 @@
 | `US-WF-04` | As a **Power User**, I want to script workflow steps in **Lua**, so that I can add logic without recompiling Rust. | 🟡 | 5 |
 | `US-WF-05` | As a **Power User**, I want to script workflow steps in **Python**, so that I can leverage Python's ecosystem. | 🟢 | 5 |
 | `US-WF-06` | As a **User**, I want to **run a workflow** on demand, so that I can execute an automation when needed. | 🟡 | 3 |
-| `US-WF-07` | As a **User**, I want to **schedule** workflows (internal scheduler or systemd), so that they run automatically at set times. | 🟡 | 8 |
+| `US-WF-07` | As a **User**, I want to **schedule** workflows (internal scheduler or systemd), so that they run automatically at set times. | ✅ | 8 |
 | `US-WF-08` | As a **User**, I want to view **run history and status** of each workflow execution, so that I can verify success or debug failures. | 🟡 | 5 |
 | `US-WF-09` | As a **User**, I want to **stop** a running workflow, so that I can cancel long or mistaken runs. | 🟡 | 3 |
 | `US-WF-10` | As a **Power User**, I want **reusable workflow pipelines**, so that I can compose automations from smaller pieces. | 🟢 | 5 |
@@ -308,7 +308,7 @@
 | `US-DEP-01` | As an **Admin**, I want to run the hub in **backend-only mode**, so that it can serve as a headless service. | 🟡 | 3 |
 | `US-DEP-02` | As a **User**, I want to run **backend + built-in TUI**, so that I get the full interactive experience. | 🔴 | 2 |
 | `US-DEP-03` | As a **Power User**, I want to connect a **custom UI** to the backend API, so that I can build my own interface. | 🟢 | 5 |
-| `US-DEP-04` | As an **Admin**, I want to run the hub as a **systemd service**, so that it starts automatically and survives reboots. | 🟢 | 5 |
+| `US-DEP-04` | As an **Admin**, I want to run the hub as a **systemd service**, so that it starts automatically and survives reboots. | ✅ | 5 |
 | `US-DEP-05` | As a **User**, I want the hub to **launch and manage** user-defined scripts/services, so that I can orchestrate system tasks. | 🟢 | 5 |
 | `US-DEP-06` | As a **User**, I want the hub to act as a **control layer for systemd units**, so that I can start/stop/enable services from one place. | 🟢 | 5 |
 

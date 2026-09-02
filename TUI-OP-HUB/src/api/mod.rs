@@ -81,6 +81,19 @@ pub fn router(pool: Arc<SqlitePool>) -> Router {
             "/workflows/{id}/execute",
             axum::routing::post(execute_workflow_handler),
         )
+        // Cron scheduling (US-WF-07)
+        .route(
+            "/workflows/{id}/schedule",
+            axum::routing::post(schedule_workflow_handler),
+        )
+        .route("/schedules", axum::routing::get(list_schedules_handler))
+        .route(
+            "/schedules/{id}",
+            axum::routing::delete(delete_schedule_handler),
+        )
+        // Knowledge-base sharing (US-CMD-01)
+        .route("/export", axum::routing::get(export_handler))
+        .route("/import", axum::routing::post(import_handler))
         .route("/tags", get(list_tags_handler))
         .route("/types", get(list_types_handler))
         // Developer-mode user management (US-NF): wiped/reset auth state while
@@ -504,4 +517,77 @@ async fn execute_workflow_handler(
     }
 
     Ok(Json(result))
+}
+
+// ── Cron scheduling (US-WF-07) ──────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct ScheduleRequest {
+    cron_expr: String,
+}
+
+/// Schedule a workflow on a cron expression. The expression is validated
+/// before persisting; the scheduler daemon picks it up on its next poll
+/// (or at startup).
+async fn schedule_workflow_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ScheduleRequest>,
+) -> Result<Json<crate::models::ScheduledTask>, String> {
+    // Fail fast on invalid expressions so clients get a useful error,
+    // and store the normalized form so the daemon can reload it.
+    let (normalized, _) = match crate::scheduler::validate_cron(&req.cron_expr) {
+        Ok(v) => v,
+        Err(e) => return Err(e.to_string()),
+    };
+    repository::create_scheduled_task(&state.pool, &id, &normalized)
+        .await
+        .map(Json)
+        .map_err(|e| e.to_string())
+}
+
+async fn list_schedules_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::models::ScheduledTask>>, String> {
+    repository::list_scheduled_tasks(&state.pool)
+        .await
+        .map(Json)
+        .map_err(|e| e.to_string())
+}
+
+async fn delete_schedule_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, String> {
+    repository::delete_scheduled_task(&state.pool, &id)
+        .await
+        .map(|_| Json(serde_json::json!({"deleted": id})))
+        .map_err(|e| e.to_string())
+}
+
+// ── Knowledge-base sharing (US-CMD-01) ─────────────────────────────────────
+
+/// Export the knowledge base as a portable JSON bundle. Secrets are always
+/// **excluded** on this endpoint (use the TUI for passphrase-encrypted or
+/// explicit plaintext exports).
+async fn export_handler(
+    State(state): State<AppState>,
+) -> Result<Json<crate::share::KnowledgeBundle>, String> {
+    crate::share::export_knowledge(&state.pool, None, crate::share::SecretMode::Exclude, None)
+        .await
+        .map(Json)
+        .map_err(|e| e.to_string())
+}
+
+/// Import a knowledge bundle: merges by (name, type); existing entries win.
+async fn import_handler(
+    State(state): State<AppState>,
+    Json(bundle): Json<crate::share::KnowledgeBundle>,
+) -> Result<Json<serde_json::Value>, String> {
+    let (imported, skipped) = crate::share::import_knowledge(&state.pool, &bundle)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Json(
+        serde_json::json!({ "imported": imported, "skipped": skipped }),
+    ))
 }
