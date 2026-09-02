@@ -166,6 +166,8 @@ pub struct ModernApp {
     keygen: KeygenState,
     // Developer mode: two-step confirmation for wiping all users
     dev_confirm_wipe: bool,
+    // Structured options popup for a command family (parent name, options)
+    options_popup: Option<(String, Vec<(String, String)>)>,
     // Overlay states (forms, visual builder, popups)
     visual_form: Option<VisualWorkflowState>,
     confirm_delete: Option<ConfirmDelete>,
@@ -217,6 +219,7 @@ impl ModernApp {
             advanced: AdvancedState::default(),
             keygen: KeygenState::default(),
             dev_confirm_wipe: false,
+            options_popup: None,
             // Overlays start closed
             visual_form: None,
             confirm_delete: None,
@@ -391,6 +394,9 @@ impl ModernApp {
         }
         if self.keygen.open {
             self.render_keygen_form(f);
+        }
+        if self.options_popup.is_some() {
+            self.render_options_popup(f);
         }
         if let Some(ref confirm) = self.confirm_delete {
             self.render_confirm_delete(f, confirm);
@@ -956,6 +962,12 @@ impl ModernApp {
 
     async fn handle_key(&mut self, key: KeyEvent) {
         // Overlays take priority over normal tab handling (top of the input stack)
+        if self.options_popup.is_some() {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+                self.options_popup = None;
+            }
+            return;
+        }
         if self.keygen.open {
             self.handle_keygen_key(key).await;
             return;
@@ -1307,17 +1319,43 @@ impl ModernApp {
                 }
             }
             KeyCode::Char('k') => {
-                // SSH/GPG key generation (US-SEC-01)
+                // SSH/GPG key generation (US-SEC-01) — notify when the tools
+                // are missing instead of failing later
                 if self.ui.state == AppState::Secrets {
-                    self.keygen = KeygenState {
-                        open: true,
-                        ..Default::default()
-                    };
+                    if keygen::which("ssh-keygen") || keygen::which("gpg") {
+                        self.keygen = KeygenState {
+                            open: true,
+                            ..Default::default()
+                        };
+                    } else {
+                        self.status_message = Some(
+                            "\u{2717} Neither ssh-keygen nor gpg is installed \u{2014} install openssh/gnupg first"
+                                .to_string(),
+                        );
+                    }
                 }
             }
             KeyCode::Char('p') => {
                 // Processes: launch a known viewer (btop/htop/top) (US-PROC)
                 self.run_process_viewer().await;
+            }
+            KeyCode::Char('m') => {
+                // Man page for the selected command (graceful when missing)
+                if self.ui.state == AppState::Commands {
+                    self.show_man_page().await;
+                }
+            }
+            KeyCode::Char('i') => {
+                // Structured options of the selected command family (US-CMD-01)
+                if self.ui.state == AppState::Commands {
+                    self.show_options_popup().await;
+                }
+            }
+            KeyCode::Char('f') => {
+                // System fetch panel (US-PROC/US-NF)
+                if self.ui.state == AppState::Dashboard {
+                    self.run_fetch().await;
+                }
             }
             KeyCode::Char('E') => {
                 // Projects: open a shell inside the project environment (US-ENV)
@@ -3049,6 +3087,88 @@ impl ModernApp {
 
     // ── Phase 2: processes, project environments, SSH/GPG keygen ───────────
 
+    /// Show the man page for the selected command (US-CMD-05). Suspends the
+    /// TUI and runs `man <name>`; notifies gracefully when `man` is not
+    /// installed or no entry exists instead of failing.
+    async fn show_man_page(&mut self) {
+        let Some(entity) = self.commands_list.get_selected().cloned() else {
+            self.status_message = Some("Nothing selected".to_string());
+            return;
+        };
+        if !keygen::which("man") {
+            self.status_message = Some(
+                "\u{2717} man is not installed \u{2014} install the man-db package to read manuals"
+                    .to_string(),
+            );
+            return;
+        }
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+        let status = tokio::process::Command::new("man")
+            .arg(&entity.name)
+            .status()
+            .await;
+        let _ = crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen);
+        let _ = crossterm::terminal::enable_raw_mode();
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(_) => self.status_message = Some(format!("No manual entry for '{}'", entity.name)),
+            Err(e) => self.status_message = Some(format!("\u{2717} man failed: {}", e)),
+        }
+    }
+
+    /// Show the structured options of the selected command family (US-CMD-01):
+    /// the `opt` child entities with their descriptions.
+    async fn show_options_popup(&mut self) {
+        let Some(entity) = self.commands_list.get_selected().cloned() else {
+            self.status_message = Some("Nothing selected".to_string());
+            return;
+        };
+        match repository::list_child_entities(&*self.pool, &entity.id).await {
+            Ok(children) if children.is_empty() => {
+                self.status_message = Some(format!("'{}' has no documented options", entity.name));
+            }
+            Ok(children) => {
+                let options = children
+                    .iter()
+                    .map(|c| (c.name.clone(), c.description.clone().unwrap_or_default()))
+                    .collect();
+                self.options_popup = Some((entity.name.clone(), options));
+            }
+            Err(e) => self.status_message = Some(format!("\u{2717} {}", e)),
+        }
+    }
+
+    /// System fetch panel (US-PROC/US-NF): hostname, OS, kernel, init system,
+    /// CPU/memory/swap/uptime — like fastfetch, built from sysinfo.
+    async fn run_fetch(&mut self) {
+        let mut pm = crate::process::ProcessManager::new();
+        let overview = pm.overview();
+        let gib = 1024 * 1024 * 1024;
+        let text = format!(
+            "{name}@{host}\n-----------\nOS       : {os} {os_ver}\nKernel   : {kernel}\nInit     : {init}\nUptime   : {days}d {hours}h {mins}m\nCPU      : {cpu:.1}%\nMemory   : {mem_used:.2} / {mem_total:.2} GiB\nSwap     : {swap_used:.2} / {swap_total:.2} GiB\n",
+            name = std::env::var("USER").unwrap_or_else(|_| "user".to_string()),
+            host = overview.hostname,
+            os = overview.os_name,
+            os_ver = overview.os_version,
+            kernel = overview.kernel_version,
+            init = crate::seed::detect_init_system(),
+            days = overview.uptime / 86400,
+            hours = (overview.uptime % 86400) / 3600,
+            mins = (overview.uptime % 3600) / 60,
+            cpu = overview.cpu_usage,
+            mem_used = overview.memory_used as f64 / gib as f64,
+            mem_total = overview.memory_total as f64 / gib as f64,
+            swap_used = overview.swap_used as f64 / gib as f64,
+            swap_total = overview.swap_total as f64 / gib as f64,
+        );
+        self.run_result = Some(RunResult {
+            title: "System Fetch".to_string(),
+            success: true,
+            text,
+        });
+    }
+
     /// Suspend the TUI and launch a known process viewer (btop/htop/top).
     /// Users already know these tools — no custom UI needed (US-PROC).
     async fn run_process_viewer(&mut self) {
@@ -3215,6 +3335,55 @@ impl ModernApp {
     }
 
     /// Settings input: navigate rows, edit values, capture keybindings, save.
+    /// Structured options popup for a command family (US-CMD-01).
+    fn render_options_popup(&self, f: &mut Frame) {
+        let Some((family, options)) = &self.options_popup else {
+            return;
+        };
+        let height = (options.len() as u16 + 6).clamp(8, 24);
+        let area = self.centered_rect(70, height, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .title(format!(" \u{1f4d6} Options: {} ", family))
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.highlight))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+
+        let lines: Vec<Line> = options
+            .iter()
+            .map(|(flag, description)| {
+                Line::from(vec![
+                    Span::styled(
+                        format!("{:<12}", flag),
+                        Style::default()
+                            .fg(self.ui.theme.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(description.clone(), Style::default().fg(self.ui.theme.fg)),
+                ])
+            })
+            .collect();
+        f.render_widget(Paragraph::new(lines), chunks[0]);
+
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "Esc: close",
+                Style::default().fg(self.ui.theme.border),
+            ))
+            .alignment(Alignment::Center),
+            chunks[1],
+        );
+    }
+
     /// Keygen form renderer (US-SEC-01).
     fn render_keygen_form(&self, f: &mut Frame) {
         let area = self.centered_rect(60, 16, f);
@@ -3686,6 +3855,27 @@ impl ModernApp {
         self.settings.dirty = true;
         self.status_message = Some(format!("✓ {} reset (Ctrl+S to persist)", name));
     }
+}
+
+/// Rank items by fuzzy match score against the query (best first). Items that
+/// do not match are dropped. `key` extracts (name, description) haystacks.
+pub fn fuzzy_rank<T>(items: &[T], query: &str, key: impl Fn(&T) -> (&str, &str)) -> Vec<T>
+where
+    T: Clone,
+{
+    let mut scored: Vec<(i64, T)> = items
+        .iter()
+        .filter_map(|item| {
+            let (name, description) = key(item);
+            let score = std::cmp::max(
+                crate::fuzzy::fuzzy_match(name, query),
+                crate::fuzzy::fuzzy_match(description, query),
+            )?;
+            Some((score, item.clone()))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.into_iter().map(|(_, item)| item).collect()
 }
 
 /// Index of a theme preset name (unknown names map to the first preset).

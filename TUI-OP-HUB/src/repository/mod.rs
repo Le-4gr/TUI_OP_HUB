@@ -381,6 +381,49 @@ pub async fn get_or_create_user(
         .map_err(AppError::Database)
 }
 
+/// List child entities of a command family (its options; US-CMD-01).
+
+/// Fetch an entity by its (name, type) pair — used by the seeder and tests.
+
+pub async fn get_entity_by_name_and_type(
+    pool: &SqlitePool,
+    name: &str,
+    type_id: &str,
+) -> AppResult<Entity> {
+    sqlx::query_as::<_, Entity>(
+        "SELECT * FROM entities WHERE name = ? AND type_id = ? ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(name)
+    .bind(type_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or(AppError::NotFound {
+        entity: "entity",
+        id: name.to_string(),
+    })
+}
+
+/// Count entities with a given name and type (seed idempotency checks).
+
+pub async fn count_entities_named(pool: &SqlitePool, name: &str, type_id: &str) -> AppResult<i64> {
+    let (count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM entities WHERE name = ? AND type_id = ?")
+            .bind(name)
+            .bind(type_id)
+            .fetch_one(pool)
+            .await?;
+    Ok(count)
+}
+
+pub async fn list_child_entities(pool: &SqlitePool, parent_id: &str) -> AppResult<Vec<Entity>> {
+    let rows =
+        sqlx::query_as::<_, Entity>("SELECT * FROM entities WHERE parent_id = ? ORDER BY name")
+            .bind(parent_id)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows)
+}
+
 pub async fn list_user_profiles(pool: &SqlitePool) -> AppResult<Vec<crate::models::UserProfile>> {
     sqlx::query_as::<_, crate::models::UserProfile>("SELECT * FROM user_profiles ORDER BY username")
         .fetch_all(pool)

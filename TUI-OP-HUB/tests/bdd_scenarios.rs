@@ -557,13 +557,13 @@ fn given_advanced_visual_edits_when_saved_then_persisted() {
     assert_eq!(theme.primary, ratatui::style::Color::Rgb(0x58, 0xa6, 0xff));
 }
 
-// ============================================================================
-// Feature: Numpad support in Settings screens (US-APP-06 usability)
-// ============================================================================
-
 use tui_op_hub::config::AppConfig;
 use tui_op_hub::tui::list_state::{ADVANCED_ROWS, SETTINGS_ROWS};
 use tui_op_hub::tui::modern_app::ModernApp;
+
+// ============================================================================
+// Feature: Numpad support in Settings screens (US-APP-06 usability)
+// ============================================================================
 
 /// Given a running app on an in-memory database.
 async fn given_tui_app() -> ModernApp {
@@ -646,6 +646,115 @@ async fn given_keygen_open_when_numpad_digits_pressed_then_fields_move() {
     assert_eq!(app.bdd_keygen_field(), 1);
     app.bdd_press(crossterm::event::KeyCode::Char('8')).await; // numpad up
     assert_eq!(app.bdd_keygen_field(), 0);
+}
+
+// ============================================================================
+// Feature: Tooling — seeded command families, options, fuzzy search (Phase 2)
+// ============================================================================
+
+/// Scenario: the knowledge base is prepopulated with command families
+/// Given a fresh database, when seeding runs, then common command families
+/// exist with structured options (flag + description) as child entities.
+#[tokio::test]
+async fn given_fresh_db_when_seeded_then_command_families_with_options_exist() {
+    let pool = given_fresh_database().await;
+    tui_op_hub::seed::seed_builtin_commands(&pool)
+        .await
+        .unwrap();
+
+    // Known families exist — both systemd AND OpenRC tooling
+    for family in [
+        "git",
+        "docker",
+        "systemctl",
+        "rc-service",
+        "rc-update",
+        "curl",
+    ] {
+        let entity = repository::get_entity_by_name_and_type(&pool, family, "cmd")
+            .await
+            .unwrap_or_else(|_| panic!("seeded family '{}' missing", family));
+        assert!(
+            entity.description.is_some(),
+            "'{}' has a description",
+            family
+        );
+    }
+
+    // git has structured options as children with descriptions
+    let git = repository::get_entity_by_name_and_type(&pool, "git", "cmd")
+        .await
+        .unwrap();
+    let options = repository::list_child_entities(&pool, &git.id)
+        .await
+        .unwrap();
+    assert!(options.len() >= 5, "git family has its options");
+    assert!(options
+        .iter()
+        .all(|o| o.name.starts_with('-') || !o.name.is_empty()));
+    assert!(options
+        .iter()
+        .all(|o| !o.description.clone().unwrap_or_default().is_empty()));
+
+    // Known tools are seeded as app entities, e.g. the yazi file browser
+    let yazi = repository::get_entity_by_name_and_type(&pool, "yazi", "app").await;
+    assert!(yazi.is_ok(), "yazi (file browser) seeded");
+    let fetch = repository::get_entity_by_name_and_type(&pool, "fastfetch", "app").await;
+    assert!(fetch.is_ok(), "fastfetch (fetch tool) seeded");
+}
+
+/// Scenario: seeding is idempotent
+/// Given an already seeded database, when seeding runs again, then no
+/// duplicates are created.
+#[tokio::test]
+async fn given_seeded_db_when_seeded_again_then_no_duplicates() {
+    let pool = given_fresh_database().await;
+    tui_op_hub::seed::seed_builtin_commands(&pool)
+        .await
+        .unwrap();
+    tui_op_hub::seed::seed_builtin_commands(&pool)
+        .await
+        .unwrap();
+
+    let gits = repository::count_entities_named(&pool, "git", "cmd")
+        .await
+        .unwrap();
+    assert_eq!(gits, 1, "git family seeded exactly once");
+}
+
+/// Scenario: fuzzy search finds commands despite typos
+/// Given seeded commands, when the user fuzzy-searches with a partial
+/// fragment, then matching commands are found and the shortest/best one
+/// ranks first.
+#[test]
+fn given_seeded_commands_when_fuzzy_searched_then_best_match_first() {
+    let candidates = ["git", "gitk", "lazygit", "docker", "grep"];
+
+    // 'dck' is a subsequence of docker only
+    let mut ranked: Vec<(&str, i64)> = candidates
+        .iter()
+        .filter_map(|c| tui_op_hub::fuzzy::fuzzy_match(c, "dck").map(|s| (*c, s)))
+        .collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    assert_eq!(ranked.len(), 1);
+    assert_eq!(ranked[0].0, "docker");
+
+    // 'git' matches git, gitk and lazygit — the exact command ranks first
+    let mut ranked: Vec<(&str, i64)> = candidates
+        .iter()
+        .filter_map(|c| tui_op_hub::fuzzy::fuzzy_match(c, "git").map(|s| (*c, s)))
+        .collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    assert_eq!(ranked[0].0, "git", "exact short match ranks first");
+}
+
+/// Scenario: the init system is detected for fetch and service commands
+/// Given any Linux system, when the init system is detected, then the result
+/// is one of the supported values (systemd, OpenRC or unknown) — never a panic.
+#[test]
+fn given_any_system_when_init_detected_then_result_is_supported() {
+    let init = tui_op_hub::seed::detect_init_system();
+    assert!(["systemd", "openrc", "unknown"].contains(&init));
 }
 
 // ============================================================================

@@ -34,6 +34,19 @@ A terminal-based operations hub for command management, workflow automation, and
 - **Projects as environments** (US-ENV): attach an activation command (venv/pyenv/conda)
   to a project, `E` opens a shell inside it
 - **Processes via known tools** (US-PROC): `p` launches btop/htop/top
+- **Seeded knowledge base**: common command families (git, docker, systemctl,
+  **rc-service/rc-update for OpenRC**, ssh, curl, grep, find, tar, python3, cargo, …)
+  are prepopulated with their **options as structured child entities** (flag +
+  description); known tools (yazi/ranger/lf file browsers, fastfetch/neofetch,
+  nvim/vim, lazygit, fzf) are seeded as tagged `app` entries
+- **Man pages & structured help**: `m` opens the man page for a command,
+  `i` shows the family's options with descriptions
+- **Fuzzy search**: `/` now fuzzy-matches commands (subsequence scoring,
+  best match first) across name and description
+- **Fetch panel**: `f` on the dashboard shows system info (OS, kernel,
+  init system — systemd **and** OpenRC are detected — CPU/RAM/swap/uptime)
+- **Graceful tool handling**: missing external tools (ssh-keygen, gpg, man,
+  process viewers) produce friendly notifications instead of failures
 - Plugin architecture (models, schema, DB functions, approval workflow structure)
 - SSH host manager (models, schema, DB functions)
 

@@ -23,6 +23,10 @@ async fn main() -> anyhow::Result<()> {
     let pool = Arc::new(db::init_pool(&config.database).await?);
     db::run_migrations(&pool).await?;
 
+    // Prepopulate the knowledge base with common commands + options and known
+    // tools (idempotent; US-CMD-01, US-PROC).
+    tui_op_hub::seed::seed_builtin_commands(&pool).await?;
+
     // Workflow scheduler daemon (US-WF-07): executes cron-scheduled workflows
     let scheduler = tui_op_hub::scheduler::WorkflowScheduler::new(pool.clone());
     tokio::spawn(async move {

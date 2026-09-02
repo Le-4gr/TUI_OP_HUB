@@ -5,7 +5,57 @@
 
 ---
 
-## 🎯 Session 8 (current): developer mode — wipe users without login
+## 🎯 Session 9 (current): tooling, structured commands, man/help, fuzzy search, fetch
+
+**Goal: graceful handling of missing tools; man/help; fuzzy search; yazi & co.;
+systemd + OpenRC; fetch; structured prepopulated command families with options.**
+
+### What was done and how
+1. **Graceful tool handling** (user note: "openssh isn't installed by default —
+   notify, don't fail"): every external tool goes through `keygen::which()`.
+   Keygen (`k`) checks ssh-keygen/gpg **before** opening the form; man (`m`)
+   checks man; process viewer (`p`) picks the first of btop/htop/top; all
+   surface friendly status messages instead of errors.
+2. **Man pages & structured help** (US-CMD-05/01):
+   - `m` on the Commands tab suspends the TUI and runs `man <name>`; a missing
+     entry or missing man binary shows a status notification
+   - `i` opens an **options popup**: the selected command family's options are
+     structured child entities (flag + description), rendered as a two-column
+     popup (new `repository::list_child_entities`)
+3. **Structured command model** (user note: "command is the family entity, options
+   have descriptions"):
+   - Migration **0004_tooling.sql**: `entities.parent_id` (self-reference, FK
+     cascade) + new `opt` entity type + `seed_meta` marker table
+   - Command = family (`cmd`), options = `opt` children — `do like minded things`
+     applied: the same parent/child pattern is ready for SSH hosts and service
+     families later
+4. **Seeded knowledge base** (`src/seed.rs` + `src/seed_data.rs`, called from
+   `main.rs`, idempotent via existence checks + `seed_meta` marker):
+   - Families: git, docker, **systemctl AND rc-service/rc-update (systemd +
+     OpenRC per user note)**, journalctl, ssh, curl, grep, find, tar, python3,
+     cargo — each with 4–8 described options
+   - Tools as tagged `app` entities: **yazi/ranger/lf** (file browsers per user
+     note), fastfetch/neofetch, btop/htop, nvim/vim/nano, lazygit, fzf
+5. **Fuzzy search** (user note: "fuzzy search capabilities") — new
+   `src/fuzzy.rs`: subsequence scorer with word-start/consecutive bonuses and
+   short-haystack preference; `fuzzy_rank` orders `/`-search results best-first
+   across name + description for Commands and Workflows.
+6. **Fetch support** (user note: "add fetch support"): `f` on the dashboard
+   opens a fetch panel built from sysinfo (user@host, OS, kernel, **init system
+   detection: systemd/OpenRC/unknown**, uptime, CPU, RAM, swap).
+
+### Tests
+- Unit: fuzzy scorer (subsequences, case, bonuses, ranking), seed idempotency
+  helper expectations, init-system detection values
+- BDD: seeded families + options + tools exist (git/git/docker/systemctl/
+  rc-service/rc-update/yazi/fastfetch), seeding is idempotent, fuzzy ranking
+  picks the best match, init detection returns a supported value
+- **Validation**: `cargo fmt` ✔ · `clippy --all-targets` 0 errors ✔ · `cargo build` ✔
+  · `cargo test` → **122 passed / 0 failed** (97 lib + 25 BDD)
+
+---
+
+## 🎯 Session 8: developer mode — wipe users without login (completed)
 
 **Goal: while developing/testing (`cargo run`), be able to delete every user
 without logging in — never available that way in production.**
