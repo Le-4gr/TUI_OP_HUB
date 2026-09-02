@@ -344,6 +344,32 @@ pub async fn admin_reset_password(
     repository::set_password_hash(pool, &user.id, &password_hash, salt.as_str()).await
 }
 
+// ── Developer mode (US-NF: development ergonomics) ──────────────────────────
+
+/// True when the app runs in **developer mode**.
+///
+/// Developer mode is enabled automatically for debug builds (`cargo run`,
+/// `cargo test` — anything without `--release`) or when the environment
+/// variable `TUI_OP_HUB_DEV=1` is set. It unlocks maintenance actions such as
+/// deleting all users without logging in, so auth state can be reset freely
+/// while developing. It is **never** available in release builds unless the
+/// env var is set explicitly.
+#[doc(hidden)]
+pub fn dev_mode_enabled() -> bool {
+    dev_mode_enabled_for(
+        cfg!(debug_assertions),
+        std::env::var("TUI_OP_HUB_DEV").ok().as_deref(),
+    )
+}
+
+/// Pure decision function for [`dev_mode_enabled`] (unit-testable).
+pub fn dev_mode_enabled_for(debug_build: bool, env_value: Option<&str>) -> bool {
+    let env_on = env_value
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    debug_build || env_on
+}
+
 pub fn encrypt_value(plaintext: &str, key: &EncryptionKey) -> AppResult<String> {
     let cipher = XChaCha20Poly1305::new(key.as_bytes().into());
     let nonce = XChaCha20Poly1305::generate_nonce(&mut AeadOsRng);
@@ -409,5 +435,22 @@ mod tests {
         // Key should be zeroized after drop
         // This is a conceptual test - actual verification would require unsafe code
         assert_eq!(key_copy.len(), 32);
+    }
+
+    // ── Developer mode (US-NF) ──────────────────────────────────────────────
+
+    /// Scenario: developer mode is automatic for debug builds, opt-in otherwise
+    #[test]
+    fn dev_mode_enabled_for_covers_all_cases() {
+        // Debug builds (cargo run / cargo test) are always dev mode
+        assert!(dev_mode_enabled_for(true, None));
+        assert!(dev_mode_enabled_for(true, Some("0")));
+        // Release builds need the explicit opt-in env var
+        assert!(!dev_mode_enabled_for(false, None));
+        assert!(!dev_mode_enabled_for(false, Some("0")));
+        assert!(!dev_mode_enabled_for(false, Some("false")));
+        assert!(dev_mode_enabled_for(false, Some("1")));
+        assert!(dev_mode_enabled_for(false, Some("true")));
+        assert!(dev_mode_enabled_for(false, Some("TRUE")));
     }
 }

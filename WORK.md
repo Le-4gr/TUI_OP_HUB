@@ -5,7 +5,37 @@
 
 ---
 
-## 🎯 Session 7 (current): numpad support in Settings + BDD tests
+## 🎯 Session 8 (current): developer mode — wipe users without login
+
+**Goal: while developing/testing (`cargo run`), be able to delete every user
+without logging in — never available that way in production.**
+
+### What was done and how
+1. **Detection** (`src/auth/mod.rs`): `dev_mode_enabled()` = debug build
+   (`cfg!(debug_assertions)` — true for `cargo run`/`cargo test`, false for
+   `--release`) OR `TUI_OP_HUB_DEV=1`. Pure testable helper
+   `dev_mode_enabled_for(debug_build, env_value)` covers both branches in tests.
+2. **Repository**: `delete_all_users()` — deletes all `user_profiles`; secrets
+   and user keys are removed with them via the FK cascade.
+3. **Settings screen**: with dev mode on, the title shows `[DEV]`, the footer
+   gains `d: DEV wipe users`, and pressing **`d` twice** (two-step confirm)
+   deletes every user without logging in, showing
+   "✓ DEV: deleted N user(s) — next signup is admin". The key is inert in
+   release builds (guard `KeyCode::Char('d') if dev_mode_enabled()`).
+4. **REST**: dev-gated `GET /users` (list) and `DELETE /users` (wipe) endpoints —
+   both refuse with an explanatory error outside developer mode.
+5. **BDD scenario** `given_dev_mode_when_d_pressed_twice_then_all_users_deleted`:
+   two users exist → `d` once only arms the confirm → `d` again wipes all →
+   next signup is admin again. Plus unit tests for `dev_mode_enabled_for`
+   (all env spellings, debug/release matrix) and `delete_all_users`.
+
+### Validation
+- `cargo fmt` ✔ · `clippy --all-targets` 0 errors ✔ · `cargo build` ✔
+- `cargo test` → **112 passed / 0 failed** (91 lib + 21 BDD)
+
+---
+
+## 🎯 Session 7: numpad support in Settings + BDD tests (completed)
 
 **Goal: make the numpad work in the Settings screens (previously only Esc did
 anything) and cover the TUI screens with BDD tests.**

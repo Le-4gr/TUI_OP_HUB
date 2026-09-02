@@ -439,6 +439,16 @@ pub async fn delete_user(pool: &SqlitePool, user_id: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// Delete **all** users (and with them secrets + user keys via FK cascade).
+/// Only callable in developer mode — used to reset auth state while testing.
+/// Returns the number of deleted users.
+pub async fn delete_all_users(pool: &SqlitePool) -> AppResult<u64> {
+    let result = sqlx::query("DELETE FROM user_profiles")
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
 /// Replace a user's password hash (admin reset; US-SEC). The encryption key is
 /// NOT re-derivable from the new password, so secrets stay encrypted with the
 /// old key — pair with `delete_user` when secrets must be recoverable.
@@ -855,5 +865,26 @@ mod tests {
         assert!(runs
             .iter()
             .any(|r| !r.success && r.error.as_deref() == Some("boom")));
+    }
+
+    // ── Developer mode (US-NF) ──────────────────────────────────────────────
+
+    /// Scenario: dev mode wipes every user in one call
+    /// Given multiple users (with secrets), when `delete_all_users` runs,
+    /// then the database has no users and their secrets are gone too.
+    #[tokio::test]
+    async fn given_users_when_delete_all_users_then_database_is_empty() {
+        let pool = test_pool().await;
+        let a = get_or_create_user(&pool, "a").await.unwrap();
+        get_or_create_user(&pool, "b").await.unwrap();
+        assert_eq!(count_users(&pool).await.unwrap(), 2);
+
+        // Secrets belong to users and cascade with them
+        create_secret(&pool, &a.id, "key", "enc").await.unwrap();
+
+        let deleted = delete_all_users(&pool).await.unwrap();
+        assert_eq!(deleted, 2);
+        assert_eq!(count_users(&pool).await.unwrap(), 0);
+        assert!(list_secrets(&pool, &a.id).await.unwrap().is_empty());
     }
 }

@@ -83,6 +83,13 @@ pub fn router(pool: Arc<SqlitePool>) -> Router {
         )
         .route("/tags", get(list_tags_handler))
         .route("/types", get(list_types_handler))
+        // Developer-mode user management (US-NF): wiped/reset auth state while
+        // testing. Only available when running a debug build (cargo run/test)
+        // or with TUI_OP_HUB_DEV=1.
+        .route(
+            "/users",
+            get(list_users_handler).delete(delete_all_users_handler),
+        )
         // Secrets
         .route(
             "/secrets",
@@ -326,6 +333,44 @@ async fn list_types_handler(
     repository::list_types(&state.pool)
         .await
         .map(Json)
+        .map_err(|e| e.to_string())
+}
+
+// ── Developer-mode user management (US-NF) ──────────────────────────────────
+
+async fn list_users_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, String> {
+    if !crate::auth::dev_mode_enabled() {
+        return Err(
+            "user management requires developer mode (debug build or TUI_OP_HUB_DEV=1)".to_string(),
+        );
+    }
+    repository::list_user_profiles(&state.pool)
+        .await
+        .map(|users| Json(serde_json::json!({ "users": users, "count": users.len() })))
+        .map_err(|e| e.to_string())
+}
+
+/// DEV: delete every user (secrets/user keys cascade). Without logging in —
+/// this endpoint only exists in developer mode so auth state can be reset
+/// between tests.
+async fn delete_all_users_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, String> {
+    if !crate::auth::dev_mode_enabled() {
+        return Err(
+            "user management requires developer mode (debug build or TUI_OP_HUB_DEV=1)".to_string(),
+        );
+    }
+    repository::delete_all_users(&state.pool)
+        .await
+        .map(|deleted| {
+            Json(serde_json::json!({
+                "deleted": deleted,
+                "note": "next signup becomes admin"
+            }))
+        })
         .map_err(|e| e.to_string())
 }
 

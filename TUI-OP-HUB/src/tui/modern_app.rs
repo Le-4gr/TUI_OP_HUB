@@ -164,6 +164,8 @@ pub struct ModernApp {
     advanced: AdvancedState,
     // SSH/GPG key generation form (US-SEC-01)
     keygen: KeygenState,
+    // Developer mode: two-step confirmation for wiping all users
+    dev_confirm_wipe: bool,
     // Overlay states (forms, visual builder, popups)
     visual_form: Option<VisualWorkflowState>,
     confirm_delete: Option<ConfirmDelete>,
@@ -214,6 +216,7 @@ impl ModernApp {
             settings: SettingsState::default(),
             advanced: AdvancedState::default(),
             keygen: KeygenState::default(),
+            dev_confirm_wipe: false,
             // Overlays start closed
             visual_form: None,
             confirm_delete: None,
@@ -3338,6 +3341,29 @@ impl ModernApp {
                 self.advanced.active = true;
                 self.advanced.error = None;
             }
+            KeyCode::Char('d') if crate::auth::dev_mode_enabled() => {
+                // Developer mode: wipe ALL users without logging in so auth
+                // state can be reset while testing (two-step confirm)
+                if self.dev_confirm_wipe {
+                    self.dev_confirm_wipe = false;
+                    match repository::delete_all_users(&*self.pool).await {
+                        Ok(n) => {
+                            self.status_message = Some(format!(
+                                "\u{2713} DEV: deleted {} user(s) \u{2014} next signup is admin",
+                                n
+                            ));
+                        }
+                        Err(e) => {
+                            self.status_message = Some(format!("\u{2717} DEV wipe failed: {}", e))
+                        }
+                    }
+                    let _ = self.fetch_stats().await;
+                } else {
+                    self.dev_confirm_wipe = true;
+                    self.status_message =
+                        Some("DEV: press d again to delete ALL users".to_string());
+                }
+            }
             KeyCode::Left if row == SETTINGS_THEME_ROW => self.cycle_theme(-1),
             KeyCode::Right if row == SETTINGS_THEME_ROW => self.cycle_theme(1),
             KeyCode::Enter => match row {
@@ -3806,7 +3832,11 @@ impl ModernApp {
     fn render_settings_screen(&self, f: &mut Frame) {
         let area = f.area();
         let block = Block::default()
-            .title(" ⚙️ Settings ")
+            .title(if crate::auth::dev_mode_enabled() {
+                " ⚙️ Settings [DEV] "
+            } else {
+                " ⚙️ Settings "
+            })
             .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -3870,10 +3900,21 @@ impl ModernApp {
 
         f.render_widget(Paragraph::new(lines), chunks[0]);
 
-        let footer = if self.settings.dirty {
-            "↑↓ navigate · Enter edit · ←/→ theme · a: advanced · Ctrl+S SAVE · Esc back  (unsaved)"
+        let dev_hint = if crate::auth::dev_mode_enabled() {
+            " · d: DEV wipe users"
         } else {
-            "↑↓ navigate · Enter edit · ←/→ theme · a: advanced · Ctrl+S save · Esc back"
+            ""
+        };
+        let footer = if self.settings.dirty {
+            format!(
+                "↑↓ navigate · Enter edit · ←/→ theme · a: advanced · Ctrl+S SAVE · Esc back{}  (unsaved)",
+                dev_hint
+            )
+        } else {
+            format!(
+                "↑↓ navigate · Enter edit · ←/→ theme · a: advanced · Ctrl+S save · Esc back{}",
+                dev_hint
+            )
         };
         f.render_widget(
             Paragraph::new(Span::styled(

@@ -332,6 +332,14 @@ cd TUI-OP-HUB
 cargo test
 ```
 
+**Developer mode** — active automatically in debug builds (`cargo run`, `cargo test`)
+or with `TUI_OP_HUB_DEV=1`:
+- Settings screen title shows `[DEV]` and the footer offers `d: DEV wipe users`
+- Pressing `d` **twice** deletes **all users** (secrets + keys cascade) **without
+  logging in** — auth state resets instantly while testing, and the next signup
+  becomes admin again
+- REST: `GET /users` (list) and `DELETE /users` (wipe) are available in dev mode only
+
 ## Project Layout
 
 ```

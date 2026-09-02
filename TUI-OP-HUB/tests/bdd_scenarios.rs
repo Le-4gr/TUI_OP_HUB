@@ -648,6 +648,45 @@ async fn given_keygen_open_when_numpad_digits_pressed_then_fields_move() {
     assert_eq!(app.bdd_keygen_field(), 0);
 }
 
+// ============================================================================
+// Feature: Developer mode — wipe users without logging in (US-NF)
+// ============================================================================
+
+/// Scenario: dev mode deletes every user straight from the Settings screen
+/// Given developer mode (debug build / TUI_OP_HUB_DEV=1) and two registered
+/// users, when `d` is pressed twice in Settings, then all users are gone
+/// without logging in — and the next signup becomes admin again.
+#[tokio::test]
+async fn given_dev_mode_when_d_pressed_twice_then_all_users_deleted() {
+    // Given: developer mode (debug build) and two registered users
+    let pool = given_fresh_database().await;
+    let mut app = ModernApp::new(pool.clone(), AppConfig::default());
+    let auth = tui_op_hub::auth::AuthManager::new(pool.clone());
+    let _first = auth.create_user("first", "password1").await.unwrap();
+    let _second = auth.create_user("second", "password2").await.unwrap();
+    assert_eq!(tui_op_hub::repository::count_users(&pool).await.unwrap(), 2);
+
+    // When: open Settings and press d twice (two-step confirm)
+    app.bdd_open_settings();
+    app.bdd_press(crossterm::event::KeyCode::Char('d')).await;
+    assert_eq!(
+        tui_op_hub::repository::count_users(&pool).await.unwrap(),
+        2,
+        "first press only arms the confirmation"
+    );
+    app.bdd_press(crossterm::event::KeyCode::Char('d')).await;
+
+    // Then: every user is gone without any login
+    assert_eq!(tui_op_hub::repository::count_users(&pool).await.unwrap(), 0);
+
+    // And: the next signup becomes admin again (fresh dev cycle)
+    let auth2 = tui_op_hub::auth::AuthManager::new(pool.clone());
+    let new_admin = auth2.create_user("fresh", "password3").await.unwrap();
+    assert!(tui_op_hub::repository::is_admin(&pool, &new_admin)
+        .await
+        .unwrap());
+}
+
 /// Scenario: the first user is admin and admins manage users
 /// Given a fresh database, when the first user signs up, then they are admin;
 /// a second user is not, and deleting a user removes their secrets (the
