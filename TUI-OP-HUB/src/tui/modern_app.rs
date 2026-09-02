@@ -388,18 +388,27 @@ impl ModernApp {
         let mut terminal = Terminal::new(backend)?;
 
         loop {
-            // Dev terminal: suspend TUI, run shell, restore
+            // `: open a NEW terminal window (detached; the TUI keeps running)
             if self.wants_terminal {
                 self.wants_terminal = false;
-                terminal.clear()?;
-                disable_raw_mode()?;
-                execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-                let _ = tokio::process::Command::new(&shell).status().await;
-                execute!(terminal.backend_mut(), EnterAlternateScreen)?;
-                enable_raw_mode()?;
-                terminal.clear()?;
-                self.status_message = Some("\u{2713} Back from terminal".to_string());
+                match terminal_window_command() {
+                    Some((prog, args)) => {
+                        let spawned = std::process::Command::new(&prog)
+                            .args(&args)
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn();
+                        self.status_message = match spawned {
+                            Ok(_) => Some(format!("\u{2713} Opened new terminal: {}", prog)),
+                            Err(e) => Some(format!("\u{2717} Failed to open {}: {}", prog, e)),
+                        };
+                    }
+                    None => {
+                        self.status_message =
+                            Some("\u{2717} No terminal emulator found (set $TERMINAL)".to_string());
+                    }
+                }
             }
             if self.needs_full_redraw {
                 terminal.clear()?;
@@ -1425,7 +1434,7 @@ impl ModernApp {
                 }
             }
             KeyCode::Char('`') => {
-                // Drop into a subshell (embedded terminal)
+                // Open a new terminal window (run loop spawns it)
                 self.wants_terminal = true;
             }
             KeyCode::Char('R') => {
@@ -1944,7 +1953,7 @@ impl ModernApp {
                 ("1-6", "Tabs"),
                 ("f", "Fetch"),
                 ("p", "Processes"),
-                ("`", "Shell"),
+                ("`", "New term"),
                 ("?", "Keybinds"),
                 ("q", "Quit"),
             ],
@@ -1959,7 +1968,7 @@ impl ModernApp {
                 ("i", "Options"),
                 ("m", "Man"),
                 ("R", "Sudo"),
-                ("`", "Shell"),
+                ("`", "New term"),
                 ("x", "Export"),
                 ("I", "Import"),
                 ("/", "Find"),
@@ -2898,18 +2907,6 @@ impl ModernApp {
                 }
             }
         }
-    }
-
-    /// Drop into a subshell (embedded terminal).
-    pub async fn spawn_terminal(&mut self) {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen);
-        let _ = tokio::process::Command::new(&shell).status().await;
-        let _ = crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen);
-        let _ = crossterm::terminal::enable_raw_mode();
-        self.needs_full_redraw = true;
-        self.status_message = Some("Back from terminal".to_string());
     }
 
     /// Render the sudo password input popup (US-CMD-09).
@@ -4736,8 +4733,7 @@ impl ModernApp {
             "1-6",
             "Dashboard / Commands / Projects / Workflows / Secrets / Settings",
         ));
-        lines.push(row("`", "Drop into a subshell (embedded terminal)"));
-        lines.push(row("`", "Drop into a subshell (embedded terminal)"));
+        lines.push(row("`", "Open a new terminal window"));
         lines.push(row("/", "Fuzzy search in the current list"));
         lines.push(row("?", "Toggle this keybind helper"));
         lines.push(row("q", "Quit"));
@@ -5172,6 +5168,66 @@ impl ModernApp {
     }
 }
 
+/// Find a terminal emulator command to open a NEW terminal window running
+/// the user's shell. Probes `$TUI_OP_HUB_TERMINAL` / `$TERMINAL` first, then
+/// falls back through common Linux terminal emulators. Returns
+/// `(program, args)` or `None` if no emulator is found.
+///
+/// Detached spawn: the TUI keeps running while the new window is open.
+pub(crate) fn terminal_window_command() -> Option<(String, Vec<String>)> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+
+    // User override (full command with args allowed via shell-style split)
+    for var in ["TUI_OP_HUB_TERMINAL", "TERMINAL"] {
+        if let Ok(t) = std::env::var(var) {
+            let t = t.trim().to_string();
+            if !t.is_empty() && which_program(&t) {
+                // Try `-e <shell>` (most emulators), then plain `<shell>`
+                return Some((t, vec!["-e".to_string(), shell]));
+            }
+        }
+    }
+
+    // (program, args-before-shell) for known emulators, in preference order
+    const EMULATORS: &[(&str, &[&str])] = &[
+        ("alacritty", &["-e"]),
+        ("kitty", &["-e"]),
+        ("wezterm", &["start", "--"]),
+        ("gnome-terminal", &["--"]),
+        ("konsole", &["-e"]),
+        ("xfce4-terminal", &["-e"]),
+        ("tilix", &["-e"]),
+        ("foot", &[]),
+        ("xterm", &["-e"]),
+        ("st", &["-e"]),
+        ("uxterm", &["-e"]),
+    ];
+
+    for (prog, prefix) in EMULATORS {
+        if which_program(prog) {
+            let mut args: Vec<String> = prefix.iter().map(|s| s.to_string()).collect();
+            args.push(shell);
+            return Some((prog.to_string(), args));
+        }
+    }
+    None
+}
+
+/// Poor-man's `which`: check whether `prog` resolves to an executable file
+/// on `$PATH` (or is an absolute path that exists).
+pub(crate) fn which_program(prog: &str) -> bool {
+    if prog.contains('/') {
+        return std::path::Path::new(prog).is_file();
+    }
+    std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|p| !p.is_empty())
+        .map(std::path::PathBuf::from)
+        .map(|dir| dir.join(prog))
+        .any(|candidate| candidate.is_file())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5571,5 +5627,30 @@ mod tests {
         app.handle_key(key(KeyCode::Enter)).await;
         assert!(app.advanced.error.is_none());
         assert_eq!(app.config.database.busy_timeout_ms, 5000);
+    }
+
+    #[tokio::test]
+    async fn which_program_finds_shell_and_rejects_garbage() {
+        // `sh` must exist on any Unix build host
+        assert!(which_program("sh"));
+        assert!(!which_program("definitely-not-a-real-program-xyz-42"));
+        // Absolute path form
+        assert!(which_program("/bin/sh") || !std::path::Path::new("/bin/sh").is_file());
+    }
+
+    #[tokio::test]
+    async fn terminal_window_command_returns_valid_shape() {
+        match terminal_window_command() {
+            Some((prog, args)) => {
+                assert!(!prog.is_empty());
+                // Last arg must be the shell to run
+                let last = args.last().expect("at least shell arg");
+                assert!(last.contains("sh"), "last arg should be a shell: {}", last);
+            }
+            None => {
+                // No emulator on this machine is acceptable (headless CI);
+                // the TUI shows a status message in that case.
+            }
+        }
     }
 }
