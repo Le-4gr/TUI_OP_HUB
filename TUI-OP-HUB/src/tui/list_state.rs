@@ -286,6 +286,65 @@ impl VisualWorkflowState {
     }
 }
 
+// ── Settings screen state (US-APP-01, US-APP-02, US-APP-06) ─────────────────
+
+/// Ordered Settings rows: editor, page size, theme preset, then the 9 keybinding actions.
+pub const SETTINGS_ROWS: [&str; 12] = [
+    "editor",
+    "page_size",
+    "theme",
+    "quit",
+    "help",
+    "search",
+    "filter",
+    "create",
+    "edit",
+    "delete",
+    "copy",
+    "run",
+];
+
+/// Rows 3..=11 are keybinding actions; row 2 is the theme preset (cycles).
+pub const SETTINGS_ACTIONS: [&str; 9] = [
+    "quit", "help", "search", "filter", "create", "edit", "delete", "copy", "run",
+];
+pub const SETTINGS_KEYBIND_FIRST_ROW: usize = 3;
+pub const SETTINGS_THEME_ROW: usize = 2;
+
+/// Interaction state of the Settings screen.
+#[derive(Debug, Clone, Default)]
+pub struct SettingsState {
+    pub selected: usize,
+    /// Row whose text value is being edited (buffer holds the draft).
+    pub editing_text: Option<usize>,
+    /// Row capturing the next pressed key as a keybinding.
+    pub capturing_key: Option<usize>,
+    pub buffer: String,
+    pub error: Option<String>,
+    pub dirty: bool,
+}
+
+impl SettingsState {
+    pub fn select_next(&mut self) {
+        if self.selected + 1 < SETTINGS_ROWS.len() {
+            self.selected += 1;
+        }
+    }
+
+    pub fn select_previous(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    /// The action being rebind-captured, if any.
+    pub fn capturing_action(&self) -> Option<&'static str> {
+        self.capturing_key
+            .and_then(|row| SETTINGS_ROWS.get(row))
+            .copied()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

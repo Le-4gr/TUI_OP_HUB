@@ -5,7 +5,59 @@
 
 ---
 
-## 🎯 Session 2 (current): tests + BDD + agent workflow hardening
+## 🎯 Session 3 (current): Settings screen — editor, defaults, theming, keybindings
+
+**Goal: a real Settings screen where the user can change the text editor, defaults,
+theme and keybindings — persisted to `config.toml`.**
+
+### What was done and how
+1. **Config layer** (`src/config/mod.rs`):
+   - `GeneralConfig.editor` — external editor (empty = `$EDITOR` → `"vi"`)
+   - `TuiConfig.page_size` (default 15) — list page size
+   - `AppConfig::save()` — writes TOML, creating parent dirs (used by Settings `Ctrl+S`)
+   - `parse_color` now supports hex `"#rrggbb"`
+   - `KeybindingsConfig`: `ACTIONS` list, `get()`/`set()`/`key_for()` per action,
+     `keycode_to_string()` (inverse of `to_keycode` for rebind capture).
+     `to_keycode` now keeps single characters case-sensitive (uppercase bindings work;
+     named keys like `tab`/`esc` stay case-insensitive)
+2. **Theme presets** (`src/tui/modern_ui.rs`): `ModernTheme::PRESETS`
+   (`dark`, `light`, `nord`, `dracula`, `gruvbox`), `preset()`, `from_config()`
+   (unknown names fall back to the default palette)
+3. **Settings screen** (`src/tui/modern_app.rs`, state in `list_state.rs`):
+   - 12 rows: Text editor, List page size, Theme, then the 9 keybinding actions
+   - `↑/↓` navigate · `Enter` edits a value inline (editor/page size) or starts
+     **key-rebind capture** (press any key → bound; `Esc` cancels) · `←/→` cycles the
+     theme preset **applied live** · `Ctrl+S` saves to `config.toml` · `Esc` back
+   - Page-size changes apply to all four list states immediately
+   - Keybindings are no longer hardcoded: `handle_dashboard_key` resolves
+     create/edit/delete/copy/run/search/filter/help/quit from the config
+4. **External editor integration** (US-CMD-05): `o` on the Commands tab opens the
+   selected command's content in the configured editor — TUI suspends
+   (`LeaveAlternateScreen` + raw-mode off), `run_external_editor()` (temp file +
+   `sh -c "$EDITOR $FILE"`), then re-reads, re-enables the TUI and saves the entity.
+5. **`main.rs`** now passes the loaded `AppConfig` into `ModernApp::new(pool, config)`;
+   the theme and page size are applied at startup.
+6. **Docs**: README config sample gains `[general].editor`, `page_size = 15`, theme
+   presets, a Settings-screen key table, and the `o` keybinding row.
+
+### Tests (per the AGENTS.md workflow)
+- Unit: config round-trip save/load, defaults, missing-dir creation,
+  `to_keycode`/`keycode_to_string` round trips, rebind resolution + invalid fallback,
+  hex color parsing, `SettingsState` navigation, theme presets (`modern_ui`)
+- Behavioral (`modern_app::tests`): settings navigation clamping, editor value editing,
+  key-rebind capture → binding stored **and the rebound key opens the create form**,
+  live theme cycling (light → dark), invalid page size rejected, `Ctrl+S` persists and
+  reloads from a temp path
+- BDD (`tests/bdd_scenarios.rs`): config round trip, keybinding action resolution for
+  all 9 actions + capture round trip, theme preset mapping/fallback
+
+### Validation
+- `cargo fmt` ✔ · `cargo clippy --all-targets` → 0 errors ✔ · `cargo build` ✔
+- `cargo test` → **79 passed / 0 failed** (67 lib + 12 BDD)
+
+---
+
+## 🎯 Session 2: tests + BDD + agent workflow hardening (completed)
 
 **Goal: test everything (unit + BDD), and bake testing + git into the agent workflow.**
 

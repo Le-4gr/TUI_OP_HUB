@@ -47,6 +47,72 @@ impl Default for ModernTheme {
     }
 }
 
+impl ModernTheme {
+    /// Theme preset names selectable in the Settings screen (US-APP-01).
+    pub const PRESETS: [&'static str; 5] = ["dark", "light", "nord", "dracula", "gruvbox"];
+
+    /// Look up a theme preset by name.
+    pub fn preset(name: &str) -> Option<ModernTheme> {
+        match name.to_lowercase().as_str() {
+            "dark" => Some(Self::default()),
+            "light" => Some(Self {
+                primary: Color::Rgb(59, 73, 223),
+                secondary: Color::Rgb(124, 58, 237),
+                accent: Color::Rgb(219, 39, 119),
+                success: Color::Rgb(22, 163, 74),
+                warning: Color::Rgb(217, 119, 6),
+                error: Color::Rgb(220, 38, 38),
+                bg: Color::Rgb(248, 248, 252),
+                fg: Color::Rgb(30, 30, 40),
+                border: Color::Rgb(203, 203, 213),
+                highlight: Color::Rgb(2, 132, 199),
+            }),
+            "nord" => Some(Self {
+                primary: Color::Rgb(94, 129, 172),
+                secondary: Color::Rgb(129, 161, 193),
+                accent: Color::Rgb(191, 97, 106),
+                success: Color::Rgb(163, 190, 140),
+                warning: Color::Rgb(235, 203, 139),
+                error: Color::Rgb(191, 97, 106),
+                bg: Color::Rgb(46, 52, 64),
+                fg: Color::Rgb(216, 222, 233),
+                border: Color::Rgb(76, 86, 106),
+                highlight: Color::Rgb(136, 192, 208),
+            }),
+            "dracula" => Some(Self {
+                primary: Color::Rgb(189, 147, 249),
+                secondary: Color::Rgb(139, 143, 190),
+                accent: Color::Rgb(255, 121, 198),
+                success: Color::Rgb(80, 250, 123),
+                warning: Color::Rgb(241, 250, 140),
+                error: Color::Rgb(255, 85, 85),
+                bg: Color::Rgb(40, 42, 54),
+                fg: Color::Rgb(248, 248, 242),
+                border: Color::Rgb(68, 71, 90),
+                highlight: Color::Rgb(139, 233, 253),
+            }),
+            "gruvbox" => Some(Self {
+                primary: Color::Rgb(250, 189, 47),
+                secondary: Color::Rgb(184, 187, 38),
+                accent: Color::Rgb(254, 128, 62),
+                success: Color::Rgb(184, 187, 38),
+                warning: Color::Rgb(250, 189, 47),
+                error: Color::Rgb(251, 73, 52),
+                bg: Color::Rgb(40, 40, 40),
+                fg: Color::Rgb(235, 219, 178),
+                border: Color::Rgb(146, 131, 116),
+                highlight: Color::Rgb(131, 165, 152),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Build the TUI theme from the config file (falls back to the default).
+    pub fn from_config(cfg: &crate::config::ThemeConfig) -> Self {
+        Self::preset(&cfg.name).unwrap_or_default()
+    }
+}
+
 /// Application state
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppState {

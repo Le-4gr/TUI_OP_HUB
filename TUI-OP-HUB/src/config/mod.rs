@@ -16,6 +16,9 @@ pub struct AppConfig {
     /// Configurable keybindings (US-APP-02).
     #[serde(default)]
     pub keybindings: KeybindingsConfig,
+    /// General preferences: editor and other defaults (US-APP-01, US-APP-06).
+    #[serde(default)]
+    pub general: GeneralConfig,
     /// Current user for multi-user encryption
     #[serde(default = "default_user")]
     pub current_user: String,
@@ -29,7 +32,25 @@ impl Default for AppConfig {
             tui: TuiConfig::default(),
             theme: ThemeConfig::default(),
             keybindings: KeybindingsConfig::default(),
+            general: GeneralConfig::default(),
             current_user: default_user(),
+        }
+    }
+}
+
+/// General preferences editable from the Settings screen (US-APP-01).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneralConfig {
+    /// External text editor used to edit command/script/workflow content
+    /// (e.g. "vi", "nvim", "code --wait"). Empty = use `$EDITOR` or "vi".
+    #[serde(default)]
+    pub editor: String,
+}
+
+impl Default for GeneralConfig {
+    fn default() -> Self {
+        Self {
+            editor: String::new(),
         }
     }
 }
@@ -79,16 +100,23 @@ fn default_api_addr() -> String {
 pub struct TuiConfig {
     #[serde(default = "default_tui_enabled")]
     pub enabled: bool,
+    /// Page size for TUI lists (US-APP-01, changeable in Settings)
+    #[serde(default = "default_page_size")]
+    pub page_size: usize,
 }
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
             enabled: default_tui_enabled(),
+            page_size: default_page_size(),
         }
     }
 }
 fn default_tui_enabled() -> bool {
     true
+}
+fn default_page_size() -> usize {
+    15
 }
 
 /// Theme configuration (US-APP-01).
@@ -148,7 +176,20 @@ impl ThemeConfig {
 }
 
 fn parse_color(s: &str) -> ratatui::style::Color {
-    match s.to_lowercase().as_str() {
+    let lower = s.to_lowercase();
+    // Hex colors: "#rrggbb" (US-APP-01)
+    if let Some(hex) = lower.strip_prefix('#') {
+        if hex.len() == 6 {
+            if let Ok(v) = u32::from_str_radix(hex, 16) {
+                return ratatui::style::Color::Rgb(
+                    ((v >> 16) & 0xFF) as u8,
+                    ((v >> 8) & 0xFF) as u8,
+                    (v & 0xFF) as u8,
+                );
+            }
+        }
+    }
+    match lower.as_str() {
         "white" => ratatui::style::Color::White,
         "black" => ratatui::style::Color::Black,
         "red" => ratatui::style::Color::Red,
@@ -238,6 +279,8 @@ impl KeybindingsConfig {
     /// Supports single characters and special keys: "tab", "enter", "esc", "up", "down", "left", "right".
     pub fn to_keycode(s: &str) -> Option<crossterm::event::KeyCode> {
         use crossterm::event::KeyCode;
+        // Named keys are case-insensitive; single characters keep their case so
+        // that rebinding to an uppercase letter round-trips (US-APP-02).
         match s.to_lowercase().as_str() {
             "tab" => Some(KeyCode::Tab),
             "enter" => Some(KeyCode::Enter),
@@ -248,8 +291,13 @@ impl KeybindingsConfig {
             "right" => Some(KeyCode::Right),
             "backspace" => Some(KeyCode::Backspace),
             "space" => Some(KeyCode::Char(' ')),
-            s if s.len() == 1 => s.chars().next().map(KeyCode::Char),
-            _ => None,
+            _ => {
+                if s.chars().count() == 1 {
+                    s.chars().next().map(KeyCode::Char)
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -280,6 +328,66 @@ impl KeybindingsConfig {
     pub fn run_key(&self) -> crossterm::event::KeyCode {
         Self::to_keycode(&self.run).unwrap_or(crossterm::event::KeyCode::Char('r'))
     }
+
+    /// Ordered action names shown in the Settings screen (US-APP-02).
+    pub const ACTIONS: [&'static str; 9] = [
+        "quit", "help", "search", "filter", "create", "edit", "delete", "copy", "run",
+    ];
+
+    /// Current binding text for an action (falls back to the default if unknown).
+    pub fn get(&self, action: &str) -> &str {
+        match action {
+            "quit" => &self.quit,
+            "help" => &self.help,
+            "search" => &self.search,
+            "filter" => &self.filter,
+            "create" => &self.create,
+            "edit" => &self.edit,
+            "delete" => &self.delete,
+            "copy" => &self.copy,
+            "run" => &self.run,
+            _ => "",
+        }
+    }
+
+    /// Set the binding text for an action (unknown actions are ignored).
+    pub fn set(&mut self, action: &str, value: String) {
+        match action {
+            "quit" => self.quit = value,
+            "help" => self.help = value,
+            "search" => self.search = value,
+            "filter" => self.filter = value,
+            "create" => self.create = value,
+            "edit" => self.edit = value,
+            "delete" => self.delete = value,
+            "copy" => self.copy = value,
+            "run" => self.run = value,
+            _ => {}
+        }
+    }
+
+    /// `KeyCode` for an action, with the legacy default as fallback.
+    pub fn key_for(&self, action: &str) -> crossterm::event::KeyCode {
+        Self::to_keycode(self.get(action)).unwrap_or(crossterm::event::KeyCode::Char('?'))
+    }
+
+    /// Inverse of [`Self::to_keycode`]: serialize a pressed key to config text.
+    pub fn keycode_to_string(code: crossterm::event::KeyCode) -> Option<String> {
+        use crossterm::event::KeyCode;
+        match code {
+            KeyCode::Char(' ') => Some("space".to_string()),
+            KeyCode::Char(c) => Some(c.to_string()),
+            KeyCode::Tab => Some("tab".to_string()),
+            KeyCode::Enter => Some("enter".to_string()),
+            KeyCode::Esc => Some("esc".to_string()),
+            KeyCode::Up => Some("up".to_string()),
+            KeyCode::Down => Some("down".to_string()),
+            KeyCode::Left => Some("left".to_string()),
+            KeyCode::Right => Some("right".to_string()),
+            KeyCode::Backspace => Some("backspace".to_string()),
+            _ => None,
+        }
+    }
 }
 
 impl AppConfig {
@@ -293,6 +401,20 @@ impl AppConfig {
         toml::from_str(&contents)
             .map_err(|e| AppError::Config(format!("failed to parse TOML: {e}")))
     }
+
+    /// Persist the config to TOML (used by the Settings screen, US-APP-06).
+    pub fn save(&self, path: &Path) -> AppResult<()> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| AppError::Config(format!("failed to create config dir: {e}")))?;
+            }
+        }
+        let contents = toml::to_string_pretty(self)
+            .map_err(|e| AppError::Config(format!("failed to serialize config: {e}")))?;
+        std::fs::write(path, contents)
+            .map_err(|e| AppError::Config(format!("failed to write config: {e}")))
+    }
     pub fn default_path() -> PathBuf {
         if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
             return PathBuf::from(xdg).join("tui-op-hub").join("config.toml");
@@ -304,5 +426,143 @@ impl AppConfig {
                 .join("config.toml");
         }
         PathBuf::from("config.toml")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_config_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "tui-op-hub-config-test-{}-{}.toml",
+            tag,
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    #[test]
+    fn defaults_are_sensible() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.tui.page_size, 15);
+        assert!(cfg.tui.enabled);
+        assert!(cfg.general.editor.is_empty(), "editor defaults to $EDITOR");
+        assert_eq!(cfg.theme.name, "dark");
+        assert_eq!(cfg.keybindings.get("create"), "n");
+        assert_eq!(KeybindingsConfig::ACTIONS.len(), 9);
+    }
+
+    /// Scenario: Settings saved to disk load back identically
+    /// Given a customized config, when it is saved and reloaded, then every
+    /// setting (editor, page size, theme, keybindings) round-trips.
+    #[test]
+    fn given_customized_config_when_saved_then_loads_identically() {
+        let mut cfg = AppConfig::default();
+        cfg.general.editor = "nvim".to_string();
+        cfg.tui.page_size = 25;
+        cfg.theme.name = "nord".to_string();
+        cfg.keybindings.set("create", "C".to_string());
+        cfg.keybindings.set("run", "F5".to_string()); // invalid → key_for falls back
+
+        let path = temp_config_path("roundtrip");
+        cfg.save(&path).unwrap();
+        let loaded = AppConfig::load(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded.general.editor, "nvim");
+        assert_eq!(loaded.tui.page_size, 25);
+        assert_eq!(loaded.theme.name, "nord");
+        assert_eq!(loaded.keybindings.get("create"), "C");
+    }
+
+    /// Scenario: saving into a non-existent directory creates it
+    #[test]
+    fn given_missing_dir_when_saved_then_created_and_written() {
+        let dir = std::env::temp_dir().join(format!("tui-op-hub-cfg-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("sub").join("config.toml");
+        AppConfig::default().save(&path).unwrap();
+        assert!(path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keybinding_parse_and_serialize_round_trip() {
+        use crossterm::event::KeyCode;
+        assert_eq!(KeybindingsConfig::to_keycode("n"), Some(KeyCode::Char('n')));
+        assert_eq!(KeybindingsConfig::to_keycode("TAB"), Some(KeyCode::Tab));
+        assert_eq!(
+            KeybindingsConfig::to_keycode("space"),
+            Some(KeyCode::Char(' '))
+        );
+        assert_eq!(KeybindingsConfig::to_keycode("f12"), None);
+
+        assert_eq!(
+            KeybindingsConfig::keycode_to_string(KeyCode::Char('x')),
+            Some("x".into())
+        );
+        assert_eq!(
+            KeybindingsConfig::keycode_to_string(KeyCode::Esc),
+            Some("esc".into())
+        );
+        assert_eq!(
+            KeybindingsConfig::keycode_to_string(KeyCode::Char(' ')),
+            Some("space".into())
+        );
+        assert_eq!(KeybindingsConfig::keycode_to_string(KeyCode::F(1)), None);
+
+        // Round trip both ways for a selection of keys
+        for code in [
+            KeyCode::Char('n'),
+            KeyCode::Tab,
+            KeyCode::Up,
+            KeyCode::Enter,
+        ] {
+            let text = KeybindingsConfig::keycode_to_string(code).unwrap();
+            assert_eq!(KeybindingsConfig::to_keycode(&text), Some(code));
+        }
+    }
+
+    /// Scenario: a rebinding is used by the action lookup
+    /// Given create is rebound to "C", when the create key is looked up,
+    /// then it resolves to the new key (and invalid text falls back safely).
+    #[test]
+    fn given_rebinding_when_looked_up_then_action_uses_it() {
+        use crossterm::event::KeyCode;
+        let mut kb = KeybindingsConfig::default();
+        assert_eq!(kb.key_for("create"), KeyCode::Char('n'));
+
+        kb.set("create", "C".to_string());
+        assert_eq!(kb.get("create"), "C");
+        assert_eq!(kb.key_for("create"), KeyCode::Char('C'));
+
+        // Unparseable binding text falls back to a safe key, never panics
+        kb.set("run", "not-a-key".to_string());
+        assert_eq!(kb.key_for("run"), KeyCode::Char('?'));
+        assert_eq!(kb.key_for("nonexistent-action"), KeyCode::Char('?'));
+    }
+
+    #[test]
+    fn hex_and_named_colors_parse() {
+        assert_eq!(
+            ThemeConfig::default().fg_color(),
+            ratatui::style::Color::White
+        );
+        assert_eq!(
+            ThemeConfig {
+                fg: "#4ade80".to_string(),
+                ..Default::default()
+            }
+            .fg_color(),
+            ratatui::style::Color::Rgb(0x4a, 0xde, 0x80)
+        );
+        // Invalid hex falls back
+        assert_eq!(
+            ThemeConfig {
+                fg: "#zzz".to_string(),
+                ..Default::default()
+            }
+            .fg_color(),
+            ratatui::style::Color::White
+        );
     }
 }

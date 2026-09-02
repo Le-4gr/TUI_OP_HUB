@@ -42,7 +42,8 @@ export TUI_OP_HUB_USER="default"  # Optional
 
 ## Configuration
 
-Create `~/.config/tui-op-hub/config.toml`:
+Create `~/.config/tui-op-hub/config.toml` (or edit everything live in the **Settings
+screen** — press `6` or Tab to it, then `Ctrl+S` to persist):
 ```toml
 [database]
 path = "tuihub.db"
@@ -53,14 +54,23 @@ bind_addr = "127.0.0.1:3001"
 
 [tui]
 enabled = true
-page_size = 10
+page_size = 15
+
+[general]
+# External editor used by the "open in editor" action (o on the Commands tab).
+# Empty = use $EDITOR, falling back to "vi".
+editor = ""
 
 [theme]
+# Preset: dark | light | nord | dracula | gruvbox (cycles with ←/→ in Settings)
+name = "dark"
+# Named colors or hex ("#rrggbb") overrides:
 fg = "white"
 bg = "black"
 accent = "cyan"
 
 [keybindings]
+# Rebindable live in Settings (Enter on a key row, then press the new key)
 quit = "q"
 help = "?"
 search = "/"
@@ -71,6 +81,15 @@ delete = "d"
 copy = "c"
 run = "r"
 ```
+
+### Settings screen (key `6`)
+| Key | Action |
+|:----|:-------|
+| ↑/↓ | Navigate setting rows |
+| Enter | Edit value (editor / page size) or start key rebind capture |
+| ←/→ | Cycle theme preset (applied live) |
+| Ctrl+S | Save settings to `config.toml` |
+| Esc | Back to dashboard |
 
 ## Security
 
@@ -100,6 +119,7 @@ run = "r"
 | / | Search |
 | f | Filter by tags |
 | c | Copy content |
+| o | Open command content in the configured external editor (Commands tab) |
 | r | Run (commands/workflows) |
 | v | View secret (Secrets tab) |
 | Esc | Cancel |

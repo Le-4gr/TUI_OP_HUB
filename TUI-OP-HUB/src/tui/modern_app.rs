@@ -4,8 +4,9 @@
 //! a complete login/signup flow before accessing the main application.
 
 use super::list_state::*;
-use super::modern_ui::{AppState, LoginField, LoginState, ModernUI};
+use super::modern_ui::{AppState, LoginField, LoginState, ModernTheme, ModernUI};
 use crate::auth::AuthManager;
+use crate::config::{AppConfig, KeybindingsConfig};
 use crate::models::{CreateEntity, CreateProject};
 use crate::repository;
 use crate::secrets;
@@ -25,6 +26,7 @@ use ratatui::{
 };
 use sqlx::SqlitePool;
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -139,6 +141,10 @@ pub struct ModernApp {
     should_quit: bool,
     stats: DashboardStats,
     current_user_id: Option<String>,
+    /// Loaded application config (editor, theme, keybindings, page size)
+    config: AppConfig,
+    /// Where `Ctrl+S` in Settings persists the config (US-APP-06)
+    config_path: PathBuf,
     // List states for each tab
     commands_list: CommandsListState,
     projects_list: ProjectsListState,
@@ -151,6 +157,8 @@ pub struct ModernApp {
     secret_form: SecretFormState,
     // Search state
     search_state: SearchState,
+    // Settings screen state
+    settings: SettingsState,
     // Overlay states (forms, visual builder, popups)
     visual_form: Option<VisualWorkflowState>,
     confirm_delete: Option<ConfirmDelete>,
@@ -170,20 +178,27 @@ fn cycle_field(current: usize, total: usize, forward: bool) -> usize {
 }
 
 impl ModernApp {
-    pub fn new(pool: Arc<SqlitePool>) -> Self {
+    pub fn new(pool: Arc<SqlitePool>, config: AppConfig) -> Self {
+        let page_size = config.tui.page_size.max(1);
+        let theme = ModernTheme::from_config(&config.theme);
         Self {
-            ui: ModernUI::new(),
+            ui: ModernUI {
+                theme,
+                ..ModernUI::new()
+            },
             auth_mode: AuthMode::Login,
             signup_state: SignupState::default(),
             pool,
             should_quit: false,
             stats: DashboardStats::default(),
             current_user_id: None,
-            // Initialize list states
-            commands_list: ListState::new(15),
-            projects_list: ListState::new(15),
-            workflows_list: ListState::new(15),
-            secrets_list: ListState::new(15),
+            config,
+            config_path: AppConfig::default_path(),
+            // Initialize list states (page size from config)
+            commands_list: ListState::new(page_size),
+            projects_list: ListState::new(page_size),
+            workflows_list: ListState::new(page_size),
+            secrets_list: ListState::new(page_size),
             // Initialize form states
             command_form: CommandFormState::default(),
             project_form: ProjectFormState::default(),
@@ -191,12 +206,27 @@ impl ModernApp {
             secret_form: SecretFormState::default(),
             // Initialize search state
             search_state: SearchState::default(),
+            settings: SettingsState::default(),
             // Overlays start closed
             visual_form: None,
             confirm_delete: None,
             run_result: None,
             status_message: None,
         }
+    }
+
+    /// `KeyCode` bound to a keybinding action (US-APP-02).
+    fn action_keycode(&self, action: &str) -> Option<KeyCode> {
+        KeybindingsConfig::to_keycode(self.config.keybindings.get(action))
+    }
+
+    /// Effective external editor: config value, else `$EDITOR`, else "vi".
+    fn effective_editor(&self) -> String {
+        let configured = self.config.general.editor.trim().to_string();
+        if !configured.is_empty() {
+            return configured;
+        }
+        std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string())
     }
 
     /// Fetch dashboard statistics from database
@@ -382,8 +412,12 @@ impl ModernApp {
             AppState::Secrets => {
                 self.render_secrets_list(f);
             }
-            AppState::Settings | AppState::Help => {
-                // Delegate to UI for settings and help
+            AppState::Settings => {
+                // Dedicated settings screen (US-APP-01/02/06)
+                self.render_settings_screen(f);
+            }
+            AppState::Help => {
+                // Delegate to UI for help
                 self.ui.render(f);
             }
         }
@@ -954,10 +988,13 @@ impl ModernApp {
             | AppState::Commands
             | AppState::Projects
             | AppState::Workflows
-            | AppState::Secrets
-            | AppState::Settings => {
+            | AppState::Secrets => {
                 // Handle dashboard and other app state keys
                 self.handle_dashboard_key(key).await;
+            }
+            AppState::Settings => {
+                // Settings screen has its own key handling (US-APP-01/02/06)
+                self.handle_settings_key(key).await;
             }
             AppState::Help => {
                 // Handle help screen keys
@@ -1042,9 +1079,20 @@ impl ModernApp {
     }
 
     async fn handle_dashboard_key(&mut self, key: KeyEvent) {
+        // Action keys come from the config (US-APP-02) and can be rebound in Settings
+        let kb_quit = self.action_keycode("quit");
+        let kb_help = self.action_keycode("help");
+        let kb_search = self.action_keycode("search");
+        let kb_filter = self.action_keycode("filter");
+        let kb_create = self.action_keycode("create");
+        let kb_edit = self.action_keycode("edit");
+        let kb_delete = self.action_keycode("delete");
+        let kb_copy = self.action_keycode("copy");
+        let kb_run = self.action_keycode("run");
+
         match key.code {
-            // Quit
-            KeyCode::Char('q') | KeyCode::Esc => {
+            // Quit (Esc always works)
+            k if k == KeyCode::Esc || Some(k) == kb_quit => {
                 self.should_quit = true;
             }
             // Navigation - Number keys
@@ -1084,7 +1132,7 @@ impl ModernApp {
                 };
             }
             // Action keybindings
-            KeyCode::Char('n') => {
+            k if Some(k) == kb_create => {
                 // Create new item (context-dependent)
                 match self.ui.state {
                     AppState::Commands => {
@@ -1114,7 +1162,7 @@ impl ModernApp {
                     _ => {}
                 }
             }
-            KeyCode::Char('e') => {
+            k if Some(k) == kb_edit => {
                 // Edit selected item
                 match self.ui.state {
                     AppState::Commands => {
@@ -1175,7 +1223,7 @@ impl ModernApp {
                     _ => {}
                 }
             }
-            KeyCode::Char('d') => {
+            k if Some(k) == kb_delete => {
                 // Delete selected item — ask for confirmation first
                 match self.ui.state {
                     AppState::Commands => {
@@ -1217,11 +1265,11 @@ impl ModernApp {
                     _ => {}
                 }
             }
-            KeyCode::Char('c') => {
+            k if Some(k) == kb_copy => {
                 // Copy selected item content to clipboard
                 self.copy_selected().await;
             }
-            KeyCode::Char('r') => {
+            k if Some(k) == kb_run => {
                 // Run/execute selected item (commands run via sh, workflows via the Lua engine)
                 self.run_selected().await;
             }
@@ -1231,7 +1279,13 @@ impl ModernApp {
                     self.open_visual().await;
                 }
             }
-            KeyCode::Char('?') => {
+            KeyCode::Char('o') => {
+                // Open selected command in the configured external editor (US-CMD-05)
+                if self.ui.state == AppState::Commands {
+                    self.open_in_editor().await;
+                }
+            }
+            k if Some(k) == kb_help => {
                 // Toggle help
                 if self.ui.state == AppState::Help {
                     self.ui.state = AppState::Dashboard;
@@ -1239,12 +1293,12 @@ impl ModernApp {
                     self.ui.state = AppState::Help;
                 }
             }
-            KeyCode::Char('/') => {
+            k if Some(k) == kb_search => {
                 // Start search mode
                 self.search_state.active = true;
                 self.search_state.query.clear();
             }
-            KeyCode::Char('f') => {
+            k if Some(k) == kb_filter => {
                 // Toggle filter mode
                 match self.ui.state {
                     AppState::Commands => {
@@ -2915,6 +2969,312 @@ impl ModernApp {
         .alignment(Alignment::Center);
         f.render_widget(help, chunks[1]);
     }
+
+    // ========================================================================
+    // Settings screen (US-APP-01, US-APP-02, US-APP-06)
+    // ========================================================================
+
+    /// Settings input: navigate rows, edit values, capture keybindings, save.
+    async fn handle_settings_key(&mut self, key: KeyEvent) {
+        // Ctrl+S persists the config to disk from anywhere in Settings
+        if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.save_settings().await;
+            return;
+        }
+
+        // A keybinding capture is in progress: the next key becomes the binding
+        if let Some(row) = self.settings.capturing_key {
+            if key.code == KeyCode::Esc {
+                self.settings.capturing_key = None;
+                return;
+            }
+            let action = SETTINGS_ROWS.get(row).copied().unwrap_or("");
+            match KeybindingsConfig::keycode_to_string(key.code) {
+                Some(text) => {
+                    self.config.keybindings.set(action, text.clone());
+                    self.settings.capturing_key = None;
+                    self.settings.dirty = true;
+                    self.settings.error = None;
+                    self.status_message = Some(format!("✓ '{}' bound to {}", action, text));
+                }
+                None => {
+                    self.settings.capturing_key = None;
+                    self.settings.error = Some("That key cannot be bound".to_string());
+                }
+            }
+            return;
+        }
+
+        // A text value (editor / page size) is being edited
+        if let Some(row) = self.settings.editing_text {
+            match key.code {
+                KeyCode::Esc => self.settings.editing_text = None,
+                KeyCode::Enter => self.apply_text_setting(row),
+                KeyCode::Backspace => {
+                    self.settings.buffer.pop();
+                }
+                KeyCode::Char(c) => self.settings.buffer.push(c),
+                _ => {}
+            }
+            return;
+        }
+
+        let row = self.settings.selected;
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.ui.state = AppState::Dashboard,
+            KeyCode::Up | KeyCode::BackTab => self.settings.select_previous(),
+            KeyCode::Down | KeyCode::Tab => self.settings.select_next(),
+            KeyCode::Left if row == SETTINGS_THEME_ROW => self.cycle_theme(-1),
+            KeyCode::Right if row == SETTINGS_THEME_ROW => self.cycle_theme(1),
+            KeyCode::Enter => match row {
+                SETTINGS_THEME_ROW => self.cycle_theme(1),
+                r if r < SETTINGS_KEYBIND_FIRST_ROW => {
+                    // Start text editing with the current value
+                    self.settings.editing_text = Some(r);
+                    self.settings.buffer = self.setting_value(r);
+                }
+                r => {
+                    // Keybinding rows: capture the next pressed key
+                    self.settings.capturing_key = Some(r);
+                }
+            },
+            _ => {}
+        }
+    }
+
+    /// Current config value of a Settings row (for display and editing).
+    fn setting_value(&self, row: usize) -> String {
+        let name = SETTINGS_ROWS.get(row).copied().unwrap_or("");
+        match name {
+            "editor" => self.config.general.editor.clone(),
+            "page_size" => self.config.tui.page_size.to_string(),
+            "theme" => self.config.theme.name.clone(),
+            other => self.config.keybindings.get(other).to_string(),
+        }
+    }
+
+    /// Commit the text buffer for a text setting (editor or page size).
+    fn apply_text_setting(&mut self, row: usize) {
+        let name = SETTINGS_ROWS.get(row).copied().unwrap_or("");
+        let value = self.settings.buffer.trim().to_string();
+        match name {
+            "editor" => {
+                self.config.general.editor = value;
+                self.settings.editing_text = None;
+                self.settings.dirty = true;
+                self.settings.error = None;
+                self.status_message = Some("✓ Editor updated (Ctrl+S to persist)".to_string());
+            }
+            "page_size" => match value.parse::<usize>() {
+                Ok(n) if (1..=100).contains(&n) => {
+                    self.config.tui.page_size = n;
+                    self.commands_list.page_size = n;
+                    self.projects_list.page_size = n;
+                    self.workflows_list.page_size = n;
+                    self.secrets_list.page_size = n;
+                    self.settings.editing_text = None;
+                    self.settings.dirty = true;
+                    self.settings.error = None;
+                    self.status_message =
+                        Some("✓ Page size applied (Ctrl+S to persist)".to_string());
+                }
+                _ => {
+                    self.settings.error =
+                        Some("Page size must be a number between 1 and 100".to_string());
+                }
+            },
+            _ => {}
+        }
+    }
+
+    /// Cycle the theme preset (dir = -1 / +1) and apply it immediately (US-APP-01).
+    fn cycle_theme(&mut self, dir: i32) {
+        let presets = ModernTheme::PRESETS;
+        let current = self.setting_value(SETTINGS_THEME_ROW);
+        let idx = preset_index(&current);
+        let next = (idx as i32 + dir).rem_euclid(presets.len() as i32) as usize;
+        let name = presets[next].to_string();
+        self.config.theme.name = name.clone();
+        self.ui.theme = ModernTheme::from_config(&self.config.theme);
+        self.settings.dirty = true;
+        self.settings.error = None;
+        self.status_message = Some(format!("✓ Theme: {} (Ctrl+S to persist)", name));
+    }
+
+    /// Persist the config to disk (US-APP-06).
+    async fn save_settings(&mut self) {
+        match self.config.save(&self.config_path) {
+            Ok(()) => {
+                self.settings.dirty = false;
+                self.settings.error = None;
+                self.status_message = Some(format!(
+                    "✓ Settings saved to {}",
+                    self.config_path.display()
+                ));
+            }
+            Err(e) => self.settings.error = Some(format!("Save failed: {}", e)),
+        }
+    }
+}
+
+/// Index of a theme preset name (unknown names map to the first preset).
+fn preset_index(name: &str) -> usize {
+    ModernTheme::PRESETS
+        .iter()
+        .position(|p| p.eq_ignore_ascii_case(name))
+        .unwrap_or(0)
+}
+
+/// Run the external editor over `content` using a temp file and return the
+/// edited text. Terminal-agnostic (the caller suspends/resumes the TUI).
+async fn run_external_editor(editor: &str, content: &str) -> anyhow::Result<String> {
+    let mut tmp = std::env::temp_dir();
+    tmp.push(format!("tui-op-hub-edit-{}.txt", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp, content)?;
+    let command = format!("{} \"$TUIOPHUBFILE\"", editor);
+    let status = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&command)
+        .env("TUIOPHUBFILE", &tmp)
+        .status()
+        .await?;
+    let text = std::fs::read_to_string(&tmp).unwrap_or_else(|_| content.to_string());
+    let _ = std::fs::remove_file(&tmp);
+    if !status.success() {
+        anyhow::bail!("editor exited with status {}", status);
+    }
+    Ok(text)
+}
+
+impl ModernApp {
+    /// Open the selected command's content in the external editor (US-CMD-05).
+    /// Suspends the TUI while the editor runs, then saves any changes.
+    async fn open_in_editor(&mut self) {
+        let Some(entity) = self.commands_list.get_selected().cloned() else {
+            self.status_message = Some("Nothing selected".to_string());
+            return;
+        };
+        let editor = self.effective_editor();
+        let content = entity.content.clone().unwrap_or_default();
+
+        // Suspend the TUI so the editor can take over the terminal
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+        let result = run_external_editor(&editor, &content).await;
+        let _ = crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen);
+        let _ = crossterm::terminal::enable_raw_mode();
+
+        let new_content = match result {
+            Ok(text) => text,
+            Err(e) => {
+                self.status_message = Some(format!("✗ Editor failed: {}", e));
+                return;
+            }
+        };
+        if new_content == content {
+            self.status_message = Some("No changes from editor".to_string());
+            return;
+        }
+        let req = CreateEntity {
+            name: entity.name.clone(),
+            description: entity.description.clone(),
+            content: Some(new_content),
+            type_id: entity.type_id.clone(),
+            project_id: entity.project_id.clone(),
+            tags: None,
+            metadata_json: entity.metadata_json.clone(),
+        };
+        match repository::update_entity(&*self.pool, &entity.id, &req).await {
+            Ok(_) => {
+                self.status_message = Some("✓ Saved from editor".to_string());
+                let _ = self.fetch_commands().await;
+            }
+            Err(e) => self.status_message = Some(format!("✗ Save failed: {}", e)),
+        }
+    }
+
+    /// Full-screen Settings list (US-APP-01/02/06).
+    fn render_settings_screen(&self, f: &mut Frame) {
+        let area = f.area();
+        let block = Block::default()
+            .title(" ⚙️ Settings ")
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.primary))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+
+        let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+            "General",
+            Style::default()
+                .fg(self.ui.theme.highlight)
+                .add_modifier(Modifier::BOLD),
+        ))];
+        if let Some(err) = &self.settings.error {
+            lines.push(Line::from(Span::styled(
+                err.clone(),
+                Style::default()
+                    .fg(self.ui.theme.error)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
+
+        for (row, name) in SETTINGS_ROWS.iter().enumerate() {
+            let selected = row == self.settings.selected;
+            let label = match *name {
+                "editor" => "Text editor".to_string(),
+                "page_size" => "List page size".to_string(),
+                "theme" => "Theme".to_string(),
+                other => format!("Key: {}", other),
+            };
+            let value = if Some(row) == self.settings.editing_text {
+                format!("{}|", self.settings.buffer)
+            } else if Some(row) == self.settings.capturing_key {
+                "press a key… (Esc cancels)".to_string()
+            } else if *name == "editor" && self.config.general.editor.is_empty() {
+                "(empty = $EDITOR)".to_string()
+            } else if *name == "theme" && selected {
+                format!("◄ {} ►", self.setting_value(row))
+            } else {
+                self.setting_value(row)
+            };
+            let prefix = if selected { "▶ " } else { "  " };
+            let style = if selected {
+                Style::default()
+                    .fg(self.ui.theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(self.ui.theme.fg)
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{}{:<22} {}", prefix, label, value),
+                style,
+            )));
+        }
+
+        f.render_widget(Paragraph::new(lines), chunks[0]);
+
+        let footer = if self.settings.dirty {
+            "↑↓ navigate · Enter edit · ←/→ theme · Ctrl+S SAVE · Esc back  (unsaved changes)"
+        } else {
+            "↑↓ navigate · Enter edit · ←/→ theme · Ctrl+S save · Esc back"
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                footer,
+                Style::default().fg(self.ui.theme.border),
+            ))
+            .alignment(Alignment::Center),
+            chunks[1],
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2936,7 +3296,10 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        ModernApp::new(std::sync::Arc::new(pool))
+        ModernApp::new(
+            std::sync::Arc::new(pool),
+            crate::config::AppConfig::default(),
+        )
     }
 
     // ── Field cycling ───────────────────────────────────────────────────────
@@ -3097,5 +3460,132 @@ mod tests {
 
         let visual = app.visual_form.as_ref().unwrap();
         assert_eq!(visual.error_message.as_deref(), Some("Name is required"));
+    }
+
+    // ── Settings screen (US-APP-01/02/06) ───────────────────────────────────
+
+    /// Scenario: navigate the Settings rows
+    /// Given the Settings screen, when arrow keys are pressed, then the
+    /// selection moves and clamps at the ends.
+    #[tokio::test]
+    async fn given_settings_open_when_arrows_then_selection_moves_and_clamps() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Settings;
+        assert_eq!(app.settings.selected, 0);
+
+        app.handle_key(key(KeyCode::Up)).await; // clamp at top
+        assert_eq!(app.settings.selected, 0);
+        app.handle_key(key(KeyCode::Down)).await;
+        app.handle_key(key(KeyCode::Down)).await;
+        assert_eq!(app.settings.selected, 2);
+        app.handle_key(key(KeyCode::Up)).await;
+        assert_eq!(app.settings.selected, 1);
+    }
+
+    /// Scenario: change the text editor in Settings
+    /// Given the editor row, when Enter is pressed and a new value typed,
+    /// then the config is updated and marked dirty.
+    #[tokio::test]
+    async fn given_settings_when_editor_edited_then_config_updated() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Settings;
+        app.settings.selected = 0; // editor row
+
+        app.handle_key(key(KeyCode::Enter)).await; // start editing
+        for c in "nvim".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Enter)).await; // apply
+
+        assert_eq!(app.config.general.editor, "nvim");
+        assert!(app.settings.dirty);
+        assert!(app.settings.editing_text.is_none());
+    }
+
+    /// Scenario: rebind a keybinding in Settings and use it immediately
+    /// Given the create row, when a new key is captured, then the binding is
+    /// stored and the new key triggers the action on the dashboard.
+    #[tokio::test]
+    async fn given_capturing_key_when_pressed_then_binding_updates_and_works() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Settings;
+        app.settings.selected = 7; // create row
+
+        app.handle_key(key(KeyCode::Enter)).await; // start capture
+        assert!(app.settings.capturing_key.is_some());
+
+        app.handle_key(key(KeyCode::Char('K'))).await; // bind K
+
+        assert_eq!(app.config.keybindings.get("create"), "K");
+        assert!(app.settings.capturing_key.is_none());
+
+        // The rebound key opens the create form on the dashboard
+        app.ui.state = AppState::Commands;
+        app.handle_key(key(KeyCode::Char('K'))).await;
+        assert!(app.command_form.mode.is_some());
+    }
+
+    /// Scenario: cycling the theme applies it live
+    /// Given the Theme row, when ←/→ is pressed, then the preset cycles and the
+    /// live theme colors change (and back).
+    #[tokio::test]
+    async fn given_settings_when_theme_cycled_then_applied_live() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Settings;
+        app.settings.selected = SETTINGS_THEME_ROW; // theme row
+        assert_eq!(app.config.theme.name, "dark");
+
+        app.handle_key(key(KeyCode::Right)).await; // dark -> light
+        assert_eq!(app.config.theme.name, "light");
+        assert_ne!(app.ui.theme.bg, ModernTheme::default().bg);
+
+        app.handle_key(key(KeyCode::Left)).await; // back to dark
+        assert_eq!(app.config.theme.name, "dark");
+        assert_eq!(app.ui.theme.bg, ModernTheme::default().bg);
+    }
+
+    /// Scenario: invalid page size is rejected
+    #[tokio::test]
+    async fn given_invalid_page_size_when_applied_then_error_and_still_editing() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Settings;
+        app.settings.selected = 1; // page_size row
+
+        app.handle_key(key(KeyCode::Enter)).await; // start editing (buffer = "15")
+        app.handle_key(key(KeyCode::Char('x'))).await; // "15x"
+        app.handle_key(key(KeyCode::Enter)).await; // apply -> rejected
+
+        assert!(
+            app.settings.error.is_some(),
+            "invalid value must show an error"
+        );
+        assert!(app.settings.editing_text.is_some(), "stays in edit mode");
+        assert_eq!(app.config.tui.page_size, 15, "config unchanged");
+
+        // Esc cancels editing
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert!(app.settings.editing_text.is_none());
+    }
+
+    /// Scenario: Ctrl+S persists Settings to disk
+    /// Given a customized config, when Ctrl+S is pressed in Settings, then a
+    /// config.toml is written that loads back with the new values.
+    #[tokio::test]
+    async fn given_customized_config_when_ctrl_s_then_config_persisted() {
+        let mut app = test_app().await;
+        let path =
+            std::env::temp_dir().join(format!("tui-op-hub-savetest-{}.toml", uuid::Uuid::new_v4()));
+        app.config_path = path.clone();
+        app.config.general.editor = "helix".to_string();
+        app.config.tui.page_size = 40;
+        app.ui.state = AppState::Settings;
+
+        app.handle_key(ctrl_s()).await;
+
+        assert!(path.exists(), "config file must be written");
+        let loaded = crate::config::AppConfig::load(&path).unwrap();
+        assert_eq!(loaded.general.editor, "helix");
+        assert_eq!(loaded.tui.page_size, 40);
+        let _ = std::fs::remove_file(&path);
     }
 }

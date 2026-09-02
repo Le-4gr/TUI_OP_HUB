@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
 
     if config.tui.enabled {
         // Use modern UI with login/signup
-        let mut app = ModernApp::new(pool);
+        let mut app = ModernApp::new(pool, config);
         app.run().await?;
     } else {
         tracing::info!("TUI disabled, running headless. Press Ctrl+C to shut down.");

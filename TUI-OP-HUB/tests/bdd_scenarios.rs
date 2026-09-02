@@ -417,3 +417,82 @@ fn given_builder_without_name_when_saved_then_error() {
     assert!(build_workflow_definition("   ", "", &steps).is_err());
     assert!(build_workflow_definition("ok", "", &[]).is_err());
 }
+
+// ============================================================================
+// Feature: Settings, theming & keybindings (US-APP-01..06)
+// ============================================================================
+
+/// Scenario: a customized config survives a save/load round trip
+/// Given a config with a custom editor, page size, theme and rebinding, when it
+/// is saved and reloaded, then every setting is preserved.
+#[test]
+fn given_customized_config_when_saved_then_loads_identically() {
+    let mut cfg = tui_op_hub::config::AppConfig::default();
+    cfg.general.editor = "nvim --wait".to_string();
+    cfg.tui.page_size = 30;
+    cfg.theme.name = "dracula".to_string();
+    cfg.keybindings.set("copy", "Y".to_string());
+
+    let path =
+        std::env::temp_dir().join(format!("tui-op-hub-bdd-cfg-{}.toml", uuid::Uuid::new_v4()));
+    cfg.save(&path).unwrap();
+    let loaded = tui_op_hub::config::AppConfig::load(&path).unwrap();
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(loaded.general.editor, "nvim --wait");
+    assert_eq!(loaded.tui.page_size, 30);
+    assert_eq!(loaded.theme.name, "dracula");
+    assert_eq!(loaded.keybindings.get("copy"), "Y");
+}
+
+/// Scenario: rebound keybindings resolve for their actions
+/// Given custom bindings, when the action key codes are looked up, then every
+/// action resolves to its bound key (invalid text falls back safely).
+#[test]
+fn given_custom_keybindings_when_resolved_then_actions_use_them() {
+    use tui_op_hub::config::KeybindingsConfig;
+
+    let mut kb = tui_op_hub::config::KeybindingsConfig::default();
+    for action in KeybindingsConfig::ACTIONS {
+        // Every default must parse into a real key
+        assert!(KeybindingsConfig::to_keycode(kb.get(action)).is_some());
+    }
+
+    kb.set("create", "N".to_string());
+    assert_eq!(kb.key_for("create"), crossterm::event::KeyCode::Char('N'));
+
+    // Serialization round trip for rebind capture
+    let pressed =
+        KeybindingsConfig::keycode_to_string(crossterm::event::KeyCode::Char('Z')).unwrap();
+    assert_eq!(
+        KeybindingsConfig::to_keycode(&pressed),
+        Some(crossterm::event::KeyCode::Char('Z'))
+    );
+}
+
+/// Scenario: the theme config maps to the matching palette
+/// Given the nord preset, when the theme is built from config, then its colors
+/// differ from the default and unknown names fall back to the default.
+#[test]
+fn given_theme_preset_when_mapped_then_colors_change() {
+    // Unknown preset name falls back to the default palette
+    let unknown = tui_op_hub::config::ThemeConfig {
+        name: "does-not-exist".to_string(),
+        ..Default::default()
+    };
+    assert_eq!(
+        tui_op_hub::tui::modern_ui::ModernTheme::from_config(&unknown).bg,
+        tui_op_hub::tui::modern_ui::ModernTheme::default().bg
+    );
+
+    // A real preset maps to its distinct palette
+    let nord = tui_op_hub::config::ThemeConfig {
+        name: "nord".to_string(),
+        ..Default::default()
+    };
+    let nord_theme = tui_op_hub::tui::modern_ui::ModernTheme::from_config(&nord);
+    assert_ne!(
+        nord_theme.bg,
+        tui_op_hub::tui::modern_ui::ModernTheme::default().bg
+    );
+}
