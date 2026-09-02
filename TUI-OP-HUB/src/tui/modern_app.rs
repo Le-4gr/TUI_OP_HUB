@@ -168,6 +168,8 @@ pub struct ModernApp {
     dev_confirm_wipe: bool,
     // Structured options popup for a command family (parent name, options)
     options_popup: Option<(String, Vec<(String, String)>)>,
+    // Keybind helper overlay (? key; US-TUI-09)
+    keybinds_overlay: bool,
     // Overlay states (forms, visual builder, popups)
     visual_form: Option<VisualWorkflowState>,
     confirm_delete: Option<ConfirmDelete>,
@@ -220,6 +222,7 @@ impl ModernApp {
             keygen: KeygenState::default(),
             dev_confirm_wipe: false,
             options_popup: None,
+            keybinds_overlay: false,
             // Overlays start closed
             visual_form: None,
             confirm_delete: None,
@@ -398,6 +401,9 @@ impl ModernApp {
         if self.options_popup.is_some() {
             self.render_options_popup(f);
         }
+        if self.keybinds_overlay {
+            self.render_keybinds_overlay(f);
+        }
         if let Some(ref confirm) = self.confirm_delete {
             self.render_confirm_delete(f, confirm);
         }
@@ -532,42 +538,8 @@ impl ModernApp {
             self.ui.theme.warning,
         );
 
-        // Footer
-        let footer_block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(self.ui.theme.border))
-            .style(Style::default().bg(self.ui.theme.bg));
-
-        let footer_inner = footer_block.inner(chunks[2]);
-        f.render_widget(footer_block, chunks[2]);
-
-        let footer_text = Line::from(vec![
-            Span::styled(
-                "1-6",
-                Style::default()
-                    .fg(self.ui.theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" Navigate  "),
-            Span::styled(
-                "?",
-                Style::default()
-                    .fg(self.ui.theme.success)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" Help  "),
-            Span::styled(
-                "q",
-                Style::default()
-                    .fg(self.ui.theme.error)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" Quit"),
-        ]);
-
-        let footer = Paragraph::new(footer_text).alignment(Alignment::Center);
-        f.render_widget(footer, footer_inner);
+        // Footer: keybind hints for this screen
+        self.render_keybind_footer(f, chunks[2], &self.keybind_hints());
     }
 
     fn render_stat_card(
@@ -962,6 +934,12 @@ impl ModernApp {
 
     async fn handle_key(&mut self, key: KeyEvent) {
         // Overlays take priority over normal tab handling (top of the input stack)
+        if self.keybinds_overlay {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter) {
+                self.keybinds_overlay = false;
+            }
+            return;
+        }
         if self.options_popup.is_some() {
             if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
                 self.options_popup = None;
@@ -1008,6 +986,12 @@ impl ModernApp {
             return;
         }
         self.status_message = None;
+
+        // Keybinds helper is global: `?` toggles it from any screen (US-TUI-09)
+        if key.code == KeyCode::Char('?') {
+            self.keybinds_overlay = !self.keybinds_overlay;
+            return;
+        }
 
         match self.ui.state {
             AppState::Login => {
@@ -1114,7 +1098,6 @@ impl ModernApp {
     async fn handle_dashboard_key(&mut self, key: KeyEvent) {
         // Action keys come from the config (US-APP-02) and can be rebound in Settings
         let kb_quit = self.action_keycode("quit");
-        let kb_help = self.action_keycode("help");
         let kb_search = self.action_keycode("search");
         let kb_filter = self.action_keycode("filter");
         let kb_create = self.action_keycode("create");
@@ -1361,14 +1344,6 @@ impl ModernApp {
                 // Projects: open a shell inside the project environment (US-ENV)
                 if self.ui.state == AppState::Projects {
                     self.start_project_shell().await;
-                }
-            }
-            k if Some(k) == kb_help => {
-                // Toggle help
-                if self.ui.state == AppState::Help {
-                    self.ui.state = AppState::Dashboard;
-                } else {
-                    self.ui.state = AppState::Help;
                 }
             }
             k if Some(k) == kb_search => {
@@ -1676,61 +1651,109 @@ impl ModernApp {
             f.render_widget(list, chunks[1]);
         }
 
-        // Footer
-        let footer_block = Block::default()
+        // Footer: keybind hints for this screen
+        self.render_keybind_footer(f, chunks[2], &self.keybind_hints());
+    }
+
+    // ── Keybind helper (footer hints + `?` overlay; US-TUI-09) ─────────────
+
+    /// Render a footer line of keybind hints. Keys are highlighted, labels
+    /// use the normal text color.
+    fn render_keybind_footer(&self, f: &mut Frame, area: Rect, hints: &[(&str, &str)]) {
+        let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(self.ui.theme.border))
             .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
 
-        let footer_inner = footer_block.inner(chunks[2]);
-        f.render_widget(footer_block, chunks[2]);
-
-        let footer_text = Line::from(vec![
-            Span::styled(
-                "↑↓",
+        let mut spans: Vec<Span> = Vec::new();
+        for (i, (key, label)) in hints.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw("  "));
+            }
+            spans.push(Span::styled(
+                *key,
                 Style::default()
                     .fg(self.ui.theme.accent)
                     .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" Navigate  "),
-            Span::styled(
-                "n",
-                Style::default()
-                    .fg(self.ui.theme.success)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" New  "),
-            Span::styled(
-                "e",
-                Style::default()
-                    .fg(self.ui.theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" Edit  "),
-            Span::styled(
-                "d",
-                Style::default()
-                    .fg(self.ui.theme.error)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" Delete  "),
-            Span::styled(
-                "q",
-                Style::default()
-                    .fg(self.ui.theme.error)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" Quit"),
-        ]);
-
-        let footer = Paragraph::new(footer_text).alignment(Alignment::Center);
-        f.render_widget(footer, footer_inner);
+            ));
+            spans.push(Span::raw(format!(" {}", label)));
+        }
+        f.render_widget(
+            Paragraph::new(Line::from(spans)).alignment(Alignment::Center),
+            inner,
+        );
     }
 
-    // ========================================================================
-    // Overlay input handlers (forms, visual builder, popups, search)
-    // ========================================================================
+    /// Context keybind hints for the current state (footer + `?` overlay).
+    fn keybind_hints(&self) -> Vec<(&'static str, &'static str)> {
+        match self.ui.state {
+            AppState::Dashboard => vec![
+                ("1-6", "Tabs"),
+                ("f", "Fetch"),
+                ("p", "Processes"),
+                ("?", "Keybinds"),
+                ("q", "Quit"),
+            ],
+            AppState::Commands => vec![
+                ("\u{2191}\u{2193}", "Navigate"),
+                ("n", "New"),
+                ("e", "Edit"),
+                ("d", "Delete"),
+                ("r", "Run"),
+                ("c", "Copy"),
+                ("o", "Editor"),
+                ("i", "Options"),
+                ("m", "Man"),
+                ("/", "Find"),
+                ("?", "Keybinds"),
+                ("q", "Quit"),
+            ],
+            AppState::Projects => vec![
+                ("\u{2191}\u{2193}", "Navigate"),
+                ("n", "New"),
+                ("e", "Edit"),
+                ("d", "Delete"),
+                ("E", "Shell"),
+                ("/", "Find"),
+                ("?", "Keybinds"),
+                ("q", "Quit"),
+            ],
+            AppState::Workflows => vec![
+                ("\u{2191}\u{2193}", "Navigate"),
+                ("n", "New"),
+                ("e", "Edit"),
+                ("d", "Delete"),
+                ("r", "Run"),
+                ("c", "Copy"),
+                ("v", "Visual"),
+                ("/", "Find"),
+                ("?", "Keybinds"),
+                ("q", "Quit"),
+            ],
+            AppState::Secrets => vec![
+                ("\u{2191}\u{2193}", "Navigate"),
+                ("n", "New"),
+                ("e", "Edit"),
+                ("d", "Delete"),
+                ("c", "Copy"),
+                ("k", "Keygen"),
+                ("?", "Keybinds"),
+                ("q", "Quit"),
+            ],
+            AppState::Settings => vec![
+                ("\u{2191}\u{2193}", "Rows"),
+                ("Enter", "Edit"),
+                ("a", "Advanced"),
+                ("Ctrl+S", "Save"),
+                ("?", "Keybinds"),
+                ("Esc", "Back"),
+            ],
+            _ => vec![("?", "Keybinds"), ("q", "Quit")],
+        }
+    }
 
     /// Delete confirmation popup: Enter confirms, Esc cancels.
     async fn handle_confirm_key(&mut self, key: KeyEvent) {
@@ -3887,6 +3910,97 @@ fn preset_index(name: &str) -> usize {
 }
 
 impl ModernApp {
+    /// Full keybind helper overlay (`?`): all actions grouped per screen,
+    /// config-aware labels (US-TUI-09).
+    fn render_keybinds_overlay(&self, f: &mut Frame) {
+        let area = self.centered_rect(66, 34, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .title(" \u{2328}\u{fe0f}  Keybinds ")
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.highlight))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let kbd = |name: &str| {
+            Span::styled(
+                name.to_string(),
+                Style::default()
+                    .fg(self.ui.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )
+        };
+        let txt = |s: &str| Span::raw(format!(" {}", s));
+        let row = |k: &str, label: &str| Line::from(vec![kbd(k), txt(label)]);
+        let section = |title: &str| {
+            Line::from(Span::styled(
+                title.to_string(),
+                Style::default()
+                    .fg(self.ui.theme.highlight)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        };
+
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(section("Global"));
+        lines.push(row("Tab", "Switch tabs"));
+        lines.push(row(
+            "1-6",
+            "Dashboard / Commands / Projects / Workflows / Secrets / Settings",
+        ));
+        lines.push(row("/", "Fuzzy search in the current list"));
+        lines.push(row("?", "Toggle this keybind helper"));
+        lines.push(row("q", "Quit"));
+
+        lines.push(Line::from(""));
+        lines.push(section("Dashboard"));
+        lines.push(row("f", "System fetch panel"));
+        lines.push(row("p", "Processes (btop/htop/top)"));
+
+        lines.push(Line::from(""));
+        lines.push(section("Commands"));
+        lines.push(row("n", "New command / script / app"));
+        lines.push(row("e", "Edit selected"));
+        lines.push(row("d", "Delete selected (confirm)"));
+        lines.push(row("r", "Run selected"));
+        lines.push(row("c", "Copy content to clipboard"));
+        lines.push(row("o", "Open in external editor"));
+        lines.push(row("i", "Show command options"));
+        lines.push(row("m", "Open man page"));
+
+        lines.push(Line::from(""));
+        lines.push(section("Projects"));
+        lines.push(row("E", "Open a shell in the project environment"));
+
+        lines.push(Line::from(""));
+        lines.push(section("Workflows"));
+        lines.push(row("v", "Visual builder (pick saved commands)"));
+        lines.push(row("r", "Execute workflow"));
+
+        lines.push(Line::from(""));
+        lines.push(section("Secrets"));
+        lines.push(row("k", "Generate SSH / GPG key"));
+        lines.push(row("c", "Copy (decrypts) secret value"));
+
+        lines.push(Line::from(""));
+        lines.push(section("Settings"));
+        lines.push(row("a", "Advanced mode (visual theme editor)"));
+        lines.push(row("Ctrl+S", "Save settings to config.conf"));
+
+        if crate::auth::dev_mode_enabled() {
+            lines.push(Line::from(""));
+            lines.push(section("Developer mode"));
+            lines.push(row("d", "Wipe ALL users (press twice, no login)"));
+        }
+
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+}
+
+impl ModernApp {
     /// Public hooks for BDD integration tests ([`tests/bdd_scenarios.rs`]).
     /// They expose just enough state to drive and assert the TUI without a
     /// terminal; marked `#[doc(hidden)]` to keep them out of user docs.
@@ -3947,6 +4061,29 @@ impl ModernApp {
     #[doc(hidden)]
     pub fn bdd_keygen_field(&self) -> usize {
         self.keygen.focused_field
+    }
+
+    #[doc(hidden)]
+    pub fn bdd_keybinds_open(&self) -> bool {
+        self.keybinds_overlay
+    }
+
+    #[doc(hidden)]
+    pub fn bdd_state(&self) -> AppState {
+        self.ui.state.clone()
+    }
+
+    #[doc(hidden)]
+    pub fn bdd_set_state(&mut self, state: AppState) {
+        self.ui.state = state;
+    }
+
+    #[doc(hidden)]
+    pub fn bdd_keybind_hints(&self) -> Vec<(String, String)> {
+        self.keybind_hints()
+            .into_iter()
+            .map(|(k, l)| (k.to_string(), l.to_string()))
+            .collect()
     }
 }
 

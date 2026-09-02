@@ -562,6 +562,66 @@ use tui_op_hub::tui::list_state::{ADVANCED_ROWS, SETTINGS_ROWS};
 use tui_op_hub::tui::modern_app::ModernApp;
 
 // ============================================================================
+// Feature: Keybinds helper overlay (US-TUI-09)
+// ============================================================================
+
+/// Scenario: the `?` key toggles the keybinds helper from any screen
+/// Given the app, when `?` is pressed on the dashboard, the overlay opens;
+/// pressing `?` again or Esc closes it — from any state.
+#[tokio::test]
+async fn given_any_screen_when_question_mark_then_keybinds_overlay_toggles() {
+    let mut app = given_tui_app().await;
+
+    // From the dashboard
+    app.bdd_press(crossterm::event::KeyCode::Char('?')).await;
+    assert!(app.bdd_keybinds_open(), "overlay opens on dashboard");
+    app.bdd_press(crossterm::event::KeyCode::Esc).await;
+    assert!(!app.bdd_keybinds_open());
+
+    // Also from Settings (no dead end: Esc closes the overlay, not the screen)
+    app.bdd_open_settings();
+    app.bdd_press(crossterm::event::KeyCode::Char('?')).await;
+    assert!(app.bdd_keybinds_open());
+    app.bdd_press(crossterm::event::KeyCode::Char('?')).await;
+    assert!(!app.bdd_keybinds_open());
+    assert_eq!(
+        app.bdd_state(),
+        tui_op_hub::tui::modern_ui::AppState::Settings
+    );
+}
+
+/// Scenario: every context has keybind hints (no empty footers)
+/// Given all main screens, when hints are requested, then each has entries and
+/// always includes the `?` keybinds helper.
+#[test]
+fn given_any_state_when_hints_requested_then_hints_are_non_empty() {
+    let states = [
+        tui_op_hub::tui::modern_ui::AppState::Dashboard,
+        tui_op_hub::tui::modern_ui::AppState::Commands,
+        tui_op_hub::tui::modern_ui::AppState::Projects,
+        tui_op_hub::tui::modern_ui::AppState::Workflows,
+        tui_op_hub::tui::modern_ui::AppState::Secrets,
+        tui_op_hub::tui::modern_ui::AppState::Settings,
+    ];
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        for state in states {
+            let mut probe = given_tui_app().await;
+            probe.bdd_set_state(state.clone());
+            let hints = probe.bdd_keybind_hints();
+            assert!(!hints.is_empty(), "state {:?} must have hints", state);
+            assert!(
+                hints.iter().any(|(k, _)| k == "?"),
+                "hints always include '?'"
+            );
+        }
+    });
+}
+
+// ============================================================================
 // Feature: Numpad support in Settings screens (US-APP-06 usability)
 // ============================================================================
 

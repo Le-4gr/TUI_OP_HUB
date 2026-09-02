@@ -34,6 +34,10 @@ A terminal-based operations hub for command management, workflow automation, and
 - **Projects as environments** (US-ENV): attach an activation command (venv/pyenv/conda)
   to a project, `E` opens a shell inside it
 - **Processes via known tools** (US-PROC): `p` launches btop/htop/top
+- **Keybinds helper** (US-TUI-09): `?` opens a full keybind cheat-sheet overlay
+  from **any** screen (Esc/`?` closes it); every screen's footer shows its
+  context-specific key hints (New/Edit/Delete/Run/Copy/Editor/Options/Man/
+  Visual/Shell/Keygen/Find/…)
 - **Seeded knowledge base**: common command families (git, docker, systemctl,
   **rc-service/rc-update for OpenRC**, ssh, curl, grep, find, tar, python3, cargo, …)
   are prepopulated with their **options as structured child entities** (flag +

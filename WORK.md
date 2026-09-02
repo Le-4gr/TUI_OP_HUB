@@ -5,7 +5,43 @@
 
 ---
 
-## 🎯 Session 9 (current): tooling, structured commands, man/help, fuzzy search, fetch
+## 🎯 Session 10 (current): keybinds helper + footer hints
+
+**Goal: a keybind helper and the per-screen key hints at the bottom, next to
+the existing ones.**
+
+### What was done and how
+1. **Keybind helper overlay** (US-TUI-09): `?` now opens a full cheat-sheet
+   overlay from **any** screen (Global / Dashboard / Commands / Projects /
+   Workflows / Secrets / Settings / Developer-mode sections). Esc or `?`
+   closes it and returns to the exact screen you came from. Implemented as a
+   global hook in `handle_key` (before the state machine) so no screen can
+   miss it; the old per-dashboard help arm was removed.
+2. **Footer hints** (`render_keybind_footer` + `keybind_hints`): the dashboard
+   and all four list tabs render a live, context-specific hint bar
+   (`render_keybind_footer(f, chunks[2], &self.keybind_hints())`), replacing
+   the old hardcoded Navigate/New/Edit/Delete/Quit line. Hints now include the
+   newer actions: r/c/o/i/m on Commands, v on Workflows, E on Projects, k on
+   Secrets, f/p on the Dashboard — plus `?` everywhere.
+3. **BDD hooks**: `bdd_keybinds_open`, `bdd_state`, `bdd_set_state`,
+   `bdd_keybind_hints` added alongside the existing `bdd_*` helpers.
+4. **BDD scenarios** (Feature: Keybinds helper overlay):
+   - `?` toggles the overlay on the dashboard, Esc closes, and it opens/closes
+     from Settings without losing the screen
+   - every main state has non-empty hints that always include `?`
+
+### Gotcha fixed during testing
+The hints scenario initially panicked inside sqlx ("timers are disabled"):
+the manual single-thread tokio runtime needed `.enable_all()` — and pools must
+be created *inside* the runtime they're dropped in.
+
+### Validation
+- `cargo fmt` ✔ · `clippy --all-targets` 0 errors ✔ · `cargo build` ✔
+- `cargo test` → **124 passed / 0 failed** (97 lib + 27 BDD)
+
+---
+
+## 🎯 Session 9: tooling, structured commands, man/help, fuzzy search, fetch (completed)
 
 **Goal: graceful handling of missing tools; man/help; fuzzy search; yazi & co.;
 systemd + OpenRC; fetch; structured prepopulated command families with options.**
