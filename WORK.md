@@ -5,7 +5,43 @@
 
 ---
 
-## 🎯 Session 14 (current): docs overhaul, keybinds overlay update, import/export for all, code quality
+## 🎯 Session 15 (current): black-screen fix, visible search bar, type badges, project workspaces
+
+**Goal: fix black screen after external commands, make `/` search visible,
+add type badges to lists, add project workspace creation with editors and
+container support.**
+
+### What was done and how
+1. **Black-screen fix**: after external commands (man, editor, btop, shell, etc.)
+   the TUI showed a black screen because ratatui's diff buffer thought nothing
+   changed. Fix: added `needs_full_redraw: bool` flag — set to true after every
+   external command resume; the run loop checks it and calls `terminal.clear()`
+   before the next draw. All 6 resume points now set this flag.
+2. **Visible search bar**: `/` search was filtering the list but the user
+   couldn't see what they typed. Added a visible **search bar** that replaces
+   the footer when search is active — shows `/ query│` with the cursor and
+   `Enter: apply · Esc: cancel` hints. The list title also shows
+   `[SEARCH: query]` and the filtered count.
+3. **List styling**: selected items now use the theme accent color as
+   background with dark text (instead of the barely-visible highlight color).
+4. **Project workspaces** (`src/project_workspace.rs`, new module):
+   - `ProjectKind`: Python (venv), Rust (cargo), Node (npm), Docker (compose),
+     Kubernetes (manifests), Generic
+   - `ProjectEditor`: Neovim, Vim, VS Code, lazygit, lazydocker, yazi, Helix
+   - `create_project_directory()`: mkdir + git init + branch `main` +
+     .gitignore per kind + starter files per kind + README + initial commit
+   - `N` on Projects tab opens the creation form; `O` opens in chosen editor
+5. **Keybinds overlay updated**: all new actions listed (N, O, R, `, f, p, etc.)
+6. **Footer hints updated**: Projects tab now shows N/O alongside E; Dashboard
+   shows f/p/`; Commands shows all 11 actions.
+
+### Validation
+- `cargo fmt` ✔ · `clippy --all-targets` 0 errors ✔ · `cargo build` ✔
+- `cargo test` → **146 passed / 0 failed** (113 lib + 33 BDD)
+
+---
+
+## 🎯 Session 14: docs overhaul, keybinds overlay, import/export (completed)
 
 **Goal: comprehensive documentation update, keybinds overlay with all actions,
 import/export functions for every entity type, industry-standard code quality.**

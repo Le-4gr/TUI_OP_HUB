@@ -189,6 +189,7 @@ pub struct ModernApp {
     options_popup: Option<(String, Vec<(String, String)>)>,
     // Keybind helper overlay (? key; US-TUI-09)
     keybinds_overlay: bool,
+    needs_full_redraw: bool,
     // Overlay states (forms, visual builder, popups)
     visual_form: Option<VisualWorkflowState>,
     confirm_delete: Option<ConfirmDelete>,
@@ -255,6 +256,7 @@ impl ModernApp {
             new_project_field_idx: 0,
             options_popup: None,
             keybinds_overlay: false,
+            needs_full_redraw: true,
             // Overlays start closed
             visual_form: None,
             confirm_delete: None,
@@ -384,6 +386,10 @@ impl ModernApp {
         let mut terminal = Terminal::new(backend)?;
 
         loop {
+            if self.needs_full_redraw {
+                terminal.clear()?;
+                self.needs_full_redraw = false;
+            }
             terminal.draw(|f| self.render(f))?;
 
             if self.should_quit {
@@ -2762,6 +2768,7 @@ impl ModernApp {
         let _ = tokio::process::Command::new(&shell).status().await;
         let _ = crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen);
         let _ = crossterm::terminal::enable_raw_mode();
+        self.needs_full_redraw = true;
         self.status_message = Some("Back from terminal".to_string());
     }
 
@@ -3447,6 +3454,7 @@ impl ModernApp {
             .await;
         let _ = crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen);
         let _ = crossterm::terminal::enable_raw_mode();
+        self.needs_full_redraw = true;
         match status {
             Ok(s) if s.success() => {}
             Ok(_) => self.status_message = Some(format!("No manual entry for '{}'", entity.name)),
@@ -3518,6 +3526,7 @@ impl ModernApp {
         let _ = tokio::process::Command::new(viewer).status().await;
         let _ = crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen);
         let _ = crossterm::terminal::enable_raw_mode();
+        self.needs_full_redraw = true;
     }
 
     /// Open an interactive shell with the project environment activated (US-ENV).
@@ -3545,6 +3554,7 @@ impl ModernApp {
             .await;
         let _ = crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen);
         let _ = crossterm::terminal::enable_raw_mode();
+        self.needs_full_redraw = true;
         self.status_message = Some(format!("Project shell for '{}' closed", project.name));
     }
 
@@ -3675,6 +3685,7 @@ impl ModernApp {
             .await;
         let _ = crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen);
         let _ = crossterm::terminal::enable_raw_mode();
+        self.needs_full_redraw = true;
         self.status_message = Some(format!("Opened in {}", editor.display_name()));
     }
 
@@ -4793,6 +4804,7 @@ impl ModernApp {
         let result = run_external_editor(&editor, &content).await;
         let _ = crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen);
         let _ = crossterm::terminal::enable_raw_mode();
+        self.needs_full_redraw = true;
 
         let new_content = match result {
             Ok(text) => text,
