@@ -7,6 +7,7 @@
 | Document | What it covers |
 |:---|:---|
 | [`README.md`](../README.md) | Features, install/build, **configuration reference** (Hyprland-style `config.conf`), theming & custom themes, keybindings, API endpoints |
+| [`INSTALL.md`](../INSTALL.md) | **Quick install instructions** (repo root): script install, service enable, TUI launch, update/uninstall, file paths |
 | [`docs/INSTALL.md`](INSTALL.md) | **Release & installation**: `./install.sh`, background systemd service + TUI coexistence, secrets key handling, non-systemd inits |
 | [`docs/IMPORT_EXPORT.md`](IMPORT_EXPORT.md) | **Knowledge import/export**: bundle JSON schema, AI prompt template for generating commands/scripts/apps, cron scheduling, systemd/cron headless setup |
 
