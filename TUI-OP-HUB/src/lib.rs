@@ -12,6 +12,7 @@ pub mod models;
 pub mod plugin;
 pub mod privilege;
 pub mod process;
+pub mod project_workspace;
 pub mod repository;
 pub mod scheduler;
 pub mod secrets;

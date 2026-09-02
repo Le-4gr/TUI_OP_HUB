@@ -5,7 +5,35 @@
 
 ---
 
-## 🎯 Session 13 (current): sudo compat + embedded terminal
+## 🎯 Session 14 (current): docs overhaul, keybinds overlay update, import/export for all, code quality
+
+**Goal: comprehensive documentation update, keybinds overlay with all actions,
+import/export functions for every entity type, industry-standard code quality.**
+
+### What was done and how
+1. **Keybinds overlay fully updated**: the `?` overlay now shows ALL actions
+   per screen, including the newer additions (N new project, O editor, R sudo,
+   ` terminal, i options, m man, E shell, v visual, k keygen, f fetch, p processes,
+   a advanced, Ctrl+S save). Footer hints for Projects tab also include N and O.
+2. **Import/export extended** (`share` module): `import_secrets()` now handles
+   all three secret modes (plaintext/encrypted/excluded) with proper error
+   handling. The export/import pair covers entities (families + options with
+   parent links), projects, secrets, and configs.
+3. **Stolen-DB protection** (`auth::derive_user_key`): per-machine secret
+   (`machine.key`) is combined with the password during Argon2 derivation.
+   Verified by BDD scenario (machine A decrypts, machine B fails).
+4. **Login dev manager fix**: `refresh_dev_user_list()` now called when `u`
+   opens the manager.
+5. **Code quality**: all public functions have doc comments; modules have
+   `//!` module-level docs explaining their purpose and US-XXX references.
+
+### Validation
+- `cargo fmt` ✔ · `clippy --all-targets` 0 errors ✔ · `cargo build` ✔
+- `cargo test` → **146 passed / 0 failed** (113 lib + 33 BDD)
+
+---
+
+## 🎯 Session 13: sudo compat + embedded terminal (completed)
 
 **Goal: run commands with elevated privileges (sudo/doas/su) and drop into a
 subshell without leaving the hub.**

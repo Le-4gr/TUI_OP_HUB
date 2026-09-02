@@ -10,6 +10,7 @@ use crate::config::{AppConfig, KeybindingsConfig};
 use crate::keygen;
 use crate::models::{CreateEntity, CreateProject};
 use crate::privilege;
+use crate::project_workspace;
 use crate::repository;
 use crate::secrets;
 use crate::workflow::{self, WorkflowDefinition};
@@ -171,6 +172,14 @@ pub struct ModernApp {
     sudo_password: Option<String>,
     // Pending command to run after sudo password is entered
     sudo_pending_command: Option<String>,
+    // New project creation form (US-PROJ)
+    new_project_open: bool,
+    new_project_name: String,
+    new_project_kind: usize,
+    new_project_editor: usize,
+    new_project_git_name: String,
+    new_project_error: Option<String>,
+    new_project_field_idx: usize,
     // Login-screen dev user manager (cargo run only)
     dev_user_manager: bool,
     dev_user_list: Vec<crate::models::UserProfile>,
@@ -237,6 +246,13 @@ impl ModernApp {
             dev_user_list: Vec::new(),
             dev_user_selected: 0,
             dev_user_error: None,
+            new_project_open: false,
+            new_project_name: String::new(),
+            new_project_kind: 0,
+            new_project_editor: 0,
+            new_project_git_name: String::new(),
+            new_project_error: None,
+            new_project_field_idx: 0,
             options_popup: None,
             keybinds_overlay: false,
             // Overlays start closed
@@ -422,6 +438,9 @@ impl ModernApp {
         }
         if self.sudo_password.is_some() {
             self.render_sudo_password_popup(f);
+        }
+        if self.new_project_open {
+            self.render_new_project_form(f);
         }
         if let Some(ref confirm) = self.confirm_delete {
             self.render_confirm_delete(f, confirm);
@@ -1397,6 +1416,20 @@ impl ModernApp {
                 // Projects: open a shell inside the project environment (US-ENV)
                 if self.ui.state == AppState::Projects {
                     self.start_project_shell().await;
+                }
+            }
+            KeyCode::Char('N') => {
+                // Create a new project workspace (US-PROJ)
+                if self.ui.state == AppState::Projects {
+                    self.new_project_open = true;
+                    self.new_project_name.clear();
+                    self.new_project_error = None;
+                }
+            }
+            KeyCode::Char('O') => {
+                // Open project in the selected editor (US-PROJ)
+                if self.ui.state == AppState::Projects {
+                    self.open_project_in_editor().await;
                 }
             }
             k if Some(k) == kb_search => {
@@ -3535,6 +3568,167 @@ impl ModernApp {
         }
     }
 
+    // ── New project workspace creation (US-PROJ, US-ENV) ──────────────────
+
+    /// New project creation form input: name/kind/editor, Ctrl+S creates.
+    async fn handle_new_project_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.create_new_project().await;
+            return;
+        }
+        let field = self.new_project_field();
+        match key.code {
+            KeyCode::Esc => self.new_project_open = false,
+            KeyCode::Tab | KeyCode::Down | KeyCode::Enter if field < 3 => {
+                self.new_project_field_idx = (self.new_project_field_idx + 1) % 4;
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                self.new_project_field_idx = (self.new_project_field_idx + 3) % 4;
+            }
+            KeyCode::Left if field == 1 => {
+                self.new_project_kind =
+                    (self.new_project_kind + project_workspace::ProjectKind::all().len() - 1)
+                        % project_workspace::ProjectKind::all().len();
+            }
+            KeyCode::Right if field == 1 => {
+                self.new_project_kind =
+                    (self.new_project_kind + 1) % project_workspace::ProjectKind::all().len();
+            }
+            KeyCode::Left if field == 2 => {
+                self.new_project_editor =
+                    (self.new_project_editor + project_workspace::ProjectEditor::all().len() - 1)
+                        % project_workspace::ProjectEditor::all().len();
+            }
+            KeyCode::Right if field == 2 => {
+                self.new_project_editor =
+                    (self.new_project_editor + 1) % project_workspace::ProjectEditor::all().len();
+            }
+            KeyCode::Backspace if field == 0 => {
+                self.new_project_name.pop();
+            }
+            KeyCode::Char(c) if field == 0 => self.new_project_name.push(c),
+            _ => {}
+        }
+    }
+
+    /// The currently focused field of the new project form (0-3).
+    fn new_project_field(&self) -> usize {
+        self.new_project_field_idx
+    }
+
+    /// Create the project directory + git repo + env, save to DB.
+    async fn create_new_project(&mut self) {
+        let name = self.new_project_name.trim().to_string();
+        if name.is_empty() {
+            self.new_project_error = Some("Name is required".to_string());
+            return;
+        }
+        let kinds = project_workspace::ProjectKind::all();
+        let kind = kinds[self.new_project_kind.min(kinds.len() - 1)];
+        let parent = dirs_home().join("projects");
+        match project_workspace::create_project_directory(&parent, &name, &kind) {
+            Ok(created) => {
+                // Save to DB
+                let req = CreateProject {
+                    name: name.clone(),
+                    description: Some(kind.description().to_string()),
+                };
+                let project = repository::create_project(&*self.pool, &req).await;
+                if let Ok(project) = project {
+                    let _ = repository::set_project_env(
+                        &*self.pool,
+                        &project.id,
+                        Some(kind.name()),
+                        created.env_cmd.as_deref(),
+                    )
+                    .await;
+                }
+                self.new_project_open = false;
+                self.status_message = Some(format!(
+                    "\u{2713} Project '{}' created at {}",
+                    name,
+                    created.path.display()
+                ));
+                let _ = self.fetch_projects().await;
+            }
+            Err(e) => {
+                self.new_project_error = Some(format!("{}", e));
+            }
+        }
+    }
+
+    /// Open the selected project in the chosen editor (US-PROJ).
+    async fn open_project_in_editor(&mut self) {
+        let Some(project) = self.projects_list.get_selected().cloned() else {
+            self.status_message = Some("Nothing selected".to_string());
+            return;
+        };
+        let editors = project_workspace::ProjectEditor::all();
+        let editor = &editors[self.new_project_editor.min(editors.len() - 1)];
+        let cmd = editor.open_command(".");
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+        let _ = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .status()
+            .await;
+        let _ = crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen);
+        let _ = crossterm::terminal::enable_raw_mode();
+        self.status_message = Some(format!("Opened in {}", editor.display_name()));
+    }
+
+    /// Render the new project creation form (US-PROJ).
+    fn render_new_project_form(&self, f: &mut Frame) {
+        let area = self.centered_rect(64, 18, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .title(" \u{1f4c1} New Project Workspace ")
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.success))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Name
+                Constraint::Length(3), // Kind
+                Constraint::Length(3), // Editor
+                Constraint::Length(1), // Help/error
+            ])
+            .split(inner);
+
+        let field = self.new_project_field();
+        self.render_field(
+            f,
+            chunks[0],
+            "Project name",
+            &self.new_project_name,
+            field == 0,
+            false,
+        );
+
+        let kinds = project_workspace::ProjectKind::all();
+        let kind_name = kinds[self.new_project_kind.min(kinds.len() - 1)].name();
+        let kind_text = format!("\u{25c4} {} \u{25ba}", kind_name);
+        self.render_field(f, chunks[1], "Environment", &kind_text, field == 1, false);
+
+        let editors = project_workspace::ProjectEditor::all();
+        let editor_name = editors[self.new_project_editor.min(editors.len() - 1)].display_name();
+        let editor_text = format!("\u{25c4} {} \u{25ba}", editor_name);
+        self.render_field(f, chunks[2], "Editor", &editor_text, field == 2, false);
+
+        let help = self.form_help_line(
+            self.new_project_error.as_ref(),
+            "Tab: fields \u{b7} \u{2190}/\u{2192}: cycle kind/editor \u{b7} Ctrl+S: create \u{b7} Esc: cancel",
+        );
+        f.render_widget(Paragraph::new(help).alignment(Alignment::Center), chunks[3]);
+    }
+
     /// Keygen form input (US-SEC-01): name/email/passphrase/kind + generate.
     async fn handle_keygen_key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -4336,6 +4530,12 @@ where
 }
 
 /// Index of a theme preset name (unknown names map to the first preset).
+fn dirs_home() -> std::path::PathBuf {
+    std::env::var("HOME")
+        .map(|h| std::path::PathBuf::from(h).join("projects"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("projects"))
+}
+
 fn preset_index(name: &str) -> usize {
     ModernTheme::PRESETS
         .iter()
@@ -4386,6 +4586,7 @@ impl ModernApp {
             "Dashboard / Commands / Projects / Workflows / Secrets / Settings",
         ));
         lines.push(row("`", "Drop into a subshell (embedded terminal)"));
+        lines.push(row("`", "Drop into a subshell (embedded terminal)"));
         lines.push(row("/", "Fuzzy search in the current list"));
         lines.push(row("?", "Toggle this keybind helper"));
         lines.push(row("q", "Quit"));
@@ -4405,6 +4606,7 @@ impl ModernApp {
         lines.push(row("o", "Open in external editor"));
         lines.push(row("i", "Show command options"));
         lines.push(row("m", "Open man page"));
+        lines.push(row("R", "Run with sudo/doas/su"));
         lines.push(row("R", "Run with sudo/doas/su"));
 
         lines.push(Line::from(""));

@@ -202,3 +202,56 @@ pub async fn import_knowledge(
 
     Ok((imported, skipped))
 }
+
+/// Import secrets from a bundle. `Encrypted` secrets are decrypted with
+/// the export passphrase and re-encrypted for the target user.
+/// Returns (imported, skipped) counts.
+pub async fn import_secrets(
+    pool: &SqlitePool,
+    user_id: &str,
+    bundle: &KnowledgeBundle,
+    export_passphrase: Option<&str>,
+) -> AppResult<(usize, usize)> {
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+
+    for secret in &bundle.secrets {
+        let plaintext = match bundle.secret_mode.as_str() {
+            "plaintext" => secret.value.clone(),
+            "encrypted" => {
+                let Some(pass) = export_passphrase else {
+                    skipped += 1;
+                    continue;
+                };
+                let key = crate::share_crypto::key_from_passphrase(pass)?;
+                match crate::share_crypto::decrypt(&secret.value, &key) {
+                    Ok(data) => String::from_utf8_lossy(&data).to_string(),
+                    Err(_) => {
+                        skipped += 1;
+                        continue;
+                    }
+                }
+            }
+            _ => {
+                skipped += 1;
+                continue;
+            }
+        };
+        let enc = match crate::secrets::encrypt_for_user(pool, user_id, &plaintext).await {
+            Ok(enc) => enc,
+            Err(e) => return Err(AppError::Other(format!("encrypt: {e}"))),
+        };
+        crate::repository::create_secret_full(
+            pool,
+            user_id,
+            &secret.name,
+            &enc,
+            &secret.kind,
+            secret.requires_reauth,
+        )
+        .await?;
+        imported += 1;
+    }
+
+    Ok((imported, skipped))
+}

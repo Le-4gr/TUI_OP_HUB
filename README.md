@@ -37,10 +37,33 @@ A terminal-based operations hub for command management, workflow automation, and
 - **Sudo compat** (US-CMD-09): `R` on a command runs it with elevated privileges
   via sudo/doas/su (auto-detected); password popup when needed, piped via `sudo -S`
 - **Embedded terminal**: `` ` `` on any screen drops into `$SHELL` and returns
+- **Sudo compat** (US-CMD-09): `R` on a command runs it with elevated privileges
+  via sudo/doas/su (auto-detected); password popup when needed, piped via `sudo -S`
+- **Embedded terminal**: `` ` `` on any screen drops into `$SHELL` and returns
 - **Keybinds helper** (US-TUI-09): `?` opens a full keybind cheat-sheet overlay
   from **any** screen (Esc/`?` closes it); every screen's footer shows its
   context-specific key hints (New/Edit/Delete/Run/Copy/Editor/Options/Man/
-  Visual/Shell/Keygen/Find/…)
+  Visual/Shell/Keygen/Find/Sudo/…)
+- **Stolen-DB protection** (US-SEC): user encryption keys are bound to the
+  machine via `~/.config/tui-op-hub/machine.key` — a stolen `tuihub.db`
+  can't be decrypted elsewhere, even knowing the password; dev mode does
+  **not** bypass this (it deletes, never unlocks)
+- **Login-screen dev manager** (US-NF, cargo run only): press `u` on the login
+  screen to select users, **delete** them (secrets cascade) or **reset** a
+  forgotten password to `reset-me`
+- **Knowledge-base sharing** (`share` module): export commands/scripts/apps/
+  options/workflows to portable JSON with secrets **excluded**, **encrypted**
+  with an export passphrase (portable), or **plaintext** (opt-in); import
+  merges by name+type and never overwrites local edits
+- **Config file manager** (`config_manager`): store dotfiles centrally
+  (versioned), and **symlink** them into place (Hyprland-style "hyprlinks": the
+  DB holds the master copy, `$HOME` gets the link — point it where it should go)
+- **New project workspaces** (US-PROJ): `N` on the Projects tab creates a project
+  directory with git init, `.gitignore`, and environment scaffolding
+  (Python venv / Rust cargo / Node.js / Docker Compose / Kubernetes manifests) —
+  `O` opens the project in your chosen editor (nvim/vim/code/lazygit/yazi/…)
+- **Structured command families**: seeded commands have their options as
+  described child entities (`opt` type) — `i` shows them per family
 - **Stolen-DB protection** (US-SEC): user encryption keys are bound to the
   machine via `~/.config/tui-op-hub/machine.key` — a stolen `tuihub.db`
   can't be decrypted elsewhere, even knowing the password; dev mode does

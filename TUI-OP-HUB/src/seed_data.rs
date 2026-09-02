@@ -53,7 +53,28 @@ pub const SEED_TOOLS: &[(&str, &str, &str)] = &[
     ("vim", "Vi IMproved — terminal text editor", "editor"),
     ("nano", "Small, friendly terminal text editor", "editor"),
     ("lazygit", "Simple terminal UI for git commands", "git"),
+    (
+        "lazydocker",
+        "The lazier way to manage everything docker",
+        "docker",
+    ),
+    (
+        "k9s",
+        "Terminal UI to interact with your Kubernetes clusters",
+        "kubernetes",
+    ),
+    ("ctop", "Top-like interface for container metrics", "docker"),
     ("fzf", "Command-line fuzzy finder", "fuzzy-finder"),
+    (
+        "kubectl",
+        "Command-line tool for controlling Kubernetes clusters",
+        "kubernetes",
+    ),
+    (
+        "docker compose",
+        "Define and run multi-container applications",
+        "docker",
+    ),
 ];
 
 /// Command families seeded into the knowledge base (part 1).
