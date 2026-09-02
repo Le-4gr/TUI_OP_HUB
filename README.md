@@ -34,6 +34,9 @@ A terminal-based operations hub for command management, workflow automation, and
 - **Projects as environments** (US-ENV): attach an activation command (venv/pyenv/conda)
   to a project, `E` opens a shell inside it
 - **Processes via known tools** (US-PROC): `p` launches btop/htop/top
+- **Sudo compat** (US-CMD-09): `R` on a command runs it with elevated privileges
+  via sudo/doas/su (auto-detected); password popup when needed, piped via `sudo -S`
+- **Embedded terminal**: `` ` `` on any screen drops into `$SHELL` and returns
 - **Keybinds helper** (US-TUI-09): `?` opens a full keybind cheat-sheet overlay
   from **any** screen (Esc/`?` closes it); every screen's footer shows its
   context-specific key hints (New/Edit/Delete/Run/Copy/Editor/Options/Man/

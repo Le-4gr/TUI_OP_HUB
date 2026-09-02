@@ -9,6 +9,7 @@ use crate::auth::AuthManager;
 use crate::config::{AppConfig, KeybindingsConfig};
 use crate::keygen;
 use crate::models::{CreateEntity, CreateProject};
+use crate::privilege;
 use crate::repository;
 use crate::secrets;
 use crate::workflow::{self, WorkflowDefinition};
@@ -166,6 +167,10 @@ pub struct ModernApp {
     keygen: KeygenState,
     // Developer mode: two-step confirmation for wiping all users
     dev_confirm_wipe: bool,
+    // Sudo password popup for privileged runs (US-CMD-09)
+    sudo_password: Option<String>,
+    // Pending command to run after sudo password is entered
+    sudo_pending_command: Option<String>,
     // Login-screen dev user manager (cargo run only)
     dev_user_manager: bool,
     dev_user_list: Vec<crate::models::UserProfile>,
@@ -226,6 +231,8 @@ impl ModernApp {
             advanced: AdvancedState::default(),
             keygen: KeygenState::default(),
             dev_confirm_wipe: false,
+            sudo_password: None,
+            sudo_pending_command: None,
             dev_user_manager: false,
             dev_user_list: Vec::new(),
             dev_user_selected: 0,
@@ -412,6 +419,9 @@ impl ModernApp {
         }
         if self.keybinds_overlay {
             self.render_keybinds_overlay(f);
+        }
+        if self.sudo_password.is_some() {
+            self.render_sudo_password_popup(f);
         }
         if let Some(ref confirm) = self.confirm_delete {
             self.render_confirm_delete(f, confirm);
@@ -1361,6 +1371,16 @@ impl ModernApp {
                     self.show_man_page().await;
                 }
             }
+            KeyCode::Char('`') => {
+                // Drop into a subshell (embedded terminal)
+                self.spawn_terminal().await;
+            }
+            KeyCode::Char('R') => {
+                // Run with elevated privileges (sudo/doas/su)
+                if self.ui.state == AppState::Commands {
+                    self.run_privileged_command().await;
+                }
+            }
             KeyCode::Char('i') => {
                 // Structured options of the selected command family (US-CMD-01)
                 if self.ui.state == AppState::Commands {
@@ -1747,6 +1767,7 @@ impl ModernApp {
                 ("1-6", "Tabs"),
                 ("f", "Fetch"),
                 ("p", "Processes"),
+                ("`", "Shell"),
                 ("?", "Keybinds"),
                 ("q", "Quit"),
             ],
@@ -1760,6 +1781,8 @@ impl ModernApp {
                 ("o", "Editor"),
                 ("i", "Options"),
                 ("m", "Man"),
+                ("R", "Sudo"),
+                ("`", "Shell"),
                 ("/", "Find"),
                 ("?", "Keybinds"),
                 ("q", "Quit"),
@@ -2607,6 +2630,142 @@ impl ModernApp {
                 });
             }
         }
+    }
+    /// Handle sudo password input (US-CMD-09).
+    async fn handle_sudo_password_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.sudo_password = None;
+                self.sudo_pending_command = None;
+            }
+            KeyCode::Backspace => {
+                if let Some(pw) = self.sudo_password.as_mut() {
+                    pw.pop();
+                }
+            }
+            KeyCode::Enter => {
+                let password = self.sudo_password.take();
+                let command = self.sudo_pending_command.take();
+                if let (Some(pw), Some(cmd_str)) = (password, command) {
+                    if let Some(tool) = privilege::detect_priv_tool() {
+                        match privilege::run_privileged(&tool, &cmd_str, Some(&pw)).await {
+                            Ok(out) => {
+                                self.run_result = Some(RunResult {
+                                    title: format!("Sudo: {}", cmd_str),
+                                    success: out.status.success(),
+                                    text: format!(
+                                        "exit code: {}\n\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                                        out.status.code().unwrap_or(-1),
+                                        String::from_utf8_lossy(&out.stdout),
+                                        String::from_utf8_lossy(&out.stderr)
+                                    ),
+                                });
+                            }
+                            Err(e) => {
+                                self.status_message = Some(format!("\u{2717} Sudo failed: {}", e));
+                            }
+                        }
+                    } else {
+                        self.status_message = Some("\u{2717} No privilege tool found".to_string());
+                    }
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(pw) = self.sudo_password.as_mut() {
+                    pw.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Run the selected command with elevated privileges (US-CMD-09).
+    async fn run_privileged_command(&mut self) {
+        let Some(tool) = privilege::detect_priv_tool() else {
+            self.status_message =
+                Some("\u{2717} No privilege tool found (sudo/doas/su)".to_string());
+            return;
+        };
+        let Some(entity) = self.commands_list.get_selected().cloned() else {
+            self.status_message = Some("Nothing selected".to_string());
+            return;
+        };
+        let content = match entity.content.clone() {
+            Some(c) if !c.trim().is_empty() => c,
+            _ => {
+                self.status_message = Some("Selected item has no content to run".to_string());
+                return;
+            }
+        };
+        if privilege::needs_password(&tool) {
+            self.sudo_password = Some(String::new());
+            self.sudo_pending_command = Some(content);
+        } else {
+            match privilege::run_privileged(&tool, &content, None).await {
+                Ok(out) => {
+                    self.run_result = Some(RunResult {
+                        title: format!("Sudo: {}", entity.name),
+                        success: out.status.success(),
+                        text: format!(
+                            "exit code: {}\n\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                            out.status.code().unwrap_or(-1),
+                            String::from_utf8_lossy(&out.stdout),
+                            String::from_utf8_lossy(&out.stderr)
+                        ),
+                    });
+                }
+                Err(e) => {
+                    self.status_message = Some(format!("\u{2717} Sudo failed: {}", e));
+                }
+            }
+        }
+    }
+
+    /// Drop into a subshell (embedded terminal).
+    pub async fn spawn_terminal(&mut self) {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+        let _ = tokio::process::Command::new(&shell).status().await;
+        let _ = crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen);
+        let _ = crossterm::terminal::enable_raw_mode();
+        self.status_message = Some("Back from terminal".to_string());
+    }
+
+    /// Render the sudo password input popup (US-CMD-09).
+    fn render_sudo_password_popup(&self, f: &mut Frame) {
+        let area = self.centered_rect(52, 10, f);
+        f.render_widget(Clear, area);
+        let tool_name = privilege::detect_priv_tool()
+            .map(|t| t.name())
+            .unwrap_or("sudo");
+        let cmd = self.sudo_pending_command.as_deref().unwrap_or("");
+        let block = Block::default()
+            .title(format!(
+                " \u{1f512} {} password \u{2014} {} ",
+                tool_name, cmd
+            ))
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.error))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Length(1)])
+            .split(inner);
+        let masked = "\u{2022}".repeat(self.sudo_password.as_ref().map_or(0, |p| p.len()));
+        self.render_field(f, chunks[0], "Password", &masked, true, true);
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "Enter: run \u{b7} Esc: cancel",
+                Style::default().fg(self.ui.theme.border),
+            ))
+            .alignment(Alignment::Center),
+            chunks[1],
+        );
     }
 
     // ========================================================================
@@ -4226,6 +4385,7 @@ impl ModernApp {
             "1-6",
             "Dashboard / Commands / Projects / Workflows / Secrets / Settings",
         ));
+        lines.push(row("`", "Drop into a subshell (embedded terminal)"));
         lines.push(row("/", "Fuzzy search in the current list"));
         lines.push(row("?", "Toggle this keybind helper"));
         lines.push(row("q", "Quit"));
@@ -4245,6 +4405,7 @@ impl ModernApp {
         lines.push(row("o", "Open in external editor"));
         lines.push(row("i", "Show command options"));
         lines.push(row("m", "Open man page"));
+        lines.push(row("R", "Run with sudo/doas/su"));
 
         lines.push(Line::from(""));
         lines.push(section("Projects"));

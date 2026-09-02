@@ -10,6 +10,7 @@ pub mod fuzzy;
 pub mod keygen;
 pub mod models;
 pub mod plugin;
+pub mod privilege;
 pub mod process;
 pub mod repository;
 pub mod scheduler;

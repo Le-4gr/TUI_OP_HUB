@@ -5,7 +5,45 @@
 
 ---
 
-## 🎯 Session 12 (current): `/` search fix, dev DB ops, numpad + keybinds polish
+## 🎯 Session 13 (current): sudo compat + embedded terminal
+
+**Goal: run commands with elevated privileges (sudo/doas/su) and drop into a
+subshell without leaving the hub.**
+
+### What was done and how
+1. **`src/privilege.rs`** (new module):
+   - `PrivTool` enum (Sudo/Doas/Su) with `detect_priv_tool()` (PATH search)
+   - `needs_password()` — probes `sudo -n true` for NOPASSWD detection
+   - `build_invocation()` — builds the right invocation per tool:
+     `sudo [-S] cmd`, `doas cmd`, `sh -c 'su -c "cmd"'`
+   - `run_privileged()` — spawns and optionally pipes the password via stdin
+     to `sudo -S`; returns `std::process::Output`
+   - 7 unit tests covering detection, invocation building per tool,
+     stdin password support flags
+2. **TUI sudo integration** (`src/tui/modern_app.rs`):
+   - `R` (Shift+R) on the Commands tab runs the selected command with
+     elevated privileges
+   - If the tool needs a password, a **secure popup** appears (`●●●●` masked
+     input); `Enter` pipes it via `sudo -S`, `Esc` cancels
+   - Result shown in the existing run-result popup
+3. **Embedded terminal**: `` ` `` (backtick) on any screen suspends the TUI
+   (leave alternate screen + raw mode off), spawns `$SHELL`, restores the TUI
+   on exit. Same pattern as `start_project_shell` and `show_man_page`.
+4. **Keybinds updated**: `?` overlay and footer hints now show `R` (sudo) and
+   `` ` `` (terminal) on Commands/Dashboard.
+
+### Tests
+- Unit: privilege detection, invocation building for sudo/doas/su with and
+  without password, stdin password support flags
+- All prior tests still pass (no functional changes to existing code)
+
+### Validation
+- `cargo fmt` ✔ · `clippy --all-targets` 0 errors ✔ · `cargo build` ✔
+- `cargo test` → **139 passed / 0 failed** (106 lib + 33 BDD)
+
+---
+
+## 🎯 Session 12: `/` search fix, dev DB ops, numpad + keybinds polish (completed)
 
 **Goal: fix `/` fuzzy search (was still substring), add dev DB wipe/tab-delete,
 and fix the login dev user manager not listing users.**
