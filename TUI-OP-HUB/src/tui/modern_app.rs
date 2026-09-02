@@ -159,6 +159,7 @@ pub struct ModernApp {
     project_detail: Option<ProjectDetailState>,
     cron_input: Option<String>,
     import_input: Option<String>,
+    register_input: Option<String>,
     workflow_form: WorkflowFormState,
     secret_form: SecretFormState,
     // Search state
@@ -258,6 +259,7 @@ impl ModernApp {
             project_detail: None,
             cron_input: None,
             import_input: None,
+            register_input: None,
             workflow_form: WorkflowFormState::default(),
             secret_form: SecretFormState::default(),
             // Initialize search state
@@ -535,6 +537,9 @@ impl ModernApp {
         }
         if self.options_popup.is_some() {
             self.render_options_popup(f);
+        }
+        if let Some(path) = &self.register_input {
+            self.render_register_input(f, path);
         }
         if let Some(path) = &self.import_input {
             self.render_import_input(f, path);
@@ -1169,6 +1174,33 @@ impl ModernApp {
             }
             return;
         }
+        if self.new_project_open {
+            // The workspace creation form captures all keys (US-PROJ); without
+            // this guard, typed characters leak into other handlers (e.g. `p`
+            // spawning a process viewer mid-form).
+            self.handle_new_project_key(key).await;
+            return;
+        }
+        if let Some(path) = self.register_input.as_mut() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.register_input = None;
+                }
+                KeyCode::Enter => {
+                    let entered = path.clone();
+                    self.register_input = None;
+                    self.register_existing_directory(&entered).await;
+                }
+                KeyCode::Backspace => {
+                    path.pop();
+                }
+                KeyCode::Char(c) => {
+                    path.push(c);
+                }
+                _ => {}
+            }
+            return;
+        }
         if let Some(path) = self.import_input.as_mut() {
             match key.code {
                 KeyCode::Esc => {
@@ -1436,10 +1468,9 @@ impl ModernApp {
                         };
                     }
                     AppState::Projects => {
-                        self.project_form = ProjectFormState {
-                            mode: Some(FormMode::Create),
-                            ..Default::default()
-                        };
+                        // Register an existing directory as a project (US-PROJ);
+                        // use N for a brand-new workspace instead.
+                        self.register_input = Some(String::new());
                     }
                     AppState::Workflows => {
                         self.workflow_form = WorkflowFormState {
@@ -1899,6 +1930,39 @@ impl ModernApp {
         );
     }
 
+    /// Register-directory popup (US-PROJ-01): type a path, Enter registers it.
+    fn render_register_input(&self, f: &mut Frame, value: &str) {
+        let area = self.centered_rect(70, 7, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.secondary))
+            .title(" Register existing directory as project ")
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(inner);
+        let shown = if value.is_empty() {
+            format!("~/projects/{}", value)
+        } else {
+            value.to_string()
+        };
+        let cursor = format!("{}\u{2588}", shown);
+        f.render_widget(Paragraph::new(cursor), rows[0]);
+        let hint = "directory name becomes the project name | Enter: register | Esc: cancel";
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                hint,
+                Style::default().fg(self.ui.theme.border),
+            )),
+            rows[1],
+        );
+    }
+
     /// Import path popup (US-CMD-01): type or edit a file path, Enter imports.
     fn render_import_input(&self, f: &mut Frame, value: &str) {
         let area = self.centered_rect(70, 7, f);
@@ -1980,8 +2044,13 @@ impl ModernApp {
             .description
             .clone()
             .unwrap_or_else(|| "(no description)".to_string());
+        let mut desc_lines = vec![desc];
+        if let Some(path) = &detail.project.path {
+            desc_lines.push(format!("dir: {}", path));
+        }
         f.render_widget(
-            Paragraph::new(desc).style(Style::default().fg(self.ui.theme.border)),
+            Paragraph::new(desc_lines.join("\n").to_string())
+                .style(Style::default().fg(self.ui.theme.border)),
             chunks[0],
         );
         let items: Vec<Line> = detail
@@ -2379,7 +2448,8 @@ impl ModernApp {
             ],
             AppState::Projects => vec![
                 ("\u{2191}\u{2193}", "Navigate"),
-                ("n", "New"),
+                ("N", "New ws"),
+                ("n", "Register"),
                 ("e", "Edit"),
                 ("d", "Delete"),
                 ("E", "Shell"),
@@ -4174,8 +4244,47 @@ impl ModernApp {
         self.new_project_field_idx
     }
 
+    /// Register an existing directory as a project (US-PROJ-01): the directory
+    /// must exist; its base name becomes the project name and the path is
+    /// stored so `O` can open it in an editor.
+    async fn register_existing_directory(&mut self, entered: &str) {
+        let expanded = expand_tilde(entered);
+        let path = std::path::PathBuf::from(expanded);
+        if !path.is_dir() {
+            self.status_message = Some(format!("Not a directory: {}", path.display()));
+            return;
+        }
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            self.status_message = Some("Cannot derive a project name from /".to_string());
+            return;
+        };
+        let req = CreateProject {
+            name: name.clone(),
+            description: Some(format!("Registered from {}", path.display())),
+        };
+        match repository::create_project(&*self.pool, &req).await {
+            Ok(project) => {
+                let _ = repository::set_project_path(
+                    &*self.pool,
+                    &project.id,
+                    Some(&path.to_string_lossy()),
+                )
+                .await;
+                self.status_message = Some(format!("Registered {} - press O to open it", name));
+                let _ = self.fetch_projects().await;
+            }
+            Err(e) => self.status_message = Some(format!("{}", e)),
+        }
+    }
+
     /// Create the project directory + git repo + env, save to DB.
     async fn create_new_project(&mut self) {
+        let parent = dirs_home().join("projects");
+        self.create_new_project_in(&parent).await;
+    }
+
+    /// `create_new_project` with an injectable parent directory (tests).
+    async fn create_new_project_in(&mut self, parent: &std::path::Path) {
         let name = self.new_project_name.trim().to_string();
         if name.is_empty() {
             self.new_project_error = Some("Name is required".to_string());
@@ -4183,27 +4292,37 @@ impl ModernApp {
         }
         let kinds = project_workspace::ProjectKind::all();
         let kind = kinds[self.new_project_kind.min(kinds.len() - 1)];
-        let parent = dirs_home().join("projects");
-        match project_workspace::create_project_directory(&parent, &name, &kind) {
+        match project_workspace::create_project_directory(parent, &name, &kind) {
             Ok(created) => {
-                // Save to DB
+                // Save to DB, including where the workspace lives (US-PROJ)
                 let req = CreateProject {
                     name: name.clone(),
                     description: Some(kind.description().to_string()),
                 };
-                let project = repository::create_project(&*self.pool, &req).await;
-                if let Ok(project) = project {
-                    let _ = repository::set_project_env(
-                        &*self.pool,
-                        &project.id,
-                        Some(kind.name()),
-                        created.env_cmd.as_deref(),
-                    )
-                    .await;
+                match repository::create_project(&*self.pool, &req).await {
+                    Ok(project) => {
+                        let _ = repository::set_project_env(
+                            &*self.pool,
+                            &project.id,
+                            Some(kind.name()),
+                            created.env_cmd.as_deref(),
+                        )
+                        .await;
+                        let _ = repository::set_project_path(
+                            &*self.pool,
+                            &project.id,
+                            Some(&created.path.to_string_lossy()),
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        self.new_project_error = Some(format!("DB save failed: {}", e));
+                        return;
+                    }
                 }
                 self.new_project_open = false;
                 self.status_message = Some(format!(
-                    "\u{2713} Project '{}' created at {}",
+                    "\u{2713} Project '{}' created at {} \u{2014} press O to open it",
                     name,
                     created.path.display()
                 ));
@@ -4223,7 +4342,28 @@ impl ModernApp {
         };
         let editors = project_workspace::ProjectEditor::all();
         let editor = &editors[self.new_project_editor.min(editors.len() - 1)];
-        let cmd = editor.open_command(".");
+        // Prefer the registered workspace path; fall back to ~/projects/<name>
+        // if it exists (older rows have no stored path).
+        let fallback = dirs_home().join("projects").join(&project.name);
+        let dir = project
+            .path
+            .clone()
+            .filter(|p| std::path::Path::new(p).is_dir())
+            .or_else(|| {
+                if fallback.is_dir() {
+                    Some(fallback.to_string_lossy().to_string())
+                } else {
+                    None
+                }
+            });
+        let Some(dir) = dir else {
+            self.status_message = Some(format!(
+                "\u{2717} No directory for '{}' (create a workspace with N)",
+                project.name
+            ));
+            return;
+        };
+        let cmd = editor.open_command(&dir);
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen);
         let _ = tokio::process::Command::new("sh")
@@ -5190,6 +5330,8 @@ impl ModernApp {
 
         lines.push(Line::from(""));
         lines.push(section("Projects"));
+        lines.push(row("N", "Create new project workspace (dir + git + env)"));
+        lines.push(row("n", "Register an existing directory as a project"));
         lines.push(row("Enter", "Open project detail (entities overview)"));
         lines.push(row("O", "Open project in external editor"));
         lines.push(row("E", "Open a shell in the project environment"));
@@ -6292,5 +6434,73 @@ mod tests {
         assert_eq!(expand_tilde("~/x.json"), format!("{home}/x.json"));
         assert_eq!(expand_tilde("/abs/path"), "/abs/path");
         assert_eq!(expand_tilde("relative"), "relative");
+    }
+
+    // ── Project creation flow (N workspace / n register) ───────────────────
+
+    #[tokio::test]
+    async fn given_new_workspace_form_when_created_then_path_stored_in_db() {
+        let mut app = test_app_db().await;
+        app.ui.state = AppState::Projects;
+
+        // Open the workspace form (N) and fill the name
+        app.handle_key(key(KeyCode::Char('N'))).await;
+        assert!(app.new_project_open);
+        for c in "flowproj".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        // Use the Generic kind (no venv/cargo scaffolding => fast, offline)
+        app.new_project_kind = project_workspace::ProjectKind::all()
+            .iter()
+            .position(|k| k.name() == "generic")
+            .unwrap();
+
+        // Create into a temp parent (injectable parent for tests)
+        let parent = std::env::temp_dir().join(format!("tui-op-hub-ws-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        app.create_new_project_in(&parent).await;
+
+        assert!(!app.new_project_open, "form closed on success");
+        let created = parent.join("flowproj");
+        assert!(created.is_dir(), "workspace directory created");
+
+        // The DB row carries the workspace path
+        let projects = repository::list_projects(&*app.pool).await.unwrap();
+        let p = projects
+            .iter()
+            .find(|p| p.name == "flowproj")
+            .expect("saved");
+        assert_eq!(p.path.as_deref(), Some(created.to_string_lossy().as_ref()));
+
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[tokio::test]
+    async fn given_register_popup_when_path_entered_then_project_registered_with_path() {
+        let mut app = test_app_db().await;
+        app.ui.state = AppState::Projects;
+
+        // An existing directory to register
+        let dir = std::env::temp_dir().join(format!("tui-op-hub-reg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        assert!(app.register_input.is_some());
+        app.register_input = Some(String::new()); // clear for exact path
+        for c in dir.to_string_lossy().chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Enter)).await;
+
+        assert!(app.register_input.is_none(), "popup closed");
+        let projects = repository::list_projects(&*app.pool).await.unwrap();
+        let expected_name = dir.file_name().unwrap().to_string_lossy().to_string();
+        let p = projects
+            .iter()
+            .find(|p| p.name == expected_name)
+            .expect("registered project saved");
+        assert_eq!(p.path.as_deref(), Some(dir.to_string_lossy().as_ref()));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

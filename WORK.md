@@ -7,6 +7,18 @@
 
 ## 🎯 Session 16 (current): terminal fix, visible search bar, import/export TUI, keybinds update
 
+> **Update 6 (same session):** Fixed the project creation flow (US-PROJ-01/04).
+> ROOT CAUSE found: `handle_new_project_key` was never routed from `handle_key` — the
+> workspace form captured no keys, so typed characters leaked into other handlers
+> (typing a name containing `p` spawned a process viewer mid-form!). Now routed top-of-stack.
+> Also: new migration 0005 adds `projects.path`; workspace creation stores the created
+> directory; `O` opens the project's real path (fallback `~/projects/<name>`, clear error
+> if neither exists — previously it opened the CWD, which was wrong); `n` on Projects now
+> registers an **existing directory** (path popup, base name becomes project name) instead
+> of a duplicate DB-only form; project detail shows `dir: <path>`; overlay + footer hints
+> updated (N = New ws, n = Register). Tests: +2 TUI (workspace path stored, register flow),
+> +1 BDD (path persisted). 134 lib + 42 BDD = 176 pass.
+
 > **Update 5 (same session):** Better file import (US-CMD-01). `I` in the TUI now opens a
 > **path-input popup** (default `~/tui-op-hub-export.json` pre-filled, `~` expansion, edit +
 > Enter) instead of importing a fixed file. `share::bundle_from_json` parses **leniently**:

@@ -1473,3 +1473,43 @@ async fn given_bare_entity_array_when_imported_then_entities_landed() {
         .unwrap();
     assert!(apps.iter().any(|e| e.name == "ai app"));
 }
+
+/// Scenario: a created workspace remembers its directory
+/// Given a project workspace created on disk, when the project row is listed,
+/// then its stored path points at the created directory (so `O` can open it).
+#[tokio::test]
+async fn given_created_workspace_when_listed_then_path_is_stored() {
+    let pool = given_fresh_database().await;
+    let parent = std::env::temp_dir().join(format!("tui-op-hub-bdd-ws-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&parent);
+
+    let created = tui_op_hub::project_workspace::create_project_directory(
+        &parent,
+        "bddproj",
+        &tui_op_hub::project_workspace::ProjectKind::Generic,
+    )
+    .unwrap();
+
+    let project = repository::create_project(
+        &pool,
+        &CreateProject {
+            name: "bddproj".to_string(),
+            description: Some("bdd workspace".to_string()),
+        },
+    )
+    .await
+    .unwrap();
+    repository::set_project_path(&pool, &project.id, Some(&created.path.to_string_lossy()))
+        .await
+        .unwrap();
+
+    let listed = repository::list_projects(&pool).await.unwrap();
+    let p = listed.iter().find(|p| p.name == "bddproj").unwrap();
+    assert_eq!(
+        p.path.as_deref(),
+        Some(created.path.to_string_lossy().as_ref())
+    );
+    assert!(created.path.is_dir());
+
+    let _ = std::fs::remove_dir_all(&parent);
+}

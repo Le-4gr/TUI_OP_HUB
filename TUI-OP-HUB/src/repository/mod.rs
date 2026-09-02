@@ -608,6 +608,27 @@ pub async fn delete_ssh_host(pool: &SqlitePool, id: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// Set (or clear) the on-disk workspace path of a project (US-PROJ).
+pub async fn set_project_path(
+    pool: &SqlitePool,
+    id: &str,
+    path: Option<&str>,
+) -> AppResult<Project> {
+    let result =
+        sqlx::query("UPDATE projects SET path = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(path)
+            .bind(id)
+            .execute(pool)
+            .await?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound {
+            entity: "project",
+            id: id.to_string(),
+        });
+    }
+    get_project(pool, id).await
+}
+
 // Scheduled tasks
 pub async fn create_scheduled_task(
     pool: &SqlitePool,

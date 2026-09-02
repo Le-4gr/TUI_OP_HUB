@@ -38,6 +38,9 @@ pub struct Project {
     /// `source .venv/bin/activate` (US-ENV-01).
     #[sqlx(default)]
     pub env_cmd: Option<String>,
+    /// Where the project's workspace lives on disk, if known (US-PROJ).
+    #[sqlx(default)]
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
