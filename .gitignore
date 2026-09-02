@@ -23,3 +23,12 @@ Thumbs.db
 # ===== Logs / Temp =====
 *.log
 tmp/
+
+# ===== Local data & secrets (never commit) =====
+*.db
+*.db-shm
+*.db-wal
+.env
+
+# ===== Syncthing conflict artifacts (stale duplicates) =====
+*.sync-conflict-*
