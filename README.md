@@ -17,11 +17,25 @@ A terminal-based operations hub for command management, workflow automation, and
 - **REST API**: Axum-based HTTP API for full CRUD and workflow execution
 - **TUI Dashboard**: Interactive terminal UI with 7 tabs (Dashboard, Commands, Projects, Tags, Search, Workflows, Secrets)
 
-### Phase 2 🔄 Foundation Ready
+### Phase 2 🔄 In progress
 
+- **Scheduler daemon** (US-WF-07): cron-scheduled workflows execute automatically
+- **Secrets as workflow variables**: `secrets.<name>` / `get_secret("<name>")` in Lua workflows
+- **Admin users** (US-SEC): first registered user is admin; admins can delete users
+  (their secrets are removed with them) and reset forgotten passwords
+- **Secret classification & access control**: kinds (`password`, `ssh_key`, `gpg_key`,
+  `api_key`) + `requires_reauth` flag for secrets that need more than just being logged in
+- **SSH & GPG keygen**: `k` on the Secrets tab generates keys via the known tools
+  (`ssh-keygen`, `gpg`); private key location and passphrase stored encrypted
+- **File-backed scripts & workflows**: metadata `{"file": "…"}` runs Lua, JSON, Python,
+  Node, shell — interpreter chosen by extension or shebang
+- **Type-aware execution** (US-CMD-09): `cmd` runs in shell, `script` via its interpreter,
+  `app` launched detached
+- **Projects as environments** (US-ENV): attach an activation command (venv/pyenv/conda)
+  to a project, `E` opens a shell inside it
+- **Processes via known tools** (US-PROC): `p` launches btop/htop/top
 - Plugin architecture (models, schema, DB functions, approval workflow structure)
 - SSH host manager (models, schema, DB functions)
-- Task scheduler with cron support (models, schema, DB functions)
 
 ## Quick Start
 

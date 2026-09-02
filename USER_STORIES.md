@@ -38,20 +38,34 @@
 
 ---
 
-### 🔄 Phase 2 — Foundation Ready
+### 🔄 Phase 2 — In progress (started this session)
 
-**Models & Schema Complete**:
-- ✅ Plugin system (models, schema, DB functions, approval workflow structure)
-- ✅ SSH host manager (models, schema, DB functions)
-- ✅ Task scheduler with cron (models, schema, DB functions)
+**Implemented in this phase kick-off**:
+- ✅ `US-WF-07`: Scheduler daemon wired into `main.rs` (cron workflows execute automatically)
+- ✅ Secrets as workflow variables: `secrets.<name>` + `get_secret()` host function
+  (reauth-protected secrets excluded; US-SEC-02/05)
+- ✅ First user is **admin** (migration 0003 `is_admin`); admin can **delete users**
+  (secrets cascade via FK) and **reset forgotten passwords** (`admin_reset_password`)
+- ✅ **Secret classification** (`password`/`ssh_key`/`gpg_key`/`api_key`) +
+  `requires_reauth` access control (US-SEC-01/05)
+- ✅ **SSH & GPG keygen** using known tools (`ssh-keygen`/`gpg`); private key location
+  and passphrase stored as encrypted secrets with tags
+- ✅ **File-backed scripts & workflows** (US-WF-03, US-CMD-05): metadata
+  `{"file": "…"}` runs Lua/JSON/Python/shell files with interpreter picked by
+  extension/shebang
+- ✅ **Type-aware execution** (US-CMD-09): `cmd` → shell, `script` → interpreter,
+  `app` → launched detached
+- ✅ **Projects as environments** (US-ENV): `env_type`/`env_cmd` per project,
+  `E` opens a shell inside the environment
+- ✅ **Processes use known programs** (US-PROC): `p` launches btop/htop/top
 
-**Pending Phase 2 Work** (ready to implement):
+**Remaining Phase 2 work**:
 - 🔄 `US-PLG-05`, `US-PLG-06`: Plugin approval workflow UI and enforcement
 - 🔄 `US-PLG-07`, `US-PLG-10`: Plugin command registration and TUI listing
 - 🔄 `US-SSH-01` through `US-SSH-06`: SSH host manager TUI and quick-connect
-- 🔄 `US-WF-07`: Scheduler daemon with cron parsing and execution
-- 🔄 `US-SEC-01`, `US-SEC-05`: SSH key storage and ssh-agent integration
+- 🔄 `US-WF-09`: Workflow stop/cancel for running workflows
 - 🔄 `US-DEP-04`: Systemd integration
+- 🔄 Admin user management TUI panel (backend + API done)
 
 **Not Yet Started** (Future/P2+):
 - 🟢 `US-PROC-01` through `US-PROC-07`: Process management (future feature)

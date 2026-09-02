@@ -6,6 +6,7 @@ pub mod config_manager;
 pub mod db;
 pub mod environment;
 pub mod error;
+pub mod keygen;
 pub mod models;
 pub mod plugin;
 pub mod process;

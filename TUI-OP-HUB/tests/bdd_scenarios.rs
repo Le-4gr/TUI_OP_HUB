@@ -556,3 +556,109 @@ fn given_advanced_visual_edits_when_saved_then_persisted() {
     let theme = tui_op_hub::tui::modern_ui::ModernTheme::from_config(&loaded.theme);
     assert_eq!(theme.primary, ratatui::style::Color::Rgb(0x58, 0xa6, 0xff));
 }
+
+// ============================================================================
+// Feature: Phase 2 — admin users, file-backed workflows (US-SEC, US-WF)
+// ============================================================================
+
+/// Scenario: the first user is admin and admins manage users
+/// Given a fresh database, when the first user signs up, then they are admin;
+/// a second user is not, and deleting a user removes their secrets (the
+/// forgotten-password escape hatch).
+#[tokio::test]
+async fn given_fresh_db_when_users_signup_then_first_is_admin_and_can_delete_users() {
+    let pool = given_fresh_database().await;
+
+    // First user becomes admin
+    let admin = tui_op_hub::auth::AuthManager::new(pool.clone());
+    let admin_id = admin.create_user("admin", "adminpass1").await.unwrap();
+    assert!(
+        repository::is_admin(&pool, &admin_id).await.unwrap(),
+        "first user must be admin"
+    );
+
+    // Second user is not admin
+    let second = tui_op_hub::auth::AuthManager::new(pool.clone());
+    let user_id = second.create_user("regular", "regularpass1").await.unwrap();
+    assert!(!repository::is_admin(&pool, &user_id).await.unwrap());
+
+    // Regular user cannot reset passwords
+    let denied = tui_op_hub::auth::admin_reset_password(&pool, &user_id, "admin", "newpass1").await;
+    assert!(denied.is_err(), "non-admin reset must be denied");
+
+    // Admin can delete a user; their secrets are removed with them (FK cascade)
+    repository::get_or_create_user(&pool, "victim")
+        .await
+        .unwrap();
+    let enc = secrets::encrypt_for_user(&pool, &user_id, "victim-secret")
+        .await
+        .unwrap();
+    repository::create_secret(&pool, &user_id, "secret", &enc)
+        .await
+        .unwrap();
+    assert_eq!(
+        repository::list_secrets(&pool, &user_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    repository::delete_user(&pool, &user_id).await.unwrap();
+    assert!(repository::list_secrets(&pool, &user_id)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(
+        repository::delete_user(&pool, &user_id).await.is_err(),
+        "already gone"
+    );
+}
+
+/// Scenario: file-backed workflows and scripts run from disk
+/// Given a JSON workflow definition file referenced via metadata, when the
+/// workflow entity is executed, then the steps are read from the file.
+#[tokio::test]
+async fn given_file_backed_workflow_when_executed_then_definition_loaded_from_file() {
+    let pool = given_fresh_database().await;
+    let dir = std::env::temp_dir().join(format!("tui-op-hub-bdd-wf-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wf_path = dir.join("nightly.json");
+    std::fs::write(
+        &wf_path,
+        r#"{
+            "name": "nightly",
+            "steps": [
+                {"name": "step-one", "script": "print('one ok')", "depends_on": []},
+                {"name": "step-two", "script": "log('done')", "depends_on": []}
+            ],
+            "variables": {}
+        }"#,
+    )
+    .unwrap();
+
+    let wf = repository::create_entity(
+        &pool,
+        &CreateEntity {
+            name: "nightly".to_string(),
+            description: None,
+            content: None,
+            type_id: "wf".to_string(),
+            project_id: None,
+            tags: None,
+            metadata_json: Some(
+                serde_json::json!({ "file": wf_path.display().to_string() }).to_string(),
+            ),
+        },
+    )
+    .await
+    .unwrap();
+
+    let result = workflow::execute_workflow_by_id(pool.clone(), &wf.id, None)
+        .await
+        .unwrap();
+    assert!(result.success);
+    assert_eq!(result.steps_completed, 2);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

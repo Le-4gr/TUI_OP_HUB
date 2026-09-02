@@ -158,6 +158,31 @@ pub async fn update_project(
     get_project(pool, id).await
 }
 
+/// Set the project environment (US-ENV-01): `env_type` like `venv`/`pyenv`/
+/// `conda` and the shell command that activates it, e.g. `source .venv/bin/activate`.
+pub async fn set_project_env(
+    pool: &SqlitePool,
+    id: &str,
+    env_type: Option<&str>,
+    env_cmd: Option<&str>,
+) -> AppResult<Project> {
+    let result = sqlx::query(
+        "UPDATE projects SET env_type = ?, env_cmd = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(env_type)
+    .bind(env_cmd)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound {
+            entity: "project",
+            id: id.to_string(),
+        });
+    }
+    get_project(pool, id).await
+}
+
 pub async fn list_tags(pool: &SqlitePool) -> AppResult<Vec<Tag>> {
     let rows = sqlx::query_as::<_, Tag>("SELECT * FROM tags ORDER BY name")
         .fetch_all(pool)
@@ -247,14 +272,30 @@ pub async fn create_secret(
     name: &str,
     value_enc: &str,
 ) -> AppResult<crate::models::Secret> {
+    create_secret_full(pool, user_id, name, value_enc, "password", false).await
+}
+
+/// Create a secret with classification and access control (US-SEC-01/05).
+pub async fn create_secret_full(
+    pool: &SqlitePool,
+    user_id: &str,
+    name: &str,
+    value_enc: &str,
+    secret_kind: &str,
+    requires_reauth: bool,
+) -> AppResult<crate::models::Secret> {
     let id = Uuid::new_v4().to_string();
-    sqlx::query("INSERT INTO secrets (id, user_id, name, value_enc) VALUES (?, ?, ?, ?)")
-        .bind(&id)
-        .bind(user_id)
-        .bind(name)
-        .bind(value_enc)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO secrets (id, user_id, name, value_enc, secret_kind, requires_reauth) VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(user_id)
+    .bind(name)
+    .bind(value_enc)
+    .bind(secret_kind)
+    .bind(if requires_reauth { 1 } else { 0 })
+    .execute(pool)
+    .await?;
     sqlx::query_as::<_, crate::models::Secret>("SELECT * FROM secrets WHERE id = ?")
         .bind(&id)
         .fetch_one(pool)
@@ -345,6 +386,85 @@ pub async fn list_user_profiles(pool: &SqlitePool) -> AppResult<Vec<crate::model
         .fetch_all(pool)
         .await
         .map_err(AppError::Database)
+}
+
+/// Number of registered users (used to make the first user admin; US-SEC).
+pub async fn count_users(pool: &SqlitePool) -> AppResult<i64> {
+    let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user_profiles")
+        .fetch_one(pool)
+        .await?;
+    Ok(count)
+}
+
+/// True when the given user profile is an admin (US-SEC).
+pub async fn is_admin(pool: &SqlitePool, user_id: &str) -> AppResult<bool> {
+    let row: Option<(i64,)> = sqlx::query_as("SELECT is_admin FROM user_profiles WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|(a,)| a != 0).unwrap_or(false))
+}
+
+/// Grant or revoke admin rights (US-SEC).
+pub async fn set_admin(pool: &SqlitePool, user_id: &str, admin: bool) -> AppResult<()> {
+    let result = sqlx::query(
+        "UPDATE user_profiles SET is_admin = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(if admin { 1 } else { 0 })
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound {
+            entity: "user",
+            id: user_id.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Delete a user; secrets and user keys are removed with them (FK cascade).
+/// This is the escape hatch when a password is forgotten (US-SEC).
+pub async fn delete_user(pool: &SqlitePool, user_id: &str) -> AppResult<()> {
+    let result = sqlx::query("DELETE FROM user_profiles WHERE id = ?")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound {
+            entity: "user",
+            id: user_id.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Replace a user's password hash (admin reset; US-SEC). The encryption key is
+/// NOT re-derivable from the new password, so secrets stay encrypted with the
+/// old key — pair with `delete_user` when secrets must be recoverable.
+pub async fn set_password_hash(
+    pool: &SqlitePool,
+    user_id: &str,
+    password_hash: &str,
+    salt: &str,
+) -> AppResult<()> {
+    let result = sqlx::query(
+        r#"UPDATE user_profiles
+           SET password_hash = ?, salt = ?, auth_method = 'password', updated_at = datetime('now')
+           WHERE id = ?"#,
+    )
+    .bind(password_hash)
+    .bind(salt)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound {
+            entity: "user",
+            id: user_id.to_string(),
+        });
+    }
+    Ok(())
 }
 
 // Plugins

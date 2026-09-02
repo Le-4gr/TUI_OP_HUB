@@ -1,4 +1,5 @@
 use crate::error::{AppError, AppResult};
+use crate::repository;
 use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
@@ -64,6 +65,10 @@ impl AuthManager {
 
     /// Create a new user with username and password
     pub async fn create_user(&self, username: &str, password: &str) -> AppResult<String> {
+        // The very first registered user becomes admin (US-SEC)
+        let first_user = repository::count_users(&*self.pool).await? == 0;
+        let is_admin_flag: i64 = if first_user { 1 } else { 0 };
+
         // Generate user ID
         let user_id = uuid::Uuid::new_v4().to_string();
 
@@ -84,14 +89,15 @@ impl AuthManager {
         // Insert user profile
         sqlx::query(
             r#"
-            INSERT INTO user_profiles (id, username, auth_method, password_hash, salt, created_at, updated_at)
-            VALUES (?, ?, 'password', ?, ?, datetime('now'), datetime('now'))
+            INSERT INTO user_profiles (id, username, auth_method, password_hash, salt, is_admin, created_at, updated_at)
+            VALUES (?, ?, 'password', ?, ?, ?, datetime('now'), datetime('now'))
             "#,
         )
         .bind(&user_id)
         .bind(username)
         .bind(&password_hash)
         .bind(salt.as_str())
+        .bind(is_admin_flag)
         .execute(&*self.pool)
         .await?;
 
@@ -312,6 +318,32 @@ impl AuthManager {
 }
 
 /// Encrypt a value with the given key
+/// Admin password reset (US-SEC): replace the target user's password when it
+/// was forgotten. Requires an admin actor. Note: the user's encryption key was
+/// derived from the old password, so previously stored secrets remain encrypted
+/// with that old key and cannot be decrypted after the reset. Use
+/// `repository::delete_user` to remove the user together with their secrets.
+pub async fn admin_reset_password(
+    pool: &sqlx::SqlitePool,
+    admin_user_id: &str,
+    target_username: &str,
+    new_password: &str,
+) -> AppResult<()> {
+    if !repository::is_admin(pool, admin_user_id).await? {
+        return Err(AppError::Other(
+            "Only admins can reset passwords".to_string(),
+        ));
+    }
+    let user = repository::get_or_create_user(pool, target_username).await?;
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    let password_hash = argon2
+        .hash_password(new_password.as_bytes(), &salt)
+        .map_err(|e| AppError::Other(format!("Password hashing error: {}", e)))?
+        .to_string();
+    repository::set_password_hash(pool, &user.id, &password_hash, salt.as_str()).await
+}
+
 pub fn encrypt_value(plaintext: &str, key: &EncryptionKey) -> AppResult<String> {
     let cipher = XChaCha20Poly1305::new(key.as_bytes().into());
     let nonce = XChaCha20Poly1305::generate_nonce(&mut AeadOsRng);

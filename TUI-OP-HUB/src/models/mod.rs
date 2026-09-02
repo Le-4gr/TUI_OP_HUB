@@ -28,6 +28,13 @@ pub struct Project {
     pub description: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Environment kind for this project: `venv`, `pyenv`, `conda`, … (US-ENV-01)
+    #[sqlx(default)]
+    pub env_type: Option<String>,
+    /// Shell command that activates the project environment, e.g.
+    /// `source .venv/bin/activate` (US-ENV-01).
+    #[sqlx(default)]
+    pub env_cmd: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -82,6 +89,9 @@ pub struct UserProfile {
     pub email: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// True for admin users (the first registered user is admin; US-SEC).
+    #[sqlx(default)]
+    pub is_admin: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -100,6 +110,13 @@ pub struct Secret {
     pub value_enc: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Classification: `password`, `ssh_key`, `gpg_key`, `api_key`, … (US-SEC-01)
+    #[sqlx(default)]
+    pub secret_kind: String,
+    /// When true, using this secret requires re-entering the login password
+    /// (key material etc. — passwords alone are not enough; US-SEC-05).
+    #[sqlx(default)]
+    pub requires_reauth: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

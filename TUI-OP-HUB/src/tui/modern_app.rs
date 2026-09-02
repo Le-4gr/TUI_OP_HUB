@@ -7,6 +7,7 @@ use super::list_state::*;
 use super::modern_ui::{AppState, LoginField, LoginState, ModernTheme, ModernUI};
 use crate::auth::AuthManager;
 use crate::config::{AppConfig, KeybindingsConfig};
+use crate::keygen;
 use crate::models::{CreateEntity, CreateProject};
 use crate::repository;
 use crate::secrets;
@@ -161,6 +162,8 @@ pub struct ModernApp {
     settings: SettingsState,
     // Advanced settings sub-screen (visual config)
     advanced: AdvancedState,
+    // SSH/GPG key generation form (US-SEC-01)
+    keygen: KeygenState,
     // Overlay states (forms, visual builder, popups)
     visual_form: Option<VisualWorkflowState>,
     confirm_delete: Option<ConfirmDelete>,
@@ -210,6 +213,7 @@ impl ModernApp {
             search_state: SearchState::default(),
             settings: SettingsState::default(),
             advanced: AdvancedState::default(),
+            keygen: KeygenState::default(),
             // Overlays start closed
             visual_form: None,
             confirm_delete: None,
@@ -381,6 +385,9 @@ impl ModernApp {
         }
         if self.run_result.is_some() {
             self.render_run_result(f);
+        }
+        if self.keygen.open {
+            self.render_keygen_form(f);
         }
         if let Some(ref confirm) = self.confirm_delete {
             self.render_confirm_delete(f, confirm);
@@ -946,6 +953,10 @@ impl ModernApp {
 
     async fn handle_key(&mut self, key: KeyEvent) {
         // Overlays take priority over normal tab handling (top of the input stack)
+        if self.keygen.open {
+            self.handle_keygen_key(key).await;
+            return;
+        }
         if self.confirm_delete.is_some() {
             self.handle_confirm_key(key).await;
             return;
@@ -1290,6 +1301,25 @@ impl ModernApp {
                 // Open selected command in the configured external editor (US-CMD-05)
                 if self.ui.state == AppState::Commands {
                     self.open_in_editor().await;
+                }
+            }
+            KeyCode::Char('k') => {
+                // SSH/GPG key generation (US-SEC-01)
+                if self.ui.state == AppState::Secrets {
+                    self.keygen = KeygenState {
+                        open: true,
+                        ..Default::default()
+                    };
+                }
+            }
+            KeyCode::Char('p') => {
+                // Processes: launch a known viewer (btop/htop/top) (US-PROC)
+                self.run_process_viewer().await;
+            }
+            KeyCode::Char('E') => {
+                // Projects: open a shell inside the project environment (US-ENV)
+                if self.ui.state == AppState::Projects {
+                    self.start_project_shell().await;
                 }
             }
             k if Some(k) == kb_help => {
@@ -2341,95 +2371,132 @@ impl ModernApp {
         }
     }
 
-    /// Run the selected item: commands/scripts via `sh -c`, workflows via the
-    /// Lua engine (US-CMD-09, US-WF-06). Shows the result in a popup.
+    /// Run the selected item (US-CMD-09): commands via `sh`, scripts via their
+    /// language interpreter (shebang/extension aware, file-backed supported),
+    /// apps launched detached; workflows via the Lua engine with access to the
+    /// user's secrets. Shows the result in a popup.
     async fn run_selected(&mut self) {
         match self.ui.state {
             AppState::Commands => {
                 let selected = self.commands_list.get_selected().cloned();
-                match selected {
-                    Some(entity) => match entity.content.clone() {
-                        Some(content) if !content.trim().is_empty() => {
-                            let result = match tokio::process::Command::new("sh")
-                                .arg("-c")
-                                .arg(&content)
-                                .output()
-                                .await
-                            {
-                                Ok(out) => RunResult {
-                                    title: format!("Run: {}", entity.name),
-                                    success: out.status.success(),
-                                    text: format!(
-                                        "$ {}\n\nexit code: {}\n\n--- stdout ---\n{}\n--- stderr ---\n{}",
-                                        content,
-                                        out.status.code().unwrap_or(-1),
-                                        String::from_utf8_lossy(&out.stdout),
-                                        String::from_utf8_lossy(&out.stderr)
-                                    ),
-                                },
-                                Err(e) => RunResult {
-                                    title: format!("Run: {}", entity.name),
-                                    success: false,
-                                    text: format!("Failed to spawn process: {}", e),
-                                },
-                            };
-                            self.run_result = Some(result);
+                let Some(entity) = selected else {
+                    self.status_message = Some("Nothing selected".to_string());
+                    return;
+                };
+                match workflow::build_run_plan(&entity) {
+                    Some(workflow::RunPlan::App(command)) => {
+                        // Apps run detached: no captured output, fire and forget
+                        match tokio::process::Command::new("sh")
+                            .arg("-c")
+                            .arg(&command)
+                            .spawn()
+                        {
+                            Ok(_) => {
+                                self.status_message =
+                                    Some(format!("\u{2713} Launched app '{}'", entity.name))
+                            }
+                            Err(e) => {
+                                self.status_message = Some(format!("\u{2717} Launch failed: {}", e))
+                            }
                         }
-                        _ => {
-                            self.status_message =
-                                Some("Selected item has no content to run".to_string())
+                    }
+                    Some(workflow::RunPlan::Interpreter { program, args }) => {
+                        let mut cmd = tokio::process::Command::new(&program);
+                        for arg in &args {
+                            cmd.arg(arg);
                         }
-                    },
-                    None => self.status_message = Some("Nothing selected".to_string()),
+                        self.run_invoke(cmd, &entity.name, &program).await;
+                    }
+                    Some(workflow::RunPlan::Shell(command)) => {
+                        let mut cmd = tokio::process::Command::new("sh");
+                        cmd.arg("-c").arg(&command);
+                        self.run_invoke(cmd, &entity.name, &command).await;
+                    }
+                    None => {
+                        self.status_message =
+                            Some("Selected item has no content to run".to_string())
+                    }
                 }
             }
             AppState::Workflows => {
                 let selected = self.workflows_list.get_selected().cloned();
-                match selected {
-                    Some(entity) => {
-                        let pool = self.pool.clone();
-                        match workflow::execute_workflow_by_id(pool, &entity.id, None).await {
-                            Ok(result) => {
-                                // Persist run history (US-WF-08)
-                                let run = crate::models::WorkflowRun {
-                                    run_id: result.run_id.clone(),
-                                    workflow_id: entity.id.clone(),
-                                    success: result.success,
-                                    output: Some(result.output.clone()),
-                                    error: result.error.clone(),
-                                    duration_ms: Some(result.duration_ms as i64),
-                                    steps_completed: Some(result.steps_completed as i32),
-                                    created_at: chrono::Utc::now().to_rfc3339(),
-                                };
-                                let _ = repository::insert_workflow_run(&*self.pool, &run).await;
-                                self.run_result = Some(RunResult {
-                                    title: format!("Workflow: {}", entity.name),
-                                    success: result.success,
-                                    text: format!(
-                                        "run id: {}\nsteps completed: {}/total\nduration: {}ms\n\n--- output ---\n{}\n--- error ---\n{}",
-                                        result.run_id,
-                                        result.steps_completed,
-                                        result.duration_ms,
-                                        result.output,
-                                        result.error.unwrap_or_else(|| "(none)".to_string())
-                                    ),
-                                });
-                            }
-                            Err(e) => {
-                                self.run_result = Some(RunResult {
-                                    title: format!("Workflow: {}", entity.name),
-                                    success: false,
-                                    text: format!("Execution failed: {}", e),
-                                });
-                            }
-                        }
+                let Some(entity) = selected else {
+                    self.status_message = Some("Nothing selected".to_string());
+                    return;
+                };
+                let user_id = self.current_user_profile_id().await;
+                let result = workflow::execute_workflow_by_id_for_user(
+                    self.pool.clone(),
+                    &entity.id,
+                    None,
+                    Some(user_id),
+                )
+                .await;
+                match result {
+                    Ok(result) => {
+                        // Persist run history (US-WF-08)
+                        let run = crate::models::WorkflowRun {
+                            run_id: result.run_id.clone(),
+                            workflow_id: entity.id.clone(),
+                            success: result.success,
+                            output: Some(result.output.clone()),
+                            error: result.error.clone(),
+                            duration_ms: Some(result.duration_ms as i64),
+                            steps_completed: Some(result.steps_completed as i32),
+                            created_at: chrono::Utc::now().to_rfc3339(),
+                        };
+                        let _ = repository::insert_workflow_run(&*self.pool, &run).await;
+                        self.run_result = Some(RunResult {
+                            title: format!("Workflow: {}", entity.name),
+                            success: result.success,
+                            text: format!(
+                                "run id: {}\nsteps completed: {}\nduration: {}ms\n\n--- output ---\n{}\n--- error ---\n{}",
+                                result.run_id,
+                                result.steps_completed,
+                                result.duration_ms,
+                                result.output,
+                                result.error.unwrap_or_else(|| "(none)".to_string())
+                            ),
+                        });
                     }
-                    None => self.status_message = Some("Nothing selected".to_string()),
+                    Err(e) => {
+                        self.run_result = Some(RunResult {
+                            title: format!("Workflow: {}", entity.name),
+                            success: false,
+                            text: format!("Execution failed: {}", e),
+                        });
+                    }
                 }
             }
             _ => {
                 self.status_message =
                     Some("Run is only available for commands and workflows".to_string());
+            }
+        }
+    }
+
+    /// Run an invocation and show its output in the result popup.
+    async fn run_invoke(&mut self, mut cmd: tokio::process::Command, name: &str, label: &str) {
+        match cmd.output().await {
+            Ok(out) => {
+                self.run_result = Some(RunResult {
+                    title: format!("Run: {}", name),
+                    success: out.status.success(),
+                    text: format!(
+                        "{}\n\nexit code: {}\n\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                        label,
+                        out.status.code().unwrap_or(-1),
+                        String::from_utf8_lossy(&out.stdout),
+                        String::from_utf8_lossy(&out.stderr)
+                    ),
+                });
+            }
+            Err(e) => {
+                self.run_result = Some(RunResult {
+                    title: format!("Run: {}", name),
+                    success: false,
+                    text: format!("Failed to run {}: {}", label, e),
+                });
             }
         }
     }
@@ -2977,11 +3044,222 @@ impl ModernApp {
         f.render_widget(help, chunks[1]);
     }
 
-    // ========================================================================
-    // Settings screen (US-APP-01, US-APP-02, US-APP-06)
-    // ========================================================================
+    // ── Phase 2: processes, project environments, SSH/GPG keygen ───────────
+
+    /// Suspend the TUI and launch a known process viewer (btop/htop/top).
+    /// Users already know these tools — no custom UI needed (US-PROC).
+    async fn run_process_viewer(&mut self) {
+        let Some(viewer) = keygen::pick_process_viewer() else {
+            self.status_message = Some("No process viewer found (btop/htop/top)".to_string());
+            return;
+        };
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+        let _ = tokio::process::Command::new(viewer).status().await;
+        let _ = crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen);
+        let _ = crossterm::terminal::enable_raw_mode();
+    }
+
+    /// Open an interactive shell with the project environment activated (US-ENV).
+    async fn start_project_shell(&mut self) {
+        let Some(project) = self.projects_list.get_selected().cloned() else {
+            self.status_message = Some("Nothing selected".to_string());
+            return;
+        };
+        let env_cmd = project.env_cmd.clone().unwrap_or_default();
+        let env_cmd = env_cmd.trim().to_string();
+        if env_cmd.is_empty() {
+            self.status_message = Some(format!(
+                "Project '{}' has no environment configured",
+                project.name
+            ));
+            return;
+        }
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+        let _ = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("{env_cmd}; exec {shell}"))
+            .status()
+            .await;
+        let _ = crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen);
+        let _ = crossterm::terminal::enable_raw_mode();
+        self.status_message = Some(format!("Project shell for '{}' closed", project.name));
+    }
+
+    /// Keygen form input (US-SEC-01): name/email/passphrase/kind + generate.
+    async fn handle_keygen_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.generate_key().await;
+            return;
+        }
+        let field = self.keygen.focused_field;
+        match key.code {
+            KeyCode::Esc => self.keygen.open = false,
+            KeyCode::Tab | KeyCode::Down | KeyCode::Enter if field != 2 => {
+                self.keygen.select_next_field();
+            }
+            KeyCode::BackTab | KeyCode::Up => self.keygen.select_previous_field(),
+            KeyCode::Left if field == 3 => {
+                self.keygen.kind = (self.keygen.kind + KEYGEN_KINDS.len() - 1) % KEYGEN_KINDS.len();
+            }
+            KeyCode::Right if field == 3 => {
+                self.keygen.kind = (self.keygen.kind + 1) % KEYGEN_KINDS.len();
+            }
+            KeyCode::Enter => {
+                self.keygen.passphrase.push('\n');
+            }
+            KeyCode::Backspace => match field {
+                0 => {
+                    self.keygen.name.pop();
+                }
+                1 => {
+                    self.keygen.email.pop();
+                }
+                2 => {
+                    self.keygen.passphrase.pop();
+                }
+                _ => {}
+            },
+            KeyCode::Char(c) => match field {
+                0 => self.keygen.name.push(c),
+                1 => self.keygen.email.push(c),
+                2 => self.keygen.passphrase.push(c),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    /// Generate the SSH/GPG key and store its location + passphrase as
+    /// encrypted secrets with tags (US-SEC-01).
+    async fn generate_key(&mut self) {
+        let name = self.keygen.name.trim().to_string();
+        if name.is_empty() {
+            self.keygen.error = Some("Name is required".to_string());
+            return;
+        }
+        let user_id = self.current_user_profile_id().await;
+        let result = match self.keygen.kind_name() {
+            "ssh" => keygen::generate_ssh_key(
+                &std::env::temp_dir().join("tui-op-hub-keys"),
+                &name,
+                &self.keygen.passphrase,
+            ),
+            "gpg" => keygen::generate_gpg_key(&name, &self.keygen.email, &self.keygen.passphrase),
+            _ => unreachable!(),
+        };
+        let generated = match result {
+            Ok(key) => key,
+            Err(e) => {
+                self.keygen.error = Some(format!("Key generation failed: {}", e));
+                return;
+            }
+        };
+        // Store the private key location (requires re-auth to use)
+        let enc_path =
+            match secrets::encrypt_for_user(&*self.pool, &user_id, &generated.private_path).await {
+                Ok(enc) => enc,
+                Err(e) => {
+                    self.keygen.error = Some(format!("Encryption failed: {}", e));
+                    return;
+                }
+            };
+        let _ = repository::create_secret_full(
+            &*self.pool,
+            &user_id,
+            &format!("{name}_private_key"),
+            &enc_path,
+            &generated.kind,
+            true,
+        )
+        .await;
+        // Store the passphrase when one was used
+        if !generated.passphrase.is_empty() {
+            if let Ok(enc) =
+                secrets::encrypt_for_user(&*self.pool, &user_id, &generated.passphrase).await
+            {
+                let _ = repository::create_secret_full(
+                    &*self.pool,
+                    &user_id,
+                    &format!("{name}_passphrase"),
+                    &enc,
+                    &generated.kind,
+                    true,
+                )
+                .await;
+            }
+        }
+        self.keygen = KeygenState::default();
+        self.status_message = Some(format!(
+            "\u{2713} {} key '{}' generated and stored",
+            generated.kind, name
+        ));
+        let _ = self.fetch_secrets().await;
+        let _ = self.fetch_stats().await;
+    }
 
     /// Settings input: navigate rows, edit values, capture keybindings, save.
+    /// Keygen form renderer (US-SEC-01).
+    fn render_keygen_form(&self, f: &mut Frame) {
+        let area = self.centered_rect(60, 16, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .title(" \u{1f511} Generate SSH / GPG key ")
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.warning))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Name
+                Constraint::Length(3), // Email
+                Constraint::Length(3), // Passphrase
+                Constraint::Length(3), // Kind
+                Constraint::Length(1), // Help/error
+            ])
+            .split(inner);
+
+        let field = self.keygen.focused_field;
+        self.render_field(
+            f,
+            chunks[0],
+            "Key name",
+            &self.keygen.name,
+            field == 0,
+            false,
+        );
+        self.render_field(
+            f,
+            chunks[1],
+            "Email (GPG user id)",
+            &self.keygen.email,
+            field == 1,
+            false,
+        );
+        self.render_field(
+            f,
+            chunks[2],
+            "Passphrase (stored encrypted)",
+            &self.keygen.passphrase,
+            field == 2,
+            true,
+        );
+        let kind_text = format!("\u{25c4} {} \u{25ba}", self.keygen.kind_name());
+        self.render_field(f, chunks[3], "Kind", &kind_text, field == 3, false);
+        let help = self.form_help_line(
+            self.keygen.error.as_ref(),
+            "Tab/\u{2191}\u{2193}: fields · \u{2190}/\u{2192}: kind · Ctrl+S: generate · Esc: cancel",
+        );
+        f.render_widget(Paragraph::new(help).alignment(Alignment::Center), chunks[4]);
+    }
+
     async fn handle_settings_key(&mut self, key: KeyEvent) {
         // Advanced sub-screen (visual config) sits on top of Settings
         if self.advanced.active {

@@ -21,6 +21,10 @@ pub struct WorkflowContext {
     pub run_id: String,
     pub variables: HashMap<String, String>,
     pub pool: Arc<SqlitePool>,
+    /// Profile id of the running user; when set, the user's secrets are
+    /// exposed to the script as `secrets.<name>` / `get_secret(name)`
+    /// (reauth-protected secrets are excluded; US-SEC, US-WF-04).
+    pub user_id: Option<String>,
 }
 
 /// Workflow execution result.
@@ -189,6 +193,16 @@ impl WorkflowEngine {
         ctx_table.set("vars", vars_table)?;
         globals.set("ctx", ctx_table)?;
 
+        // Expose the running user's secrets as variables (US-SEC-02, US-WF-04):
+        //   secrets.<name> or get_secret("<name>")
+        // Secrets flagged `requires_reauth` are never exposed automatically.
+        if let Some(user_id) = &context.user_id {
+            match load_user_secrets(&self.lua, &context.pool, user_id).await {
+                Ok(secrets_table) => globals.set("secrets", secrets_table)?,
+                Err(e) => tracing::warn!(error = %e, "could not load secrets for workflow"),
+            }
+        }
+
         // Execute steps in dependency order (simple linear execution for now)
         for step in &definition.steps {
             tracing::info!(step = %step.name, "executing workflow step");
@@ -264,7 +278,145 @@ pub fn create_workflow_context(
         run_id: Uuid::new_v4().to_string(),
         variables: variables.unwrap_or_default(),
         pool,
+        user_id: None,
     }
+}
+
+/// Create a context that can access the given user's secrets (US-SEC-02).
+pub fn create_workflow_context_for_user(
+    workflow_id: String,
+    pool: Arc<SqlitePool>,
+    variables: Option<HashMap<String, String>>,
+    user_id: Option<String>,
+) -> WorkflowContext {
+    let mut ctx = create_workflow_context(workflow_id, pool, variables);
+    ctx.user_id = user_id;
+    ctx
+}
+
+/// Decrypt the user's secrets into a Lua `secrets` table and install a
+/// `get_secret(name)` accessor in the globals. Secrets marked
+/// `requires_reauth` are skipped (they need the login password again; US-SEC-05).
+async fn load_user_secrets(
+    lua: &Lua,
+    pool: &Arc<SqlitePool>,
+    user_id: &str,
+) -> AppResult<mlua::Table> {
+    let stored = repository::list_secrets(pool, user_id).await?;
+    let table = lua.create_table()?;
+    let mut lookup: HashMap<String, String> = HashMap::new();
+    for secret in stored {
+        if secret.requires_reauth {
+            tracing::info!(name = %secret.name, "skipping reauth-protected secret");
+            continue;
+        }
+        match crate::secrets::decrypt_for_user(pool, user_id, &secret.value_enc).await {
+            Ok(value) => {
+                table.set(secret.name.clone(), value.clone())?;
+                lookup.insert(secret.name, value);
+            }
+            Err(e) => {
+                tracing::warn!(name = %secret.name, error = %e, "secret undecryptable, skipping")
+            }
+        }
+    }
+    // get_secret("<name>") accessor over the pre-decrypted secrets
+    let get_secret = lua.create_function(move |_lua, name: String| {
+        Ok(lookup.get(&name).cloned().unwrap_or_default())
+    })?;
+    lua.globals().set("get_secret", get_secret)?;
+    Ok(table)
+}
+
+/// How the TUI / API should execute an entity (US-CMD-09, US-ENV-08).
+///
+/// Distinguishes the base entity types:
+/// - `cmd` — one shell command, run synchronously with captured output
+/// - `script` — multi-line script: run from a backing file (metadata
+///   `{"file": "…"}`) via its language interpreter (python3, lua, node, sh, …)
+/// - `app` — a long-running/GUI application, spawned detached
+#[derive(Debug, Clone, PartialEq)]
+pub enum RunPlan {
+    /// `sh -c <command>` with captured output
+    Shell(String),
+    /// Run `program args…` with captured output (language interpreters)
+    Interpreter { program: String, args: Vec<String> },
+    /// Launch detached (GUI apps / long-running processes)
+    App(String),
+}
+
+/// Interpreter for a file path, chosen by extension (US-ENV, scripts in
+/// the language of choice).
+fn interpreter_for_path(path: &str) -> Option<(&'static str, Vec<String>)> {
+    let ext = path.rsplit('.').next()?.to_lowercase();
+    match ext.as_str() {
+        "py" | "pyw" => Some(("python3", vec![path.to_string()])),
+        "lua" => Some(("lua", vec![path.to_string()])),
+        "js" | "mjs" => Some(("node", vec![path.to_string()])),
+        "rb" => Some(("ruby", vec![path.to_string()])),
+        "pl" => Some(("perl", vec![path.to_string()])),
+        "sh" | "bash" => Some(("sh", vec![path.to_string()])),
+        _ => None,
+    }
+}
+
+/// Extract `{"file": "…"}` from the entity metadata (file-backed scripts and
+/// workflows; US-CMD-05).
+pub fn metadata_file(entity: &Entity) -> Option<String> {
+    let meta = entity.metadata_json.as_ref()?;
+    let value: serde_json::Value = serde_json::from_str(md_as_str(&meta)).ok()?;
+    value.get("file")?.as_str().map(|s| s.to_string())
+}
+
+fn md_as_str(s: &str) -> &str {
+    s
+}
+
+/// Build the execution plan for a stored entity (US-CMD-09):
+/// - file-backed entities (metadata `{"file": "…"}`) run through their
+///   language interpreter
+/// - `cmd` runs as a shell command
+/// - `script` runs via the interpreter from its shebang (python/sh/lua), or as
+///   shell text
+/// - `app` is spawned detached (no captured output)
+/// - `wf` returns `None` — workflows go through the engine instead
+pub fn build_run_plan(entity: &Entity) -> Option<RunPlan> {
+    // 1. File-backed entities run from their file, in any language
+    if let Some(path) = metadata_file(entity) {
+        if let Some((program, args)) = interpreter_for_path(&path) {
+            return Some(RunPlan::Interpreter {
+                program: program.to_string(),
+                args,
+            });
+        }
+        return Some(RunPlan::Shell(format!("sh {}", path)));
+    }
+
+    let content = entity.content.as_ref()?;
+    match entity.type_id.as_str() {
+        "app" => Some(RunPlan::App(content.clone())),
+        "script" => {
+            // Shebang-aware: run python scripts with python3, others via shell
+            if content.trim_start().starts_with("#!") {
+                let first = content.lines().next().unwrap_or("");
+                if first.contains("python") {
+                    return Some(RunPlan::Interpreter {
+                        program: "python3".to_string(),
+                        args: vec!["-c".to_string(), content.clone()],
+                    });
+                }
+            }
+            Some(RunPlan::Shell(content.clone()))
+        }
+        "cmd" | "script_" | "" => Some(RunPlan::Shell(content.clone())),
+        // workflows and other typed entities are not "run" this way
+        _ => None,
+    }
+}
+
+/// True when `path` looks like a JSON workflow definition file (US-WF-03).
+pub fn is_json_path(path: &str) -> bool {
+    path.to_lowercase().ends_with(".json")
 }
 
 /// Execute a workflow entity by ID.
@@ -282,11 +434,62 @@ pub async fn execute_workflow_by_id(
         )));
     }
 
-    let definition = WorkflowDefinition::from_entity(&entity)?;
+    let definition = resolve_workflow_definition(&entity)?;
     let context = create_workflow_context(entity.id.clone(), pool.clone(), variables);
     let engine = WorkflowEngine::new(pool)?;
 
     engine.execute_workflow(&definition, context).await
+}
+
+/// Execute a workflow entity by ID, exposing the user's secrets as variables.
+pub async fn execute_workflow_by_id_for_user(
+    pool: Arc<SqlitePool>,
+    entity_id: &str,
+    variables: Option<HashMap<String, String>>,
+    user_id: Option<String>,
+) -> AppResult<WorkflowResult> {
+    let entity = repository::get_entity(&pool, entity_id).await?;
+
+    if entity.type_id != "wf" {
+        return Err(AppError::Validation(format!(
+            "Entity {} is not a workflow (type: {})",
+            entity_id, entity.type_id
+        )));
+    }
+
+    let definition = resolve_workflow_definition(&entity)?;
+    let context =
+        create_workflow_context_for_user(entity.id.clone(), pool.clone(), variables, user_id);
+    let engine = WorkflowEngine::new(pool)?;
+
+    engine.execute_workflow(&definition, context).await
+}
+
+/// Resolve the workflow definition: file-backed workflows (metadata
+/// `{"file": "…"}`) load their Lua/JSON definition from disk; everything else
+/// comes from the entity content (US-WF-03, scripts in the language of choice).
+fn resolve_workflow_definition(entity: &Entity) -> AppResult<WorkflowDefinition> {
+    if let Some(path) = metadata_file(entity) {
+        let file_content = std::fs::read_to_string(&path)
+            .map_err(|e| AppError::Validation(format!("cannot read workflow file {path}: {e}")))?;
+        if is_json_path(&path) {
+            let definition: WorkflowDefinition = serde_json::from_str(&file_content)
+                .map_err(|e| AppError::Validation(format!("invalid workflow JSON: {e}")))?;
+            return Ok(definition);
+        }
+        // Lua (or any Lua-based text): single-step workflow
+        return Ok(WorkflowDefinition {
+            name: entity.name.clone(),
+            description: entity.description.clone(),
+            steps: vec![WorkflowStep {
+                name: "main".to_string(),
+                script: file_content,
+                depends_on: vec![],
+            }],
+            variables: HashMap::new(),
+        });
+    }
+    WorkflowDefinition::from_entity(entity)
 }
 
 #[cfg(test)]
@@ -445,5 +648,144 @@ mod tests {
 
         let result = execute_workflow_by_id(pool, &entity.id, None).await;
         assert!(result.is_err());
+    }
+
+    // ── Type-aware run plans (US-CMD-09 differentiation, file-backed) ───────
+
+    fn entity_typed(type_id: &str, content: &str, metadata: Option<String>) -> Entity {
+        Entity {
+            id: "e1".to_string(),
+            name: "item".to_string(),
+            description: None,
+            content: Some(content.to_string()),
+            type_id: type_id.to_string(),
+            project_id: None,
+            metadata_json: metadata,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn cmd_type_runs_via_shell() {
+        let plan = build_run_plan(&entity_typed("cmd", "docker ps", None)).unwrap();
+        assert_eq!(plan, RunPlan::Shell("docker ps".to_string()));
+    }
+
+    #[test]
+    fn app_type_is_spawned_detached() {
+        let plan = build_run_plan(&entity_typed("app", "firefox", None)).unwrap();
+        assert_eq!(plan, RunPlan::App("firefox".to_string()));
+    }
+
+    #[test]
+    fn script_shebang_uses_interpreter() {
+        let plan = build_run_plan(&entity_typed(
+            "script",
+            "#!/usr/bin/env python3\nprint('x')",
+            None,
+        ))
+        .unwrap();
+        match plan {
+            RunPlan::Interpreter { program, .. } => assert_eq!(program, "python3"),
+            other => panic!("unexpected plan: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn file_metadata_runs_from_file() {
+        let metadata = r#"{"file": "tools/backup.py"}"#.to_string();
+        let plan = build_run_plan(&entity_typed("script", "unused", Some(metadata))).unwrap();
+        match plan {
+            RunPlan::Interpreter { program, args } => {
+                assert_eq!(program, "python3");
+                assert_eq!(args, vec!["tools/backup.py".to_string()]);
+            }
+            other => panic!("unexpected plan: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lua_files_run_with_lua() {
+        let metadata = r#"{"file": "workflows/nightly.lua"}"#.to_string();
+        let plan = build_run_plan(&entity_typed("script", "", Some(metadata))).unwrap();
+        match plan {
+            RunPlan::Interpreter { program, .. } => assert_eq!(program, "lua"),
+            other => panic!("unexpected plan: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn workflows_are_not_shell_run() {
+        assert!(build_run_plan(&entity_typed("wf", "log('x')", None)).is_none());
+    }
+
+    #[test]
+    fn is_json_path_detects_definitions() {
+        assert!(is_json_path("wf.json"));
+        assert!(!is_json_path("wf.lua"));
+    }
+
+    /// Base64 of 32 'a' bytes — a valid 32-byte master key for tests.
+    const TEST_KEY: &str = "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=";
+
+    /// Scenario: secrets are exposed to workflow scripts as variables
+    #[tokio::test]
+    async fn given_user_secret_when_workflow_runs_then_script_reads_variable() {
+        std::env::set_var("TUI_OP_HUB_SECRETS_KEY", TEST_KEY);
+        let pool = Arc::new(sqlx::SqlitePool::connect(":memory:").await.unwrap());
+        crate::db::run_migrations(&pool).await.unwrap();
+
+        let user = repository::get_or_create_user(&pool, "alice")
+            .await
+            .unwrap();
+        let enc = crate::secrets::encrypt_for_user(&pool, &user.id, "topsecret")
+            .await
+            .unwrap();
+        repository::create_secret_full(&pool, &user.id, "api_key", &enc, "api_key", false)
+            .await
+            .unwrap();
+
+        let script = r#"
+            if get_secret("api_key") == "topsecret" then
+                log("secret ok")
+            else
+                error("secret not readable")
+            end
+        "#;
+        let context =
+            create_workflow_context_for_user("wf".to_string(), pool.clone(), None, Some(user.id));
+        let engine = WorkflowEngine::new(pool).unwrap();
+        let result = engine.execute_script(script, context).await.unwrap();
+        assert!(result.success, "workflow failed: {:?}", result.error);
+    }
+
+    /// Scenario: reauth-protected secrets are not auto-exposed
+    #[tokio::test]
+    async fn given_reauth_secret_when_workflow_runs_then_not_exposed() {
+        std::env::set_var("TUI_OP_HUB_SECRETS_KEY", TEST_KEY);
+        let pool = Arc::new(sqlx::SqlitePool::connect(":memory:").await.unwrap());
+        crate::db::run_migrations(&pool).await.unwrap();
+
+        let user = repository::get_or_create_user(&pool, "bob").await.unwrap();
+        let enc = crate::secrets::encrypt_for_user(&pool, &user.id, "hidden")
+            .await
+            .unwrap();
+        repository::create_secret_full(&pool, &user.id, "vault", &enc, "ssh_key", true)
+            .await
+            .unwrap();
+
+        let script = r#"
+            if secrets == nil or secrets["vault"] == nil then
+                log("protected")
+            else
+                error("reauth secret leaked")
+            end
+        "#;
+        let context =
+            create_workflow_context_for_user("wf".to_string(), pool.clone(), None, Some(user.id));
+        let engine = WorkflowEngine::new(pool).unwrap();
+        let result = engine.execute_script(script, context).await.unwrap();
+        assert!(result.success, "workflow failed: {:?}", result.error);
     }
 }

@@ -5,7 +5,62 @@
 
 ---
 
-## 🎯 Session 5 (current): Advanced mode — visual config editor in Settings
+## 🎯 Session 6 (current): Phase 2 kick-off
+
+**Goal: start Phase 2 and implement the user's requested features.**
+
+### What was done and how
+1. **Migration 0003_phase2.sql** (new file — 0002 was NOT edited):
+   - `user_profiles.is_admin INTEGER DEFAULT 0`
+   - `secrets.secret_kind TEXT DEFAULT 'password'`, `secrets.requires_reauth DEFAULT 0`
+   - `projects.env_type TEXT`, `projects.env_cmd TEXT`
+2. **Admin user management** (US-SEC):
+   - `auth::create_user` sets `is_admin = 1` for the **first** user (`count_users == 0`)
+   - `repository::{count_users, is_admin, set_admin, delete_user, set_password_hash}`
+   - `auth::admin_reset_password(pool, admin_user_id, target_username, new_password)`:
+     admin-only; documented that secrets stay encrypted with the old password-derived
+     key — deleting the user (cascade) is the clean escape hatch
+3. **Secrets as workflow variables** (US-SEC-02, US-WF-04):
+   - `WorkflowContext.user_id` + `create_workflow_context_for_user(...)`
+   - Before execution the user's secrets are decrypted and installed as a
+     `secrets` table plus a `get_secret(name)` Lua function; `requires_reauth`
+     secrets are never exposed automatically
+4. **Type-aware execution** (US-CMD-09 differentiation):
+   - `workflow::RunPlan` enum + `build_run_plan(entity)`:
+     `cmd` → `sh -c` (captured), `script` → interpreter from shebang
+     (`python3 -c`), `app` → spawned detached (fire & forget), `wf` → engine only
+   - `metadata_json {"file": path}` → run the file; interpreter by extension
+     (py→python3, lua→lua, js→node, rb→ruby, pl→perl, sh→sh), fallback `sh <file>`
+   - `execute_workflow_by_id_for_user(...)` resolves file-backed definitions:
+     `.json` → WorkflowDefinition from file; other text → single-step Lua
+5. **SSH & GPG keygen** (US-SEC-01) — new `src/keygen/mod.rs`:
+   - `which()`, `pick_process_viewer()` (btop→htop→top), `generate_ssh_key()`
+     (ssh-keygen ed25519, rejects overwrite), `generate_gpg_key()` (batch
+     `--quick-generate-key`)
+   - Secrets tab: `k` opens a keygen form (Name/Email/Passphrase/Kind, ←/→
+     cycles kind); Ctrl+S generates and stores `<name>_private_key` +
+     `<name>_passphrase` as encrypted secrets of the matching kind, both
+     flagged `requires_reauth` (viewing needs more than being logged in)
+6. **Projects as environments** (US-ENV-01): `repository::set_project_env`;
+   `E` on the Projects tab starts an interactive shell with the project's
+   activation command applied (`env_cmd; exec $SHELL`), TUI suspended.
+7. **Processes** (US-PROC): `p` on any dashboard state suspends the TUI and runs
+   btop/htop/top — no custom process UI built (per user note: use known programs).
+8. **Scheduler** (US-WF-07): `WorkflowScheduler` daemon spawned in `main.rs`.
+9. **Docs**: README Phase-2 feature list; USER_STORIES phase status updated.
+
+### Tests
+- Unit: `build_run_plan` (cmd/script/app/file/lua/wf), `is_json_path`,
+  keygen (`which`, viewer pick, ssh keypair generation, overwrite rejection),
+  secrets-in-workflow (get_secret reads value; reauth secrets excluded)
+- BDD: first-user-is-admin + user deletion cascade; file-backed workflow
+  execution from a JSON definition file
+- **Validation**: `cargo fmt` ✔ · `clippy --all-targets` 0 errors ✔ · `cargo build` ✔
+  · `cargo test` → **105 passed / 0 failed** (89 lib + 16 BDD)
+
+---
+
+## 🎯 Session 5: Advanced mode — visual config editor in Settings (completed)
 
 **Goal: an Advanced mode inside Settings with a visual style/config editor
 (color swatches, live palette cycling, hex editing) plus system options.**

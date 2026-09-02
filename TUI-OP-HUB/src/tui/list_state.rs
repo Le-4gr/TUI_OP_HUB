@@ -384,6 +384,39 @@ pub fn is_advanced_optional_color(row: usize) -> bool {
     row >= 4 && is_advanced_color_row(row) // primary…highlight
 }
 
+// ── SSH / GPG key generation form (US-SEC-01) ───────────────────────────────
+
+/// Key kinds selectable in the keygen form.
+pub const KEYGEN_KINDS: [&str; 2] = ["ssh", "gpg"];
+/// Fields: 0=Name, 1=Email (gpg only), 2=Passphrase, 3=Kind.
+pub const KEYGEN_FIELDS: usize = 4;
+
+/// State of the SSH/GPG key generation form (opened with `k` on Secrets).
+#[derive(Debug, Clone, Default)]
+pub struct KeygenState {
+    pub open: bool,
+    pub name: String,
+    pub email: String,
+    pub passphrase: String,
+    pub kind: usize,
+    pub focused_field: usize,
+    pub error: Option<String>,
+}
+
+impl KeygenState {
+    pub fn select_next_field(&mut self) {
+        self.focused_field = (self.focused_field + 1) % KEYGEN_FIELDS;
+    }
+
+    pub fn select_previous_field(&mut self) {
+        self.focused_field = (self.focused_field + KEYGEN_FIELDS - 1) % KEYGEN_FIELDS;
+    }
+
+    pub fn kind_name(&self) -> &'static str {
+        KEYGEN_KINDS.get(self.kind).copied().unwrap_or("ssh")
+    }
+}
+
 /// Advanced settings sub-screen: visual theme color editor (swatches, live
 /// `←`/`→` palette cycling, hex text editing) plus database/API options.
 /// Opened from the Settings screen with `a`.
