@@ -7,6 +7,15 @@
 
 ## 🎯 Session 16 (current): terminal fix, visible search bar, import/export TUI, keybinds update
 
+> **Update (same session):** backtick now opens a **NEW terminal window** instead of
+> suspending the TUI. The run loop spawns a detached terminal emulator
+> (overrides: `TUI_OP_HUB_TERMINAL` / `TERMINAL`; fallback order: alacritty, kitty,
+> wezterm, gnome-terminal, konsole, xfce4-terminal, tilix, foot, xterm, st, uxterm)
+> and shows a status message with the chosen program, or an error if none found
+> (set `$TERMINAL`). Dead `spawn_terminal` method removed, duplicated keybinds-overlay
+> row fixed, footer hint renamed to "New term", unit tests added for
+> `which_program` / `terminal_window_command`. 148 lib + 33 BDD tests pass.
+
 **Goal: fix the terminal (black screen after shell), make the `/` search bar
 prominently visible, wire import/export to TUI keybinds, update keybinds overlay.**
 
