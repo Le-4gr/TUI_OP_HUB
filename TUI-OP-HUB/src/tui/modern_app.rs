@@ -327,6 +327,58 @@ impl ModernApp {
     }
 
     /// `KeyCode` bound to a keybinding action (US-APP-02).
+    /// Switch to the tab for digit 1-9 (US-APP-02 tab keys). Works from ANY
+    /// screen, including Settings/Advanced, so digits always mean tabs.
+    async fn jump_to_tab_digit(&mut self, c: char) {
+        self.ui.state = match c {
+            '2' => AppState::Commands,
+            '3' => AppState::Apps,
+            '4' => AppState::Scripts,
+            '5' => AppState::Projects,
+            '6' => AppState::Workflows,
+            '7' => AppState::Secrets,
+            '9' => AppState::Plugins,
+            _ => AppState::Dashboard, // 1 and anything else
+        };
+        match self.ui.state {
+            AppState::Dashboard => {
+                let _ = self.fetch_stats().await;
+            }
+            AppState::Commands | AppState::Apps | AppState::Scripts => {
+                let _ = self.fetch_commands().await;
+            }
+            AppState::Projects => {
+                let _ = self.fetch_projects().await;
+            }
+            AppState::Workflows => {
+                let _ = self.fetch_workflows().await;
+            }
+            AppState::Secrets => {
+                let _ = self.fetch_secrets().await;
+            }
+            AppState::Plugins => {
+                self.fetch_plugins().await;
+            }
+            _ => {}
+        }
+    }
+
+    /// If `key` is a plain digit 1-9, switch tabs and consume it.
+    /// Returns true when the key was handled. Used by screens that would
+    /// otherwise eat digits for their own navigation (Settings/Advanced).
+    async fn handle_tab_digit(&mut self, key: &KeyEvent) -> bool {
+        if !key.modifiers.is_empty() {
+            return false;
+        }
+        if let KeyCode::Char(c) = key.code {
+            if c.is_ascii_digit() && c != '0' {
+                self.jump_to_tab_digit(c).await;
+                return true;
+            }
+        }
+        false
+    }
+
     fn action_keycode(&self, action: &str) -> Option<KeyCode> {
         KeybindingsConfig::to_keycode(self.config.keybindings.get(action))
     }
@@ -4993,19 +5045,16 @@ impl ModernApp {
             return;
         }
 
+        // Digits 1-9 always switch tabs, even inside Settings
+        if self.handle_tab_digit(&key).await {
+            return;
+        }
+
         let row = self.settings.selected;
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.ui.state = AppState::Dashboard,
             KeyCode::Up | KeyCode::BackTab => self.settings.select_previous(),
             KeyCode::Down | KeyCode::Tab => self.settings.select_next(),
-            KeyCode::Char('8') => self.settings.select_previous(), // numpad 8
-            KeyCode::Char('2') => self.settings.select_next(),     // numpad 2
-            KeyCode::Char('7') | KeyCode::Char('9') => self.settings.selected = 0, // numpad home
-            KeyCode::Char('1') | KeyCode::Char('3') => {
-                self.settings.selected = SETTINGS_ROWS.len().saturating_sub(1) // numpad end
-            }
-            KeyCode::Char('4') if row == SETTINGS_THEME_ROW => self.cycle_theme(-1), // numpad left
-            KeyCode::Char('6') if row == SETTINGS_THEME_ROW => self.cycle_theme(1),  // numpad right
             KeyCode::Char('a') => {
                 // Advanced mode: visual theme colors + database/API options
                 self.advanced.active = true;
@@ -5158,20 +5207,17 @@ impl ModernApp {
             return;
         }
 
+        // Digits 1-9 always switch tabs (also exits Advanced back to a tab)
+        if self.handle_tab_digit(&key).await {
+            return;
+        }
+
         let row = self.advanced.selected;
         let name = ADVANCED_ROWS.get(row).copied().unwrap_or("");
         match key.code {
             KeyCode::Esc => self.advanced.active = false,
             KeyCode::Up | KeyCode::BackTab => self.advanced.select_previous(),
             KeyCode::Down | KeyCode::Tab => self.advanced.select_next(),
-            KeyCode::Char('8') => self.advanced.select_previous(), // numpad 8
-            KeyCode::Char('2') => self.advanced.select_next(),     // numpad 2
-            KeyCode::Char('7') | KeyCode::Char('9') => self.advanced.selected = 0, // numpad home
-            KeyCode::Char('1') | KeyCode::Char('3') => {
-                self.advanced.selected = ADVANCED_ROWS.len().saturating_sub(1) // numpad end
-            }
-            KeyCode::Char('4') if is_advanced_color_row(row) => self.cycle_advanced_color(-1),
-            KeyCode::Char('6') if is_advanced_color_row(row) => self.cycle_advanced_color(1),
             KeyCode::Left if is_advanced_color_row(row) => self.cycle_advanced_color(-1),
             KeyCode::Right if is_advanced_color_row(row) => self.cycle_advanced_color(1),
             KeyCode::Enter => {
@@ -5542,6 +5588,7 @@ impl ModernApp {
         self.ui.state = AppState::Settings;
     }
 
+    #[doc(hidden)]
     #[doc(hidden)]
     pub fn bdd_select_settings_row(&mut self, row: usize) {
         self.settings.selected = row;
@@ -6666,5 +6713,27 @@ mod tests {
         assert_eq!(p.path.as_deref(), Some(dir.to_string_lossy().as_ref()));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn given_settings_when_digit_pressed_then_switches_to_that_tab() {
+        let mut app = test_app_db().await;
+        app.ui.state = AppState::Dashboard;
+
+        app.handle_key(key(KeyCode::Char('8'))).await;
+        assert_eq!(app.ui.state, AppState::Settings);
+
+        // Digits must switch tabs from inside Settings (previously eaten by
+        // the numpad-style navigation).
+        app.handle_key(key(KeyCode::Char('2'))).await;
+        assert_eq!(app.ui.state, AppState::Commands);
+
+        app.handle_key(key(KeyCode::Char('9'))).await;
+        assert_eq!(app.ui.state, AppState::Plugins);
+
+        // Back to Settings, then to Workflows
+        app.handle_key(key(KeyCode::Char('8'))).await;
+        app.handle_key(key(KeyCode::Char('6'))).await;
+        assert_eq!(app.ui.state, AppState::Workflows);
     }
 }

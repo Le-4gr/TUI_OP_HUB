@@ -7,6 +7,16 @@
 
 ## 🎯 Session 16 (current): terminal fix, visible search bar, import/export TUI, keybinds update
 
+> **Update 8 (same session):** Digits 1-9 now switch tabs from ANY screen (US-APP-02).
+> Root cause of "stuck in Settings": the Settings/Advanced screens repurposed the digits
+> as vim-style numpad navigation (2=down, 8=up, 1/3=end, 7/9=home, 4/6=cycle theme), so
+> pressing any digit inside Settings never reached the tab switcher and users had to Esc.
+> New `jump_to_tab_digit` / `handle_tab_digit` helpers intercept plain digits 1-9 at the
+> top of both screens (after keybinding-capture and text-editing flows so digits can still
+> be bound or typed); the numpad handlers were removed — arrows/Tab move rows, Left/Right
+> cycle theme colors. Updated 3 BDD scenarios that pinned the old numpad behavior + added
+> a regression test (Settings -> digit -> correct tab). 139 lib + 43 BDD = 182 pass.
+
 > **Update 7 (same session):** Plugin/mod system implemented (US-PLG-05/06/07/09/10).
 > New migration 0006 replaces the never-used 0001 plugin stubs (plugins + plugin_approvals
 > with the runtime schema). Plugin sandbox: fresh mlua state per hook, host functions gated

@@ -17,6 +17,7 @@ use tui_op_hub::share;
 use tui_op_hub::tui::list_state::{
     build_workflow_definition, parse_tags_text, VisualStep, VisualWorkflowState,
 };
+use tui_op_hub::tui::modern_ui::AppState;
 use tui_op_hub::workflow::{self, WorkflowEngine, WorkflowStep};
 
 /// Base64 of 32 'a' bytes — a valid 32-byte master key for tests.
@@ -748,66 +749,68 @@ async fn given_tui_app() -> ModernApp {
     ModernApp::new(std::sync::Arc::new(pool), AppConfig::default())
 }
 
-/// Scenario: numpad navigation works in the Settings screen
-/// Given the Settings screen, when numpad digits are pressed (`2` down,
-/// `8` up, `1`/`3` last row), then the selection moves exactly like the
-/// arrow keys would — the keypad is not dead there anymore.
+/// Scenario: digits switch tabs from inside Settings
+/// Given the Settings screen, when a digit 1-9 is pressed, then the app
+/// switches to that tab (digits always mean tabs); arrow keys move the
+/// settings selection instead.
 #[tokio::test]
-async fn given_settings_open_when_numpad_digits_pressed_then_selection_moves() {
+async fn given_settings_open_when_digit_pressed_then_switches_tab() {
     let mut app = given_tui_app().await;
     app.bdd_open_settings();
-    let last = SETTINGS_ROWS.len() - 1;
+    assert_eq!(app.bdd_settings_selected(), 0);
 
-    app.bdd_press(crossterm::event::KeyCode::Char('2')).await; // numpad down
+    // Arrows still move the selection
+    app.bdd_press(crossterm::event::KeyCode::Down).await;
     assert_eq!(app.bdd_settings_selected(), 1);
-    app.bdd_press(crossterm::event::KeyCode::Char('8')).await; // numpad up
+    app.bdd_press(crossterm::event::KeyCode::Up).await;
     assert_eq!(app.bdd_settings_selected(), 0);
 
-    app.bdd_press(crossterm::event::KeyCode::Char('1')).await; // numpad end
-    assert_eq!(app.bdd_settings_selected(), last);
-    app.bdd_press(crossterm::event::KeyCode::Char('7')).await; // numpad home
-    assert_eq!(app.bdd_settings_selected(), 0);
+    // Digits switch tabs
+    app.bdd_press(crossterm::event::KeyCode::Char('2')).await;
+    assert_eq!(app.bdd_state(), AppState::Commands);
+    app.bdd_press(crossterm::event::KeyCode::Char('8')).await;
+    assert_eq!(app.bdd_state(), AppState::Settings);
+    app.bdd_press(crossterm::event::KeyCode::Char('9')).await;
+    assert_eq!(app.bdd_state(), AppState::Plugins);
 }
 
-/// Scenario: numpad left/right cycles the theme preset
-/// Given the Theme row, when numpad `6`/`4` is pressed, then the preset
-/// cycles forward/backward like `→`/`←` do.
+/// Scenario: left/right cycles the theme preset on the Theme row
+/// Given the Theme row, when `→`/`←` is pressed, then the preset
+/// cycles forward/backward.
 #[tokio::test]
-async fn given_theme_row_when_numpad_left_right_then_preset_cycles() {
+async fn given_theme_row_when_left_right_then_preset_cycles() {
     let mut app = given_tui_app().await;
     app.bdd_open_settings();
     app.bdd_select_settings_row(2); // theme row
     assert_eq!(app.bdd_theme_name(), "dark");
 
-    app.bdd_press(crossterm::event::KeyCode::Char('6')).await; // numpad right
+    app.bdd_press(crossterm::event::KeyCode::Right).await;
     assert_eq!(app.bdd_theme_name(), "light");
-    app.bdd_press(crossterm::event::KeyCode::Char('4')).await; // numpad left
+    app.bdd_press(crossterm::event::KeyCode::Left).await;
     assert_eq!(app.bdd_theme_name(), "dark");
 }
 
-/// Scenario: numpad navigation and color cycling work in Advanced mode
-/// Given the Advanced screen, when numpad digits are pressed, then rows move
-/// and the focused color cycles through the palette.
+/// Scenario: advanced navigation uses arrows; digits switch tabs
+/// Given the Advanced screen, when arrows are pressed, rows move and colors
+/// cycle; when a digit is pressed, the app switches to that tab.
 #[tokio::test]
-async fn given_advanced_open_when_numpad_digits_pressed_then_nav_and_colors_work() {
+async fn given_advanced_open_when_arrows_pressed_then_nav_and_colors_work() {
     let mut app = given_tui_app().await;
     app.bdd_open_advanced();
-    let last = ADVANCED_ROWS.len() - 1;
-
-    // Navigation
-    app.bdd_press(crossterm::event::KeyCode::Char('2')).await;
+    // Navigation: Down moves the selection (fg -> bg)
+    app.bdd_press(crossterm::event::KeyCode::Down).await;
     assert_eq!(app.bdd_advanced_selected(), 1);
-    app.bdd_press(crossterm::event::KeyCode::Char('1')).await; // numpad end
-    assert_eq!(app.bdd_advanced_selected(), last);
 
     // Color cycling on the bg row (row 1): black -> white -> black
-    app.bdd_press(crossterm::event::KeyCode::Char('7')).await; // home
-    app.bdd_press(crossterm::event::KeyCode::Char('2')).await; // down to bg
     assert_eq!(app.bdd_theme_bg(), "black");
-    app.bdd_press(crossterm::event::KeyCode::Char('6')).await; // numpad right
+    app.bdd_press(crossterm::event::KeyCode::Right).await;
     assert_eq!(app.bdd_theme_bg(), "white");
-    app.bdd_press(crossterm::event::KeyCode::Char('4')).await; // numpad left
+    app.bdd_press(crossterm::event::KeyCode::Left).await;
     assert_eq!(app.bdd_theme_bg(), "black");
+
+    // Digits switch tabs out of Advanced
+    app.bdd_press(crossterm::event::KeyCode::Char('6')).await;
+    assert_eq!(app.bdd_state(), AppState::Workflows);
 }
 
 /// Scenario: numpad navigation works in the keygen form
