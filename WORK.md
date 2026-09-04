@@ -5,7 +5,49 @@
 
 ---
 
-## 🎯 Session 16 (current): terminal fix, visible search bar, import/export TUI, keybinds update
+## 🎯 Session 16 — COMPLETE SESSION SUMMARY (all work in this chat)
+
+### What this session delivered (chronological, 14 commits on `dev`)
+
+Final state: **186 tests pass (143 lib + 43 BDD), clippy 0 errors, release build clean.**
+Detailed per-change notes are in the Update 1-9 blocks further down.
+
+| # | Commit | What was done |
+|:--|:--|:--|
+| 1 | `57cc1ca` | **Terminal fix + visible search bar + x/I keybinds**: backtick sets a flag handled in run() (old approach bypassed ratatui and black-screened); `/` replaces the footer with a bordered search bar; `x`/`I` export/import knowledge base |
+| 2 | `001d72f` | **Search bar polish + real subshell routing** (intermediate fix; superseded by #3) |
+| 3 | `102cdf3` | **Backtick opens a NEW terminal window** (detached emulator spawn: $TERMINAL override, then alacritty, kitty, wezterm, gnome-terminal, konsole, xfce4, tilix, foot, xterm, st, uxterm); dead spawn_terminal removed; unit tests for the emulator probe |
+| 4 | `8d47923` | **Apps + Scripts tabs** (8 tabs, keys 1-8): one entity list filtered by type_id (cmd/script/app); `n` pre-sets the form type per tab; **project detail view** (Enter: description + entities, `c` copy, `o` editor, Esc close - US-PROJ-07); duplicate overlay rows fixed |
+| 5 | `e4d2439` | **Cron scheduling + systemd/cron service + import/export docs**: validate_cron normalizes 5-field crontab to the cron crate seconds syntax; API POST /workflows/{id}/schedule, GET/DELETE /schedules, GET /export, POST /import; TUI `s` on Workflows (cron popup); new src/service/ (systemd user unit generation, --headless, --install-service, --print-unit); docs/IMPORT_EXPORT.md with AI prompt template |
+| 6 | `d6d40d3` | **Release install flow**: --install-service is a full idempotent setup (generates master key ~/.config/tui-op-hub/env mode 600, unit EnvironmentFile=, enable); **TUI/service coexistence** (shared WAL DB; API port-in-use warns + skips, no panic); root install.sh; home-injectable *_in() service functions; docs/INSTALL.md |
+| 7 | `ca389db` | **Root INSTALL.md**: quick install, manual, verify, TUI launch, secrets key, non-systemd inits, update/uninstall, file paths |
+| 8 | `bc628d4` | **Better import**: `I` opens a path popup (default pre-filled, ~ expansion); lenient parsing - full bundle, bare AI entity array, or entities-only object; API import accepts raw lenient bodies |
+| 9 | `5c779a6` | **AGENTS.md updated**: 8 tabs, service/scheduler modules, CLI flags, new docs, and two hard-won Do-NOT lessons (verify scripted edits by grepping; never use unicode escapes in Python heredocs) |
+| 10 | `9e26a64` | **Project creation flow fixed**: root cause - handle_new_project_key was never routed, so form keystrokes leaked into other handlers (typing `p` spawned a process viewer mid-form!); migration 0005 projects.path; workspace path stored; `O` opens the real directory; `n` = register existing directory |
+| 11 | `d27697c` | **Plugin/mod system**: migration 0006; Lua mods in ~/.config/tui-op-hub/plugins/<id>/ (plugin.toml + main.lua); capability-gated sandbox (run_command only with execute_commands); event hooks - **project_created fires on workspace create/register** (the git-automation point); Plugins tab (key 9): list/approve/enable; docs/PLUGINS.md |
+| 12 | `810e4d5` | **Digits 1-9 switch tabs from ANY screen**: root cause - Settings/Advanced ate digits as numpad navigation; new jump_to_tab_digit/handle_tab_digit; numpad handlers removed (arrows/L-R remain); 3 BDD scenarios updated |
+| 13 | `a80a529` | **Secrets v2**: migration 0007 (secret_group, username, url, email, passphrase_protected, ssh_agent); 8-field secret form; passphrase double-encryption (Argon2+XChaCha layer over the user-key layer); copy prompts for locked secrets; **ssh-agent integration** (S loads flagged ssh_key secrets, auto-load after login, agent auto-spawned); **`t` opens an SSH terminal** using the stored key to url |
+
+### Key architecture changes
+
+- `src/service/` — systemd/init integration (unit generation, install/uninstall, cron line)
+- `src/secrets/ssh_agent.rs` — agent ensure/spawn + key loading
+- Migrations 0005 (projects.path), 0006 (plugins/plugin_approvals), 0007 (secrets v2)
+- AppState grew: Apps, Scripts, Plugins (now 9 tabs, keys 1-9)
+- ModernApp popups: project detail, cron input, import path, register dir, secret passphrase
+- Global behaviors: digits 1-9 = tabs everywhere; backtick = new terminal window
+
+### Known limitations / next steps
+
+- Passphrase-locked secrets are skipped by `S` (agent load); use `t` for those
+- Plugin event set currently only project_created; more hooks easy to add
+- Rust/Python/Go plugin types still unimplemented (Lua is the mod language)
+- plugin/, process/, environment/ test coverage still thin
+
+---
+
+### Detailed update-by-update log (chronological, newest last)
+
 
 > **Update 9 (same session):** Secrets v2 (US-SEC). Migration 0007 adds `secret_group`,
 > `username`, `url`, `email`, `passphrase_protected`, `ssh_agent` to secrets. The secret
