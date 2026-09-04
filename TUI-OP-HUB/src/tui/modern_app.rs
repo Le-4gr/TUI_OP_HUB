@@ -162,6 +162,10 @@ pub struct ModernApp {
     register_input: Option<String>,
     plugins: Arc<crate::plugin::PluginManager>,
     secret_pass_prompt: Option<(String, String)>,
+    monitor: crate::monitor::Monitor,
+    monitor_snap: Option<crate::monitor::MonitorSnapshot>,
+    monitor_refreshed: std::time::Instant,
+    wants_terminal_cmd: Option<(String, String)>, // (command, cwd)
     plugins_list: PluginsListState,
     workflow_form: WorkflowFormState,
     secret_form: SecretFormState,
@@ -294,6 +298,10 @@ impl ModernApp {
                 crate::plugin::PluginManager::default_dir(),
             )),
             secret_pass_prompt: None,
+            monitor: crate::monitor::Monitor::new(),
+            monitor_snap: None,
+            monitor_refreshed: std::time::Instant::now(),
+            wants_terminal_cmd: None,
             plugins_list: ListState::new(page_size),
             workflow_form: WorkflowFormState::default(),
             secret_form: SecretFormState::default(),
@@ -489,6 +497,11 @@ impl ModernApp {
         }
     }
 
+    /// Refresh the dashboard monitor snapshot (US-PROC-01, mini-btop panels).
+    async fn fetch_monitor(&mut self) {
+        self.monitor_snap = Some(self.monitor.snapshot());
+        self.monitor_refreshed = std::time::Instant::now();
+    }
     /// Discover plugins and combine with their DB approval/enabled state (US-PLG-10).
     async fn fetch_plugins(&mut self) {
         let mut entries = Vec::new();
@@ -561,6 +574,7 @@ impl ModernApp {
             AppState::Workflows => self.fetch_workflows().await?,
             AppState::Secrets => self.fetch_secrets().await?,
             AppState::Dashboard => self.fetch_stats().await?,
+            AppState::Dashboard => self.fetch_monitor().await,
             AppState::Plugins => self.fetch_plugins().await,
             _ => {}
         }
@@ -575,6 +589,35 @@ impl ModernApp {
         let mut terminal = Terminal::new(backend)?;
 
         loop {
+            // Dashboard auto-refresh: mini-btop panels tick every 2 seconds
+            if self.ui.state == AppState::Dashboard
+                && self.monitor_refreshed.elapsed() > std::time::Duration::from_secs(2)
+            {
+                self.fetch_monitor().await;
+            }
+
+            // Quick launch: open a NEW terminal window running a tool (lazygit, ...)
+            if let Some((cmd, cwd)) = self.wants_terminal_cmd.take() {
+                match terminal_window_command_for(&cmd, Some(&cwd)) {
+                    Some((prog, args)) => {
+                        let spawned = std::process::Command::new(&prog)
+                            .args(&args)
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn();
+                        self.status_message = match spawned {
+                            Ok(_) => Some(format!("Opened {} in new terminal", cmd)),
+                            Err(e) => Some(format!("Failed to open {}: {}", prog, e)),
+                        };
+                    }
+                    None => {
+                        self.status_message =
+                            Some("No terminal emulator found (set $TERMINAL)".to_string());
+                    }
+                }
+            }
+
             // `: open a NEW terminal window (detached; the TUI keeps running)
             if self.wants_terminal {
                 self.wants_terminal = false;
@@ -764,7 +807,18 @@ impl ModernApp {
         let header = Paragraph::new(header_text).alignment(Alignment::Center);
         f.render_widget(header, inner);
 
-        // Render dashboard content with real stats
+        // Dashboard content: stat cards on top, mini-btop monitor boxes below,
+        // quick-launch row at the bottom
+        let content_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(8), // stat cards
+                Constraint::Min(4),    // monitor boxes
+                Constraint::Length(3), // quick launches
+            ])
+            .margin(1)
+            .split(chunks[1]);
+
         let card_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -773,8 +827,7 @@ impl ModernApp {
                 Constraint::Percentage(25),
                 Constraint::Percentage(25),
             ])
-            .margin(1)
-            .split(chunks[1]);
+            .split(content_rows[0]);
 
         // Commands card
         self.render_stat_card(
@@ -812,8 +865,184 @@ impl ModernApp {
             self.ui.theme.warning,
         );
 
+        // Mini-btop monitor boxes (CPU / RAM / Network / Temp+GPU)
+        self.render_monitor_boxes(f, content_rows[1]);
+
+        // Quick-launch row for installed TUI tools
+        self.render_quick_launches(f, content_rows[2]);
+
         // Footer: keybind hints for this screen
         self.render_keybind_footer(f, chunks[2], &self.keybind_hints());
+    }
+
+    /// The four mini-btop boxes: CPU, Memory, Network, Temps+GPU (US-PROC-01).
+    fn render_monitor_boxes(&self, f: &mut Frame, area: Rect) {
+        let boxes = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+            ])
+            .split(area);
+
+        let Some(snap) = &self.monitor_snap else {
+            for b in boxes.iter() {
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(self.ui.theme.border))
+                    .title(" loading... ");
+                f.render_widget(block, *b);
+            }
+            return;
+        };
+
+        // CPU box: overall gauge + per-core mini bars
+        {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(self.ui.theme.primary))
+                .title(format!(" CPU {:.0}% ", snap.cpu_overall));
+            let inner = block.inner(boxes[0]);
+            f.render_widget(block, boxes[0]);
+            let mut lines: Vec<Line> = Vec::new();
+            lines.push(Line::from(format!(
+                "{} {:.0}%",
+                crate::monitor::MonitorSnapshot::bar(snap.cpu_overall, 14),
+                snap.cpu_overall
+            )));
+            let width = 8.min(inner.width.saturating_sub(8) as usize);
+            for (i, usage) in snap.cpu_per_core.iter().skip(1).enumerate() {
+                if lines.len() >= inner.height as usize {
+                    break;
+                }
+                lines.push(Line::from(format!(
+                    "c{:02} {} {:.0}%",
+                    i,
+                    crate::monitor::MonitorSnapshot::bar(*usage, width),
+                    usage
+                )));
+            }
+            f.render_widget(Paragraph::new(lines), inner);
+        }
+
+        // Memory box: RAM + swap gauges
+        {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(self.ui.theme.success))
+                .title(" Memory ");
+            let inner = block.inner(boxes[1]);
+            f.render_widget(block, boxes[1]);
+            let ram_pct = if snap.ram_total > 0 {
+                snap.ram_used as f32 / snap.ram_total as f32 * 100.0
+            } else {
+                0.0
+            };
+            let used_gb = snap.ram_used as f64 / 1024.0 / 1024.0 / 1024.0;
+            let total_gb = snap.ram_total as f64 / 1024.0 / 1024.0 / 1024.0;
+            let mut lines = vec![Line::from(format!(
+                "{} {:.1}/{:.1}GB",
+                crate::monitor::MonitorSnapshot::bar(ram_pct, 14),
+                used_gb,
+                total_gb
+            ))];
+            if snap.swap_total > 0 {
+                let swap_pct = snap.swap_used as f32 / snap.swap_total as f32 * 100.0;
+                let su = snap.swap_used as f64 / 1024.0 / 1024.0 / 1024.0;
+                let st = snap.swap_total as f64 / 1024.0 / 1024.0 / 1024.0;
+                lines.push(Line::from(format!(
+                    "{} swap {:.1}/{:.1}GB",
+                    crate::monitor::MonitorSnapshot::bar(swap_pct, 14),
+                    su,
+                    st
+                )));
+            }
+            f.render_widget(Paragraph::new(lines), inner);
+        }
+
+        // Network box: physical interfaces with live RX/TX (virtual filtered)
+        {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(self.ui.theme.accent))
+                .title(" Network ");
+            let inner = block.inner(boxes[2]);
+            f.render_widget(block, boxes[2]);
+            let mut lines = Vec::new();
+            if snap.interfaces.is_empty() {
+                lines.push(Line::from("no physical interfaces"));
+            }
+            for iface in snap.interfaces.iter().take(inner.height as usize) {
+                lines.push(Line::from(format!(
+                    "{} v{} / ^{}",
+                    iface.name,
+                    humans(iface.rx),
+                    humans(iface.tx)
+                )));
+            }
+            f.render_widget(Paragraph::new(lines), inner);
+        }
+
+        // Temps + GPU box
+        {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(self.ui.theme.warning))
+                .title(if snap.gpus.is_empty() {
+                    " Temps "
+                } else {
+                    " Temps + GPU "
+                });
+            let inner = block.inner(boxes[3]);
+            f.render_widget(block, boxes[3]);
+            let mut lines = Vec::new();
+            for t in snap.temps.iter().take(inner.height as usize / 2) {
+                lines.push(Line::from(format!("{} {:.0}\u{2103}", t.label, t.celsius)));
+            }
+            for (name, util, temp) in snap.gpus.iter().take(2) {
+                lines.push(Line::from(format!(
+                    "GPU {} {:.0}% {:.0}\u{2103}",
+                    name, util, temp
+                )));
+            }
+            if lines.is_empty() {
+                lines.push(Line::from("no sensors"));
+            }
+            f.render_widget(Paragraph::new(lines), inner);
+        }
+    }
+
+    /// The quick-launch row: installed TUI tools (lazygit, lazydocker, k9s, ...).
+    fn render_quick_launches(&self, f: &mut Frame, area: Rect) {
+        let launches = self
+            .monitor_snap
+            .as_ref()
+            .map(|s| s.quick_launches.clone())
+            .unwrap_or_default();
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.highlight))
+            .title(" Quick launch ");
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let text = if launches.is_empty() {
+            "no TUI tools found (install lazygit / lazydocker / k9s / lazynpm)".to_string()
+        } else {
+            launches
+                .iter()
+                .map(|q| format!("[{}] {} - {}", q.key, q.name, q.description))
+                .collect::<Vec<_>>()
+                .join("   ")
+        };
+        f.render_widget(Paragraph::new(text), inner);
     }
 
     fn render_stat_card(
@@ -1536,6 +1765,7 @@ impl ModernApp {
             KeyCode::Char('1') => {
                 self.ui.state = AppState::Dashboard;
                 let _ = self.fetch_stats().await;
+                self.fetch_monitor().await;
             }
             KeyCode::Char('2') => {
                 self.ui.state = AppState::Commands;
@@ -1814,6 +2044,24 @@ impl ModernApp {
                 // DEV: delete all entities in the current tab
                 self.delete_all_in_tab().await;
             }
+            KeyCode::Char(c) if matches!(c, 'g' | 'd' | 'k' | 'n') => {
+                // Quick launch: lazygit / lazydocker / k9s / lazynpm (US-PROC)
+                if self.ui.state == AppState::Dashboard {
+                    let tool = match c {
+                        'g' => "lazygit",
+                        'd' => "lazydocker",
+                        'k' => "k9s",
+                        _ => "lazynpm",
+                    };
+                    let projects_dir = dirs_home().join("projects");
+                    if crate::keygen::which(tool) {
+                        self.wants_terminal_cmd =
+                            Some((tool.to_string(), projects_dir.to_string_lossy().to_string()));
+                    } else {
+                        self.status_message = Some(format!("{} is not installed", tool));
+                    }
+                }
+            }
             KeyCode::Char('m') => {
                 // Man page for the selected command (graceful when missing)
                 if matches!(
@@ -2083,12 +2331,13 @@ impl ModernApp {
                 // Offer stored SSH keys to ssh-agent right after login (US-SEC)
                 self.load_ssh_agent_keys().await;
 
-                // Fetch dashboard statistics after successful login
+                // Fetch dashboard statistics + monitor after successful login
                 if let Err(e) = self.fetch_stats().await {
                     eprintln!("Warning: Failed to fetch stats: {}", e);
                 }
 
                 self.ui.state = AppState::Dashboard;
+                self.fetch_monitor().await;
             }
             Ok(false) => {
                 self.ui
@@ -2654,6 +2903,7 @@ impl ModernApp {
                 ("1-9", "Tabs"),
                 ("f", "Fetch"),
                 ("p", "Processes"),
+                ("g/d/k/n", "TUI tools"),
                 ("`", "New term"),
                 ("?", "Keybinds"),
                 ("q", "Quit"),
@@ -5750,6 +6000,18 @@ fn expand_tilde(path: &str) -> String {
     path.to_string()
 }
 
+/// Human-readable byte rate: `1.2K`, `3.4M`, ... (per refresh interval).
+fn humans(bytes: u64) -> String {
+    let b = bytes as f64;
+    if b >= 1024.0 * 1024.0 {
+        format!("{:.1}M", b / 1024.0 / 1024.0)
+    } else if b >= 1024.0 {
+        format!("{:.1}K", b / 1024.0)
+    } else {
+        format!("{}B", bytes)
+    }
+}
+
 /// `Some(s)` when `s` is non-empty (after trim), else `None`.
 fn some_if_not_empty(s: &str) -> Option<String> {
     let t = s.trim();
@@ -6259,6 +6521,21 @@ impl ModernApp {
     }
 }
 
+/// (program, args-before-shell) for known terminal emulators, in preference order.
+const TERMINAL_EMULATORS: &[(&str, &[&str])] = &[
+    ("alacritty", &["-e"]),
+    ("kitty", &["-e"]),
+    ("wezterm", &["start", "--"]),
+    ("gnome-terminal", &["--"]),
+    ("konsole", &["-e"]),
+    ("xfce4-terminal", &["-e"]),
+    ("tilix", &["-e"]),
+    ("foot", &[]),
+    ("xterm", &["-e"]),
+    ("st", &["-e"]),
+    ("uxterm", &["-e"]),
+];
+
 /// Find a terminal emulator command to open a NEW terminal window running
 /// the user's shell. Probes `$TUI_OP_HUB_TERMINAL` / `$TERMINAL` first, then
 /// falls back through common Linux terminal emulators. Returns
@@ -6279,25 +6556,48 @@ pub(crate) fn terminal_window_command() -> Option<(String, Vec<String>)> {
         }
     }
 
-    // (program, args-before-shell) for known emulators, in preference order
-    const EMULATORS: &[(&str, &[&str])] = &[
-        ("alacritty", &["-e"]),
-        ("kitty", &["-e"]),
-        ("wezterm", &["start", "--"]),
-        ("gnome-terminal", &["--"]),
-        ("konsole", &["-e"]),
-        ("xfce4-terminal", &["-e"]),
-        ("tilix", &["-e"]),
-        ("foot", &[]),
-        ("xterm", &["-e"]),
-        ("st", &["-e"]),
-        ("uxterm", &["-e"]),
-    ];
+    const EMULATORS: &[(&str, &[&str])] = TERMINAL_EMULATORS;
 
     for (prog, prefix) in EMULATORS {
         if which_program(prog) {
             let mut args: Vec<String> = prefix.iter().map(|s| s.to_string()).collect();
             args.push(shell);
+            return Some((prog.to_string(), args));
+        }
+    }
+    None
+}
+
+/// Like [`terminal_window_command`], but runs `command` (optionally after
+/// `cd cwd`) instead of the user's shell — used by the quick-launch row.
+pub(crate) fn terminal_window_command_for(
+    command: &str,
+    cwd: Option<&str>,
+) -> Option<(String, Vec<String>)> {
+    let full = match cwd {
+        Some(dir) => format!("cd '{}' && {}", dir, command),
+        None => command.to_string(),
+    };
+
+    // User override first
+    for var in ["TUI_OP_HUB_TERMINAL", "TERMINAL"] {
+        if let Ok(t) = std::env::var(var) {
+            let t = t.trim().to_string();
+            if !t.is_empty() && which_program(&t) {
+                return Some((
+                    t,
+                    vec!["-e".to_string(), "sh".to_string(), "-c".to_string(), full],
+                ));
+            }
+        }
+    }
+
+    for (prog, prefix) in TERMINAL_EMULATORS {
+        if which_program(prog) {
+            let mut args: Vec<String> = prefix.iter().map(|s| s.to_string()).collect();
+            args.push("sh".to_string());
+            args.push("-c".to_string());
+            args.push(full.clone());
             return Some((prog.to_string(), args));
         }
     }

@@ -9,6 +9,7 @@ pub mod error;
 pub mod fuzzy;
 pub mod keygen;
 pub mod models;
+pub mod monitor;
 pub mod plugin;
 pub mod privilege;
 pub mod process;

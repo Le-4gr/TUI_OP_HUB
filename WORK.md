@@ -7,6 +7,20 @@
 
 ## 🎯 Session 16 — COMPLETE SESSION SUMMARY (all work in this chat)
 
+> **Update 10 (same session):** Dashboard mini-btop monitor + quick launches (US-PROC-01).
+> New `src/monitor.rs`: persistent sysinfo state; snapshot = CPU overall + per-core usage,
+> RAM/swap, physical network interfaces with live RX/TX rates (docker bridges, veth pairs,
+> loopback, VPN tunnels filtered out by `is_physical_interface`), temperature sensors
+> (sysinfo Components), GPU stats via nvidia-smi (best effort), and installed TUI tool
+> detection (lazygit / lazydocker / k9s / lazynpm). Dashboard layout: stat cards row on top,
+> four compact monitor boxes with ASCII bars + per-core mini bars, quick-launch row at the
+> bottom listing installed tools with their keys. Auto-refresh every 2s while on the
+> Dashboard (persistent Monitor instance keeps rate deltas meaningful). Quick launches
+> `g` lazygit / `d` lazydocker / `k` k9s / `n` lazynpm open the tool in a NEW terminal
+> window (terminal_window_command_for with cwd = ~/projects; skipped with a message when
+> not installed). Tests: +3 monitor unit tests (virtual-interface filter, bar renderer,
+> snapshot builds). 146 lib + 43 BDD = 189 pass.
+
 ### What this session delivered (chronological, 14 commits on `dev`)
 
 Final state: **186 tests pass (143 lib + 43 BDD), clippy 0 errors, release build clean.**
