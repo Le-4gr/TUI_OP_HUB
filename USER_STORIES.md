@@ -60,8 +60,8 @@
 - ✅ **Processes use known programs** (US-PROC): `p` launches btop/htop/top
 
 **Remaining Phase 2 work**:
-- 🔄 `US-PLG-05`, `US-PLG-06`: Plugin approval workflow UI and enforcement
-- 🔄 `US-PLG-07`, `US-PLG-10`: Plugin command registration and TUI listing
+- ✅ `US-PLG-05`, `US-PLG-06`: Plugin manifest + capability approval (Plugins tab, DB-enforced)
+- ✅ `US-PLG-07`, `US-PLG-10`: Lua mod loading, event hooks, Plugins tab (list/approve/enable)
 - 🔄 `US-SSH-01` through `US-SSH-06`: SSH host manager TUI and quick-connect
 - 🔄 `US-WF-09`: Workflow stop/cancel for running workflows
 - ✅ `US-DEP-04`: Systemd integration (user service, `--install-service`, `--headless` daemon mode)
@@ -290,12 +290,12 @@
 | `US-PLG-02` | As a **Plugin Developer**, I want to write plugins in **Lua**, so that I can iterate quickly without recompiling. | 🟡 | 5 |
 | `US-PLG-03` | As a **Plugin Developer**, I want to write plugins in **Python**, so that I can reuse Python libraries. | 🟢 | 5 |
 | `US-PLG-04` | As a **Plugin Developer**, I want to write plugins in **Go**, so that I can integrate Go-based tooling. | 🟢 | 5 |
-| `US-PLG-05` | As a **Plugin Developer**, I want a **plugin manifest** declaring required capabilities, so that the host can enforce permissions. | 🟡 | 5 |
-| `US-PLG-06` | As a **User**, I want to **approve** a plugin's requested capabilities, so that untrusted code cannot access secrets or network without consent. | 🟡 | 3 |
+| `US-PLG-05` | As a **Plugin Developer**, I want a **plugin manifest** declaring required capabilities, so that the host can enforce permissions. | ✅ | 5 |
+| `US-PLG-06` | As a **User**, I want to **approve** a plugin's requested capabilities, so that untrusted code cannot access secrets or network without consent. | ✅ | 3 |
 | `US-PLG-07` | As a **Plugin Developer**, I want to **add commands/tools** via plugins, so that the hub's feature set grows. | 🟡 | 5 |
 | `US-PLG-08` | As a **Plugin Developer**, I want to **extend UI modules** via plugins, so that plugins can render their own panels. | 🟢 | 8 |
 | `US-PLG-09` | As a **Plugin Developer**, I want to **hook into workflows** via plugins, so that automation can call plugin logic. | 🟢 | 5 |
-| `US-PLG-10` | As a **User**, I want to **list, enable, and disable** installed plugins, so that I control what runs on my system. | 🟡 | 3 |
+| `US-PLG-10` | As a **User**, I want to **list, enable, and disable** installed plugins, so that I control what runs on my system. | ✅ | 3 |
 | `US-PLG-11` | As a **User**, I want sensitive plugin calls **audit-logged** (who, what, when), so that I can trace misuse. | 🟡 | 5 |
 | `US-PLG-12` | As a **User**, I want plugins **loaded dynamically** (FFI / subprocess / WASM), so that I can add functionality without restarting the core. | 🟢 | 8 |
 

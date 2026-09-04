@@ -1513,3 +1513,89 @@ async fn given_created_workspace_when_listed_then_path_is_stored() {
 
     let _ = std::fs::remove_dir_all(&parent);
 }
+
+// ============================================================================
+// Feature: Plugin/mod system - event hooks (US-PLG-05/06/09)
+// ============================================================================
+
+/// Scenario: an approved git-automation mod reacts to project_created
+/// Given a Lua mod with an on_project_created hook and the execute_commands
+/// capability, when the hook fires for a new project, then the mod's command
+/// runs and reports success (this is how git repos get wired up on creation).
+#[tokio::test]
+async fn given_git_automation_mod_when_project_created_then_hook_runs_git() {
+    use tui_op_hub::plugin::{PluginManager, PluginManifest};
+
+    let pool = given_fresh_database().await;
+    let tmp = std::env::temp_dir().join(format!("tui-op-hub-bdd-plug-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let plugin_dir = tmp.join("git.automation");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+
+    std::fs::write(
+        plugin_dir.join("plugin.toml"),
+        concat!(
+            "id = 'git.automation'\n",
+            "name = 'Git Automation'\n",
+            "version = '1.0.0'\n",
+            "plugin_type = 'lua'\n",
+            "entry_point = 'main.lua'\n",
+            "required_capabilities = ['execute_commands'] \n\n[commands]\nhello = 'Say hello'\n"
+        ),
+    )
+    .unwrap();
+
+    // The mod: on every project_created, init a git repo in the new workspace
+    // and create a first commit - the exact automation the user asked for.
+    let proj = format!("tui-op-hub-bdd-proj-{}", std::process::id());
+    let proj_dir = tmp.join(&proj);
+    std::fs::write(
+        plugin_dir.join("main.lua"),
+        format!(
+            "function on_project_created()\n\
+              local out = run_command('mkdir -p ' .. event.path)\n\
+              local init = run_command('git init -q ' .. event.path)\n\
+              assert(init.success, init.stderr)\n\
+              return 'git repo ready'\n\
+            end\n"
+        ),
+    )
+    .unwrap();
+
+    let manager = PluginManager::new(pool.clone(), tmp.clone());
+
+    // Manifest discovery works before any approval
+    let discovered = manager.discover_plugins();
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(discovered[0].id, "git.automation");
+
+    // Unapproved: load must fail
+    assert!(manager.load_plugin(&plugin_dir).await.is_err());
+
+    // Approve (as the user would with `a` in the Plugins tab), then load
+    manager
+        .approve_plugin("git.automation", "default")
+        .await
+        .unwrap();
+    manager.load_plugin(&plugin_dir).await.unwrap();
+
+    // Fire project_created
+    let payload = serde_json::json!({
+        "name": proj,
+        "path": proj_dir.display().to_string(),
+    });
+    let results = manager.emit_event("project_created", &payload).await;
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].1.as_ref().unwrap().as_deref(),
+        Some("git repo ready")
+    );
+
+    // The hook's git init actually created the repo
+    assert!(
+        proj_dir.join(".git").is_dir(),
+        "git repo initialized by mod"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}

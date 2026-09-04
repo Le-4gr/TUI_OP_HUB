@@ -165,6 +165,7 @@ pub enum AppState {
     Workflows,
     Secrets,
     Settings,
+    Plugins,
     Help,
 }
 

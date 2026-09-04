@@ -7,6 +7,21 @@
 
 ## 🎯 Session 16 (current): terminal fix, visible search bar, import/export TUI, keybinds update
 
+> **Update 7 (same session):** Plugin/mod system implemented (US-PLG-05/06/07/09/10).
+> New migration 0006 replaces the never-used 0001 plugin stubs (plugins + plugin_approvals
+> with the runtime schema). Plugin sandbox: fresh mlua state per hook, host functions gated
+> by capabilities (log always; run_command only with execute_commands); `event` global
+> carries the hook payload. PluginManager gained: discovery (scan plugins dir),
+> `emit_event` dispatch, approve-before-load stub rows, enable/disable with unload/reload,
+> approval + enabled gating in `load_plugin`. Wired into main (startup load from
+> ~/.config/tui-op-hub/plugins) and ModernApp (manager field); project creation and
+> directory registration fire `project_created` {name, path} — the git-automation hook
+> point. New **Plugins tab** (key 9): list discovered mods with status, `a` approve,
+> `e` enable/disable. New doc: `docs/PLUGINS.md` (manifest, hook API, full git example,
+> security model). Tests: +5 plugin unit tests (discovery, approval gating, hook execution
+> with side effects, no-hook noop, enable/disable round trip) + 1 BDD git-automation
+> scenario (hook runs real `git init` in the new project). 138 lib + 43 BDD = 181 pass.
+
 > **Update 6 (same session):** Fixed the project creation flow (US-PROJ-01/04).
 > ROOT CAUSE found: `handle_new_project_key` was never routed from `handle_key` — the
 > workspace form captured no keys, so typed characters leaked into other handlers

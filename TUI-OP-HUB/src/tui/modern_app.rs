@@ -160,6 +160,8 @@ pub struct ModernApp {
     cron_input: Option<String>,
     import_input: Option<String>,
     register_input: Option<String>,
+    plugins: Arc<crate::plugin::PluginManager>,
+    plugins_list: PluginsListState,
     workflow_form: WorkflowFormState,
     secret_form: SecretFormState,
     // Search state
@@ -222,6 +224,31 @@ struct ProjectDetailState {
     selected: usize,
 }
 
+/// One discovered plugin for the Plugins tab (US-PLG-10).
+#[derive(Debug, Clone)]
+struct PluginEntry {
+    manifest: crate::plugin::PluginManifest,
+    approved: bool,
+    enabled: bool,
+}
+
+impl std::fmt::Display for PluginEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{} v{}", self.manifest.name, self.manifest.version)?;
+        let mut tags = String::new();
+        if self.approved {
+            tags.push_str(" [approved]");
+        } else {
+            tags.push_str(" [unapproved]");
+        }
+        tags.push_str(" [");
+        tags.push_str(&self.manifest.plugin_type);
+        tags.push_str("]");
+        write!(f, "{}", tags)
+    }
+}
+
+type PluginsListState = super::list_state::ListState<PluginEntry>;
 /// Entity type shown by the current entity tab (Commands / Apps / Scripts).
 fn entity_type_for_tab(state: &AppState) -> &'static str {
     match state {
@@ -234,6 +261,7 @@ fn entity_type_for_tab(state: &AppState) -> &'static str {
 impl ModernApp {
     pub fn new(pool: Arc<SqlitePool>, config: AppConfig) -> Self {
         let page_size = config.tui.page_size.max(1);
+        let pool_for_plugins = pool.clone();
         let theme = ModernTheme::from_config(&config.theme);
         Self {
             ui: ModernUI {
@@ -260,6 +288,11 @@ impl ModernApp {
             cron_input: None,
             import_input: None,
             register_input: None,
+            plugins: Arc::new(crate::plugin::PluginManager::new(
+                pool_for_plugins,
+                crate::plugin::PluginManager::default_dir(),
+            )),
+            plugins_list: ListState::new(page_size),
             workflow_form: WorkflowFormState::default(),
             secret_form: SecretFormState::default(),
             // Initialize search state
@@ -402,6 +435,30 @@ impl ModernApp {
         }
     }
 
+    /// Discover plugins and combine with their DB approval/enabled state (US-PLG-10).
+    async fn fetch_plugins(&mut self) {
+        let mut entries = Vec::new();
+        for manifest in self.plugins.discover_plugins() {
+            let approved = self
+                .plugins
+                .is_plugin_approved(&manifest.id)
+                .await
+                .unwrap_or(false);
+            let enabled = self
+                .plugins
+                .is_plugin_enabled(&manifest.id)
+                .await
+                .unwrap_or(false);
+            entries.push(PluginEntry {
+                manifest,
+                approved,
+                enabled,
+            });
+        }
+        let total = entries.len();
+        self.plugins_list.set_items(entries, total);
+    }
+
     /// Fetch projects list from database
     async fn fetch_projects(&mut self) -> anyhow::Result<()> {
         let projects = repository::list_projects(&*self.pool).await?;
@@ -450,6 +507,7 @@ impl ModernApp {
             AppState::Workflows => self.fetch_workflows().await?,
             AppState::Secrets => self.fetch_secrets().await?,
             AppState::Dashboard => self.fetch_stats().await?,
+            AppState::Plugins => self.fetch_plugins().await,
             _ => {}
         }
         Ok(())
@@ -603,6 +661,9 @@ impl ModernApp {
                 } else {
                     self.render_settings_screen(f);
                 }
+            }
+            AppState::Plugins => {
+                self.render_plugins_list(f);
             }
             AppState::Help => {
                 // Delegate to UI for help
@@ -1294,6 +1355,9 @@ impl ModernApp {
                 // Settings screen has its own key handling (US-APP-01/02/06)
                 self.handle_settings_key(key).await;
             }
+            AppState::Plugins => {
+                self.handle_dashboard_key(key).await;
+            }
             AppState::Help => {
                 // Handle help screen keys
                 match key.code {
@@ -1430,6 +1494,10 @@ impl ModernApp {
             KeyCode::Char('8') => {
                 self.ui.state = AppState::Settings;
             }
+            KeyCode::Char('9') => {
+                self.ui.state = AppState::Plugins;
+                self.fetch_plugins().await;
+            }
             // Tab - Cycle through states
             KeyCode::Tab => {
                 self.ui.state = match self.ui.state {
@@ -1440,7 +1508,8 @@ impl ModernApp {
                     AppState::Projects => AppState::Workflows,
                     AppState::Workflows => AppState::Secrets,
                     AppState::Secrets => AppState::Settings,
-                    AppState::Settings => AppState::Dashboard,
+                    AppState::Settings => AppState::Plugins,
+                    AppState::Plugins => AppState::Dashboard,
                     _ => AppState::Dashboard,
                 };
             }
@@ -1682,6 +1751,46 @@ impl ModernApp {
                     }
                 }
             }
+            KeyCode::Char('a') => {
+                // Plugins: approve the selected plugin (US-PLG-06)
+                if self.ui.state == AppState::Plugins {
+                    if let Some(entry) = self.plugins_list.get_selected().cloned() {
+                        let user_id = self.current_user_profile_id().await;
+                        match self
+                            .plugins
+                            .approve_plugin(&entry.manifest.id, &user_id)
+                            .await
+                        {
+                            Ok(()) => {
+                                self.status_message =
+                                    Some(format!("Approved {}", entry.manifest.id));
+                                self.fetch_plugins().await;
+                            }
+                            Err(e) => self.status_message = Some(format!("{}", e)),
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('e') => {
+                // Plugins: toggle enabled state (US-PLG-10)
+                if self.ui.state == AppState::Plugins {
+                    if let Some(entry) = self.plugins_list.get_selected().cloned() {
+                        match self
+                            .plugins
+                            .set_plugin_enabled(&entry.manifest.id, !entry.enabled)
+                            .await
+                        {
+                            Ok(()) => {
+                                let verb = if entry.enabled { "Disabled" } else { "Enabled" };
+                                self.status_message =
+                                    Some(format!("{} {}", verb, entry.manifest.id));
+                                self.fetch_plugins().await;
+                            }
+                            Err(e) => self.status_message = Some(format!("{}", e)),
+                        }
+                    }
+                }
+            }
             KeyCode::Char('R') => {
                 // Run with elevated privileges (sudo/doas/su)
                 if matches!(
@@ -1781,6 +1890,7 @@ impl ModernApp {
                 AppState::Projects => self.projects_list.select_previous(),
                 AppState::Workflows => self.workflows_list.select_previous(),
                 AppState::Secrets => self.secrets_list.select_previous(),
+                AppState::Plugins => self.plugins_list.select_previous(),
                 _ => {}
             },
             KeyCode::Down => match self.ui.state {
@@ -1790,6 +1900,7 @@ impl ModernApp {
                 AppState::Projects => self.projects_list.select_next(),
                 AppState::Workflows => self.workflows_list.select_next(),
                 AppState::Secrets => self.secrets_list.select_next(),
+                AppState::Plugins => self.plugins_list.select_next(),
                 _ => {}
             },
             KeyCode::PageUp => match self.ui.state {
@@ -1799,6 +1910,7 @@ impl ModernApp {
                 AppState::Projects => self.projects_list.previous_page(),
                 AppState::Workflows => self.workflows_list.previous_page(),
                 AppState::Secrets => self.secrets_list.previous_page(),
+                AppState::Plugins => self.plugins_list.previous_page(),
                 _ => {}
             },
             KeyCode::PageDown => match self.ui.state {
@@ -1808,6 +1920,7 @@ impl ModernApp {
                 AppState::Projects => self.projects_list.next_page(),
                 AppState::Workflows => self.workflows_list.next_page(),
                 AppState::Secrets => self.secrets_list.next_page(),
+                AppState::Plugins => self.plugins_list.next_page(),
                 _ => {}
             },
             KeyCode::Home => match self.ui.state {
@@ -1817,6 +1930,7 @@ impl ModernApp {
                 AppState::Projects => self.projects_list.selected = 0,
                 AppState::Workflows => self.workflows_list.selected = 0,
                 AppState::Secrets => self.secrets_list.selected = 0,
+                AppState::Plugins => self.plugins_list.selected = 0,
                 _ => {}
             },
             KeyCode::End => match self.ui.state {
@@ -1838,6 +1952,11 @@ impl ModernApp {
                 AppState::Secrets => {
                     if !self.secrets_list.items.is_empty() {
                         self.secrets_list.selected = self.secrets_list.items.len() - 1;
+                    }
+                }
+                AppState::Plugins => {
+                    if !self.plugins_list.items.is_empty() {
+                        self.plugins_list.selected = self.plugins_list.items.len() - 1;
                     }
                 }
                 _ => {}
@@ -2094,6 +2213,16 @@ impl ModernApp {
                 Style::default().fg(self.ui.theme.border),
             )),
             chunks[2],
+        );
+    }
+
+    fn render_plugins_list(&self, f: &mut Frame) {
+        self.render_list(
+            f,
+            "Plugins",
+            &self.plugins_list.items,
+            self.plugins_list.selected,
+            self.ui.theme.accent,
         );
     }
 
@@ -2421,7 +2550,7 @@ impl ModernApp {
     fn keybind_hints(&self) -> Vec<(&'static str, &'static str)> {
         match self.ui.state {
             AppState::Dashboard => vec![
-                ("1-8", "Tabs"),
+                ("1-9", "Tabs"),
                 ("f", "Fetch"),
                 ("p", "Processes"),
                 ("`", "New term"),
@@ -2469,6 +2598,13 @@ impl ModernApp {
                 ("c", "Copy"),
                 ("v", "Visual"),
                 ("/", "Find"),
+                ("?", "Keybinds"),
+                ("q", "Quit"),
+            ],
+            AppState::Plugins => vec![
+                ("\u{2191}\u{2193}", "Navigate"),
+                ("a", "Approve"),
+                ("e", "Enable/Off"),
                 ("?", "Keybinds"),
                 ("q", "Quit"),
             ],
@@ -4270,10 +4406,32 @@ impl ModernApp {
                     Some(&path.to_string_lossy()),
                 )
                 .await;
+                self.fire_project_created(&name, &path).await;
                 self.status_message = Some(format!("Registered {} - press O to open it", name));
                 let _ = self.fetch_projects().await;
             }
             Err(e) => self.status_message = Some(format!("{}", e)),
+        }
+    }
+
+    /// Fire the `project_created` event to all loaded plugins (US-PLG-09).
+    /// Payload: {name, path}. Hook errors are logged, never fatal.
+    async fn fire_project_created(&self, name: &str, path: &std::path::Path) {
+        let payload = serde_json::json!({
+            "name": name,
+            "path": path.to_string_lossy(),
+        });
+        let results = self.plugins.emit_event("project_created", &payload).await;
+        for (id, result) in results {
+            match result {
+                Ok(Some(msg)) => {
+                    tracing::info!(plugin = %id, message = %msg, "project_created hook ran");
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(plugin = %id, error = %e, "project_created hook failed");
+                }
+            }
         }
     }
 
@@ -4321,6 +4479,7 @@ impl ModernApp {
                     }
                 }
                 self.new_project_open = false;
+                self.fire_project_created(&name, &created.path).await;
                 self.status_message = Some(format!(
                     "\u{2713} Project '{}' created at {} \u{2014} press O to open it",
                     name,
@@ -5301,8 +5460,8 @@ impl ModernApp {
         lines.push(section("Global"));
         lines.push(row("Tab", "Switch tabs"));
         lines.push(row(
-            "1-8",
-            "Dashboard / Commands / Apps / Scripts / Projects / Workflows / Secrets / Settings",
+            "1-9",
+            "Dashboard / Commands / Apps / Scripts / Projects / Workflows / Secrets / Settings / Plugins",
         ));
         lines.push(row("`", "Open a new terminal window"));
         lines.push(row("/", "Fuzzy search in the current list"));
@@ -5345,6 +5504,11 @@ impl ModernApp {
         lines.push(section("Secrets"));
         lines.push(row("k", "Generate SSH / GPG key"));
         lines.push(row("c", "Copy (decrypts) secret value"));
+
+        lines.push(Line::from(""));
+        lines.push(section("Plugins"));
+        lines.push(row("a", "Approve the selected plugin (grant capabilities)"));
+        lines.push(row("e", "Enable / disable the selected plugin"));
 
         lines.push(Line::from(""));
         lines.push(section("Settings"));
