@@ -123,6 +123,22 @@ pub struct Secret {
     /// (key material etc. — passwords alone are not enough; US-SEC-05).
     #[sqlx(default)]
     pub requires_reauth: bool,
+    /// Optional group label, e.g. `github`, `servers` (US-SEC).
+    #[sqlx(default)]
+    pub secret_group: Option<String>,
+    #[sqlx(default)]
+    pub username: Option<String>,
+    #[sqlx(default)]
+    pub url: Option<String>,
+    #[sqlx(default)]
+    pub email: Option<String>,
+    /// When true the value is wrapped with the secret's own passphrase
+    /// (share_crypto) on top of the user-key encryption; every use re-asks.
+    #[sqlx(default)]
+    pub passphrase_protected: bool,
+    /// Offer this SSH key to ssh-agent on login (US-SEC).
+    #[sqlx(default)]
+    pub ssh_agent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -197,6 +213,16 @@ impl std::fmt::Display for Project {
 
 impl std::fmt::Display for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} ({})", self.name, self.user_id)
+        write!(f, "{}", self.name)?;
+        if let Some(g) = &self.secret_group {
+            write!(f, " [{}]", g)?;
+        }
+        if let Some(u) = &self.username {
+            write!(f, " ({})", u)?;
+        }
+        if self.passphrase_protected {
+            write!(f, " [locked]")?;
+        }
+        Ok(())
     }
 }

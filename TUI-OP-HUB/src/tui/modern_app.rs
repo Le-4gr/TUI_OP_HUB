@@ -161,6 +161,7 @@ pub struct ModernApp {
     import_input: Option<String>,
     register_input: Option<String>,
     plugins: Arc<crate::plugin::PluginManager>,
+    secret_pass_prompt: Option<(String, String)>,
     plugins_list: PluginsListState,
     workflow_form: WorkflowFormState,
     secret_form: SecretFormState,
@@ -292,6 +293,7 @@ impl ModernApp {
                 pool_for_plugins,
                 crate::plugin::PluginManager::default_dir(),
             )),
+            secret_pass_prompt: None,
             plugins_list: ListState::new(page_size),
             workflow_form: WorkflowFormState::default(),
             secret_form: SecretFormState::default(),
@@ -1287,6 +1289,22 @@ impl ModernApp {
             }
             return;
         }
+        if let Some((id, buf)) = self.secret_pass_prompt.as_mut() {
+            match key.code {
+                KeyCode::Esc => self.secret_pass_prompt = None,
+                KeyCode::Enter => {
+                    let (secret_id, pass) = (id.clone(), buf.clone());
+                    self.secret_pass_prompt = None;
+                    self.copy_secret_with_passphrase(&secret_id, &pass).await;
+                }
+                KeyCode::Backspace => {
+                    buf.pop();
+                }
+                KeyCode::Char(c) => buf.push(c),
+                _ => {}
+            }
+            return;
+        }
         if self.new_project_open {
             // The workspace creation form captures all keys (US-PROJ); without
             // this guard, typed characters leak into other handlers (e.g. `p`
@@ -1666,6 +1684,22 @@ impl ModernApp {
                             };
                         }
                     }
+                    AppState::Secrets => {
+                        let selected = self.secrets_list.get_selected().cloned();
+                        if let Some(secret) = selected {
+                            self.secret_form = SecretFormState {
+                                mode: Some(FormMode::Edit),
+                                name: secret.name.clone(),
+                                group: secret.secret_group.clone().unwrap_or_default(),
+                                username: secret.username.clone().unwrap_or_default(),
+                                url: secret.url.clone().unwrap_or_default(),
+                                email: secret.email.clone().unwrap_or_default(),
+                                ssh_agent: secret.ssh_agent,
+                                editing_id: Some(secret.id.clone()),
+                                ..Default::default()
+                            };
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1841,6 +1875,18 @@ impl ModernApp {
                             Err(e) => self.status_message = Some(format!("{}", e)),
                         }
                     }
+                }
+            }
+            KeyCode::Char('S') => {
+                // Secrets: offer all ssh-agent keys to the running agent (US-SEC)
+                if self.ui.state == AppState::Secrets {
+                    self.load_ssh_agent_keys().await;
+                }
+            }
+            KeyCode::Char('t') => {
+                // Secrets: open an ssh terminal for the selected key/host (US-SEC)
+                if self.ui.state == AppState::Secrets {
+                    self.open_ssh_terminal().await;
                 }
             }
             KeyCode::Char('R') => {
@@ -2033,6 +2079,9 @@ impl ModernApp {
                 self.ui.login_state.auth_success();
                 // Track the logged-in user for per-user secrets (US-SEC)
                 self.current_user_id = Some(self.ui.login_state.username.clone());
+
+                // Offer stored SSH keys to ssh-agent right after login (US-SEC)
+                self.load_ssh_agent_keys().await;
 
                 // Fetch dashboard statistics after successful login
                 if let Err(e) = self.fetch_stats().await {
@@ -3035,6 +3084,10 @@ impl ModernApp {
             KeyCode::BackTab | KeyCode::Up => {
                 self.secret_form.focused_field = cycle_field(field, SECRET_FORM_FIELDS, false);
             }
+            KeyCode::Char(' ') if field == 7 => {
+                // Toggle ssh-agent flag
+                self.secret_form.ssh_agent = !self.secret_form.ssh_agent;
+            }
             KeyCode::Backspace => match field {
                 0 => {
                     self.secret_form.name.pop();
@@ -3042,11 +3095,31 @@ impl ModernApp {
                 1 => {
                     self.secret_form.value.pop();
                 }
+                2 => {
+                    self.secret_form.group.pop();
+                }
+                3 => {
+                    self.secret_form.username.pop();
+                }
+                4 => {
+                    self.secret_form.url.pop();
+                }
+                5 => {
+                    self.secret_form.email.pop();
+                }
+                6 => {
+                    self.secret_form.passphrase.pop();
+                }
                 _ => {}
             },
             KeyCode::Char(c) => match field {
                 0 => self.secret_form.name.push(c),
                 1 => self.secret_form.value.push(c),
+                2 => self.secret_form.group.push(c),
+                3 => self.secret_form.username.push(c),
+                4 => self.secret_form.url.push(c),
+                5 => self.secret_form.email.push(c),
+                6 => self.secret_form.passphrase.push(c),
                 _ => {}
             },
             _ => {}
@@ -3065,17 +3138,56 @@ impl ModernApp {
             return;
         }
         let user_id = self.current_user_profile_id().await;
-        let value_enc =
-            match secrets::encrypt_for_user(&*self.pool, &user_id, &self.secret_form.value).await {
-                Ok(enc) => enc,
+        // Optional passphrase layer: value -> passphrase wrap -> user key
+        let mut passphrase_used = false;
+        let plaintext = if self.secret_form.passphrase.is_empty() {
+            self.secret_form.value.clone()
+        } else {
+            passphrase_used = true;
+            match secrets::wrap_with_passphrase(
+                &self.secret_form.value,
+                &self.secret_form.passphrase,
+            ) {
+                Ok(wrapped) => {
+                    self.secret_form.value.clear();
+                    self.secret_form.passphrase.clear();
+                    wrapped
+                }
                 Err(e) => {
-                    self.secret_form.error_message = Some(format!("Encryption failed: {}", e));
+                    self.secret_form.error_message = Some(format!("Passphrase wrap failed: {}", e));
                     return;
                 }
-            };
+            }
+        };
+        let value_enc = match secrets::encrypt_for_user(&*self.pool, &user_id, &plaintext).await {
+            Ok(enc) => enc,
+            Err(e) => {
+                self.secret_form.error_message = Some(format!("Encryption failed: {}", e));
+                return;
+            }
+        };
+        let meta = repository::SecretMeta {
+            secret_group: some_if_not_empty(&self.secret_form.group),
+            username: some_if_not_empty(&self.secret_form.username),
+            url: some_if_not_empty(&self.secret_form.url),
+            email: some_if_not_empty(&self.secret_form.email),
+            passphrase_protected: passphrase_used,
+            ssh_agent: self.secret_form.ssh_agent,
+        };
         let result = match self.secret_form.editing_id.clone() {
-            Some(id) => repository::update_secret(&*self.pool, &id, &value_enc).await,
-            None => repository::create_secret(&*self.pool, &user_id, &name, &value_enc).await,
+            Some(id) => repository::update_secret_meta(&*self.pool, &id, &value_enc, &meta).await,
+            None => {
+                repository::create_secret_meta(
+                    &*self.pool,
+                    &user_id,
+                    &name,
+                    &value_enc,
+                    "password",
+                    false,
+                    &meta,
+                )
+                .await
+            }
         };
         match result {
             Ok(_) => {
@@ -3824,7 +3936,7 @@ impl ModernApp {
     }
 
     fn render_secret_form(&self, f: &mut Frame) {
-        let area = self.centered_rect(60, 12, f);
+        let area = self.centered_rect(64, 26, f);
         f.render_widget(Clear, area);
         let mode_label = if self.secret_form.editing_id.is_some() {
             "Edit"
@@ -3846,6 +3958,12 @@ impl ModernApp {
             .constraints([
                 Constraint::Length(3), // Name
                 Constraint::Length(3), // Value (masked)
+                Constraint::Length(3), // Group
+                Constraint::Length(3), // Username
+                Constraint::Length(3), // URL
+                Constraint::Length(3), // Email
+                Constraint::Length(3), // Passphrase (masked)
+                Constraint::Length(1), // SSH-agent flag
                 Constraint::Length(1), // Help/error
             ])
             .split(inner);
@@ -3867,11 +3985,69 @@ impl ModernApp {
             field == 1,
             true,
         );
+        self.render_field(
+            f,
+            chunks[2],
+            "Group (e.g. github, servers)",
+            &self.secret_form.group,
+            field == 2,
+            false,
+        );
+        self.render_field(
+            f,
+            chunks[3],
+            "Username",
+            &self.secret_form.username,
+            field == 3,
+            false,
+        );
+        self.render_field(
+            f,
+            chunks[4],
+            "URL",
+            &self.secret_form.url,
+            field == 4,
+            false,
+        );
+        self.render_field(
+            f,
+            chunks[5],
+            "Email",
+            &self.secret_form.email,
+            field == 5,
+            false,
+        );
+        self.render_field(
+            f,
+            chunks[6],
+            "Passphrase (extra layer; empty = none)",
+            &self.secret_form.passphrase,
+            field == 6,
+            true,
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                format!(
+                    "ssh-agent: {} (Space toggles)",
+                    if self.secret_form.ssh_agent {
+                        "ON"
+                    } else {
+                        "off"
+                    }
+                ),
+                Style::default().fg(if self.secret_form.ssh_agent {
+                    self.ui.theme.success
+                } else {
+                    self.ui.theme.border
+                }),
+            )])),
+            chunks[7],
+        );
         let help = self.form_help_line(
             self.secret_form.error_message.as_ref(),
-            "Encrypted with XChaCha20Poly1305 before storage · Ctrl+S: save · Esc: cancel",
+            "XChaCha20Poly1305-encrypted · passphrase adds a 2nd layer · Space: toggle ssh-agent · Ctrl+S: save · Esc: cancel",
         );
-        f.render_widget(Paragraph::new(help).alignment(Alignment::Center), chunks[2]);
+        f.render_widget(Paragraph::new(help).alignment(Alignment::Center), chunks[8]);
     }
 
     fn render_confirm_delete(&self, f: &mut Frame, confirm: &ConfirmDelete) {
@@ -4463,6 +4639,126 @@ impl ModernApp {
                 let _ = self.fetch_projects().await;
             }
             Err(e) => self.status_message = Some(format!("{}", e)),
+        }
+    }
+
+    /// Decrypt + offer every ssh_agent-flagged SSH key to ssh-agent (US-SEC).
+    /// Passphrase-protected keys are skipped (no interactive prompt here);
+    /// use `t` to open an ssh terminal with those.
+    async fn load_ssh_agent_keys(&mut self) {
+        let user_id = self.current_user_profile_id().await;
+        let Ok(all) = repository::list_secrets(&*self.pool, &user_id).await else {
+            return;
+        };
+        let mut added = 0;
+        let mut skipped = 0;
+        for secret in all
+            .iter()
+            .filter(|s| s.ssh_agent && s.secret_kind == "ssh_key")
+        {
+            if secret.passphrase_protected {
+                skipped += 1;
+                continue;
+            }
+            match secrets::decrypt_for_user(&*self.pool, &user_id, &secret.value_enc).await {
+                Ok(pem) => match secrets::ssh_agent::add_key_to_agent(&secret.name, &pem) {
+                    Ok(()) => added += 1,
+                    Err(e) => {
+                        self.status_message = Some(format!("{}", e));
+                    }
+                },
+                Err(e) => self.status_message = Some(format!("{}", e)),
+            }
+        }
+        self.status_message = Some(format!(
+            "ssh-agent: {} key(s) added (passphrase-locked skipped)",
+            added
+        ));
+    }
+
+    /// Open an SSH terminal for the selected secret (US-SEC): uses the stored
+    /// SSH key (ssh_agent flag) and connects to `url` as `user@host`.
+    async fn open_ssh_terminal(&mut self) {
+        let Some(secret) = self.secrets_list.get_selected().cloned() else {
+            self.status_message = Some("Nothing selected".to_string());
+            return;
+        };
+        let Some(host) = secret.url.clone().filter(|u| !u.trim().is_empty()) else {
+            self.status_message = Some("No host set (edit the secret, fill URL)".to_string());
+            return;
+        };
+        if secret.passphrase_protected {
+            self.status_message =
+                Some("Secret is passphrase-locked; use S (agent) instead".to_string());
+            return;
+        }
+        let user_id = self.current_user_profile_id().await;
+        let pem = match secrets::decrypt_for_user(&*self.pool, &user_id, &secret.value_enc).await {
+            Ok(p) => p,
+            Err(e) => {
+                self.status_message = Some(format!("Decrypt failed: {}", e));
+                return;
+            }
+        };
+        // Materialize the private key at a 0600 temp path for the session
+        let key_file =
+            std::env::temp_dir().join(format!("tui-op-hub-ssh-{}.pem", std::process::id()));
+        if std::fs::write(&key_file, &pem).is_err() {
+            self.status_message = Some("Failed to write temp key".to_string());
+            return;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600));
+        }
+        let ssh_cmd = format!(
+            "ssh -i {} -o StrictHostKeyChecking=accept-new {}",
+            key_file.display(),
+            host.trim()
+        );
+        // Suspend the TUI, run the interactive ssh session, restore
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+        let _ = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&ssh_cmd)
+            .status()
+            .await;
+        let _ = std::fs::remove_file(&key_file);
+        let _ = crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen);
+        let _ = crossterm::terminal::enable_raw_mode();
+        self.needs_full_redraw = true;
+        self.status_message = Some(format!("ssh session ended ({})", host.trim()));
+    }
+
+    /// Copy a passphrase-protected secret: unwrap the passphrase layer, then
+    /// the user-key layer, and put the plaintext on the clipboard.
+    async fn copy_secret_with_passphrase(&mut self, secret_id: &str, passphrase: &str) {
+        let Ok(secret) = repository::get_secret(&*self.pool, secret_id).await else {
+            self.status_message = Some("Secret not found".to_string());
+            return;
+        };
+        let user_id = self.current_user_profile_id().await;
+        let value = match secrets::decrypt_for_user(&*self.pool, &user_id, &secret.value_enc).await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                self.status_message = Some(format!("Decrypt failed: {}", e));
+                return;
+            }
+        };
+        match secrets::unwrap_with_passphrase(&value, passphrase) {
+            Ok(plaintext) => match arboard::Clipboard::new() {
+                Ok(mut cb) => {
+                    let _ = cb.set_text(plaintext);
+                    self.status_message = Some("Copied to clipboard".to_string());
+                }
+                Err(e) => self.status_message = Some(format!("Clipboard unavailable: {}", e)),
+            },
+            Err(_) => {
+                self.status_message = Some("Wrong passphrase".to_string());
+            }
         }
     }
 
@@ -5452,6 +5748,16 @@ fn expand_tilde(path: &str) -> String {
         }
     }
     path.to_string()
+}
+
+/// `Some(s)` when `s` is non-empty (after trim), else `None`.
+fn some_if_not_empty(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
 }
 
 fn dirs_home() -> std::path::PathBuf {

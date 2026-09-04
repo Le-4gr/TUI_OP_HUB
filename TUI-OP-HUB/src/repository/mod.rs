@@ -303,6 +303,74 @@ pub async fn create_secret_full(
         .map_err(AppError::Database)
 }
 
+/// Secret metadata columns shared by create/update (US-SEC).
+pub struct SecretMeta {
+    pub secret_group: Option<String>,
+    pub username: Option<String>,
+    pub url: Option<String>,
+    pub email: Option<String>,
+    pub passphrase_protected: bool,
+    pub ssh_agent: bool,
+}
+
+/// Create a secret with full metadata (US-SEC).
+pub async fn create_secret_meta(
+    pool: &SqlitePool,
+    user_id: &str,
+    name: &str,
+    value_enc: &str,
+    secret_kind: &str,
+    requires_reauth: bool,
+    meta: &SecretMeta,
+) -> AppResult<crate::models::Secret> {
+    let id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO secrets (id, user_id, name, value_enc, secret_kind, requires_reauth, secret_group, username, url, email, passphrase_protected, ssh_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(user_id)
+    .bind(name)
+    .bind(value_enc)
+    .bind(secret_kind)
+    .bind(if requires_reauth { 1 } else { 0 })
+    .bind(&meta.secret_group)
+    .bind(&meta.username)
+    .bind(&meta.url)
+    .bind(&meta.email)
+    .bind(meta.passphrase_protected as i32)
+    .bind(meta.ssh_agent as i32)
+    .execute(pool)
+    .await?;
+    sqlx::query_as::<_, crate::models::Secret>("SELECT * FROM secrets WHERE id = ?")
+        .bind(&id)
+        .fetch_one(pool)
+        .await
+        .map_err(AppError::Database)
+}
+
+/// Update a secret value + metadata (US-SEC).
+pub async fn update_secret_meta(
+    pool: &SqlitePool,
+    id: &str,
+    value_enc: &str,
+    meta: &SecretMeta,
+) -> AppResult<crate::models::Secret> {
+    sqlx::query(
+        "UPDATE secrets SET value_enc = ?, secret_group = ?, username = ?, url = ?, email = ?, passphrase_protected = ?, ssh_agent = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(value_enc)
+    .bind(&meta.secret_group)
+    .bind(&meta.username)
+    .bind(&meta.url)
+    .bind(&meta.email)
+    .bind(meta.passphrase_protected as i32)
+    .bind(meta.ssh_agent as i32)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    get_secret(pool, id).await
+}
+
 pub async fn get_secret(pool: &SqlitePool, id: &str) -> AppResult<crate::models::Secret> {
     sqlx::query_as::<_, crate::models::Secret>("SELECT * FROM secrets WHERE id = ?")
         .bind(id)

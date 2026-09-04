@@ -7,6 +7,18 @@
 
 ## 🎯 Session 16 (current): terminal fix, visible search bar, import/export TUI, keybinds update
 
+> **Update 9 (same session):** Secrets v2 (US-SEC). Migration 0007 adds `secret_group`,
+> `username`, `url`, `email`, `passphrase_protected`, `ssh_agent` to secrets. The secret
+> form grew to 8 fields (name, value, group, username, url, email, passphrase, ssh-agent
+> toggle via Space). Passphrase-protected secrets are double-encrypted (passphrase layer
+> via share_crypto Argon2+XChaCha, then the user-key layer); copy prompts for the
+> passphrase in a popup and reports wrong passphrases. ssh-agent integration: `S` on
+> Secrets offers all flagged ssh_key secrets to the running agent (starting one if needed),
+> keys auto-load after login; `t` opens an ssh terminal to `url` using the stored key
+> (temp 0600 keyfile, cleaned up after). Secrets list shows group + username + [locked].
+> Tests: +3 passphrase round-trip unit tests, +1 ssh-agent test, +1 repo meta round trip
+> (via existing suites). 143 lib + 43 BDD = 186 pass.
+
 > **Update 8 (same session):** Digits 1-9 now switch tabs from ANY screen (US-APP-02).
 > Root cause of "stuck in Settings": the Settings/Advanced screens repurposed the digits
 > as vim-style numpad navigation (2=down, 8=up, 1/3=end, 7/9=home, 4/6=cycle theme), so

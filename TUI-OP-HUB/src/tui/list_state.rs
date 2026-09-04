@@ -165,14 +165,23 @@ pub const WORKFLOW_FORM_FIELDS: usize = 3;
 pub struct SecretFormState {
     pub name: String,
     pub value: String,
+    /// Group label, e.g. `github`, `servers` (US-SEC).
+    pub group: String,
+    pub username: String,
+    pub url: String,
+    pub email: String,
+    /// When non-empty, the value is wrapped with this passphrase on save.
+    pub passphrase: String,
+    /// Offer the secret (SSH keys) to ssh-agent.
+    pub ssh_agent: bool,
     pub focused_field: usize,
     pub mode: Option<FormMode>,
     pub editing_id: Option<String>,
     pub error_message: Option<String>,
 }
 
-/// Fields: Name, Value
-pub const SECRET_FORM_FIELDS: usize = 2;
+/// Fields: Name, Value, Group, Username, URL, Email, Passphrase, SSH-agent
+pub const SECRET_FORM_FIELDS: usize = 8;
 
 /// A single step in the visual workflow builder, backed by a saved command/script entity.
 #[derive(Debug, Clone)]
@@ -680,7 +689,7 @@ mod tests {
         assert_eq!(COMMAND_FORM_FIELDS, 5);
         assert_eq!(PROJECT_FORM_FIELDS, 2);
         assert_eq!(WORKFLOW_FORM_FIELDS, 3);
-        assert_eq!(SECRET_FORM_FIELDS, 2);
+        assert_eq!(SECRET_FORM_FIELDS, 8);
     }
 
     // ── Advanced settings state (visual config) ─────────────────────────────
