@@ -52,8 +52,9 @@ A bundle is one portable JSON file:
 Press **`x`** on the Commands/Apps/Scripts/Workflows/Secrets tab:
 
 1. A **save-path popup** opens, pre-filled with `~/tui-op-hub-export.json`
-2. **`Ctrl+O`** opens a **file/directory picker** — yazi, nnn, ranger, lf, then
-   GUI dialogs (zenity/kdialog), in that order, first installed wins
+2. **`Ctrl+O`** opens a **file/directory picker** — **yazi first** if installed,
+   otherwise nnn / ranger / lf; GUI dialogs (zenity/kdialog) only as a last resort.
+   Cancelling a picker (`q`) closes it — no other manager opens afterward
 3. Edit the path or accept it, press **`Enter`** — secrets are always excluded
 
 Over the API: `curl -s http://127.0.0.1:3001/export -o bundle.json`

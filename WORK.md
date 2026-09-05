@@ -7,6 +7,16 @@
 
 ## 🎯 Session 16 — COMPLETE SESSION SUMMARY (all work in this chat)
 
+> **Update 12 (same session):** Picker fixes + code-base slimming. Picker chain no longer
+> falls through after a backend runs — quitting yazi with `q` closes the picker instead of
+> opening dolphin/zenity (cancelled = stop; only failed-to-start moves to the next backend).
+> GUI dialogs (zenity/kdialog) now run exactly once capturing stdout (previously ran twice).
+> Blackscreen after yazi fixed: callers set needs_full_redraw after suspended pickers.
+> Reorganised: free helpers (default_bundle_path, expand_tilde, humans, some_if_not_empty,
+> TERMINAL_EMULATORS, terminal_window_command/_for, which_program) extracted to the new
+> `src/tui/helpers.rs`; dead `new_project_git_name` removed; duplicate default_import/_export
+> paths consolidated into default_bundle_path. modern_app.rs 7421 -> 7276 lines. 194 pass.
+
 > **Update 11 (same session):** File pickers + duplicate strategies (US-CMD-01).
 > New `src/filepicker.rs`: picker chain yazi (--chooser-file) -> nnn (-p) -> ranger
 > (--choosefile/--choosedir) -> lf -> zenity -> kdialog, running TUI pickers suspended

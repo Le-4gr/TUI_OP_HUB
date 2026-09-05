@@ -123,25 +123,40 @@ pub fn pick(kind: PickKind) -> AppResult<Option<PathBuf>> {
         let args = backend.args(kind, &out_file);
         let suspend = backend.needs_terminal_suspension();
 
-        if suspend {
+        // TUI pickers: suspend our terminal, run, restore.
+        // GUI dialogs: run ONCE capturing stdout (no terminal dance).
+        let run_result = if suspend {
             let _ = crossterm::terminal::disable_raw_mode();
             let _ =
                 crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen);
-        }
-        let status = std::process::Command::new(backend.program())
-            .args(&args)
-            .status();
-        if suspend {
+            let res = std::process::Command::new(backend.program())
+                .args(&args)
+                .status();
             let _ =
                 crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen);
             let _ = crossterm::terminal::enable_raw_mode();
-        }
+            res.map(|st| (st, None))
+        } else {
+            std::process::Command::new(backend.program())
+                .args(&args)
+                .output()
+                .map(|out| {
+                    (
+                        out.status,
+                        Some(String::from_utf8_lossy(&out.stdout).trim().to_string()),
+                    )
+                })
+        };
 
-        let Ok(status) = status else {
+        let Ok((status, stdout_choice)) = run_result else {
             continue; // picker failed to start, try the next one
         };
         if !status.success() {
-            continue; // user cancelled or picker errored
+            // The backend RAN but the user cancelled/errored: do NOT fall
+            // through to other backends (that is how a second dialog would
+            // open after quitting yazi with `q`).
+            let _ = std::fs::remove_file(&out_file);
+            return Ok(None);
         }
 
         let chosen = if backend.uses_out_file() {
@@ -149,22 +164,12 @@ pub fn pick(kind: PickKind) -> AppResult<Option<PathBuf>> {
                 .ok()
                 .map(|s| s.trim().to_string())
         } else {
-            // GUI dialogs print the path on stdout \u2014 but we captured nothing;
-            // instead redirect: for GUI backends we re-run capturing stdout.
-            let out = std::process::Command::new(backend.program())
-                .args(&args)
-                .output()
-                .map_err(|e| AppError::Io(e))?;
-            if out.status.success() {
-                Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-            } else {
-                None
-            }
+            stdout_choice
         };
 
         let _ = std::fs::remove_file(&out_file);
         let Some(chosen) = chosen.filter(|s| !s.is_empty()) else {
-            continue; // cancelled
+            return Ok(None); // ran fine but nothing chosen: user cancelled
         };
         let path = PathBuf::from(chosen);
         // lf in directory mode returns the dir; yazi/nnn return a file whose

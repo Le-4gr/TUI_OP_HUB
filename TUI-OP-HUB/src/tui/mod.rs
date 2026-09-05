@@ -3,6 +3,7 @@
 //! Covers: US-TUI-01..10, US-CMD-01..09, US-PROJ-01..07, US-SRCH-01..04,
 //! US-NF-10, US-DEP-02, US-APP-01..02.
 
+pub mod helpers;
 pub mod list_state;
 pub mod login_view;
 pub mod modern_app;
