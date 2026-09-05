@@ -7,6 +7,19 @@
 
 ## 🎯 Session 16 — COMPLETE SESSION SUMMARY (all work in this chat)
 
+> **Update 11 (same session):** File pickers + duplicate strategies (US-CMD-01).
+> New `src/filepicker.rs`: picker chain yazi (--chooser-file) -> nnn (-p) -> ranger
+> (--choosefile/--choosedir) -> lf -> zenity -> kdialog, running TUI pickers suspended
+> (raw mode off, alt screen left, restored after). Import popup: Ctrl+O opens the picker,
+> Ctrl+D cycles the duplicate strategy (skip/overwrite/rename) shown live in the popup;
+> share.rs gained DuplicateMode + ImportReport {imported, skipped, overwritten, renamed}
+> and import_knowledge_with_mode (rename produces -imported suffixed names, children
+> follow renamed parents); API POST /import?duplicates=overwrite|rename|skip. Export: `x`
+> opens a save-path popup with Ctrl+O directory picker, Enter writes the bundle. Docs:
+> IMPORT_EXPORT.md rewritten with a strict copy-paste LLM prompt + validation checklist +
+> duplicate docs. Tests: +3 picker unit tests, +2 BDD (overwrite replaces local, rename
+> creates -imported copy). 149 lib + 45 BDD = 194 pass.
+
 > **Update 10 (same session):** Dashboard mini-btop monitor + quick launches (US-PROC-01).
 > New `src/monitor.rs`: persistent sysinfo state; snapshot = CPU overall + per-core usage,
 > RAM/swap, physical network interfaces with live RX/TX rates (docker bridges, veth pairs,

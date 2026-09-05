@@ -584,15 +584,24 @@ async fn export_handler(
 /// object with only an `entities` array (see `share::bundle_from_json`).
 async fn import_handler(
     State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
     body: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, String> {
     let text =
         String::from_utf8(body.to_vec()).map_err(|_| "body is not valid UTF-8".to_string())?;
     let bundle = crate::share::bundle_from_json(&text).map_err(|e| e.to_string())?;
-    let (imported, skipped) = crate::share::import_knowledge(&state.pool, &bundle)
+    let mode = query
+        .get("duplicates")
+        .and_then(|d| crate::share::DuplicateMode::from_str(d))
+        .unwrap_or_default();
+    let report = crate::share::import_knowledge_with_mode(&state.pool, &bundle, mode)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(Json(
-        serde_json::json!({ "imported": imported, "skipped": skipped }),
-    ))
+    Ok(Json(serde_json::json!({
+        "imported": report.imported,
+        "skipped": report.skipped,
+        "overwritten": report.overwritten,
+        "renamed": report.renamed,
+        "duplicates": mode.as_str(),
+    })))
 }

@@ -1602,3 +1602,103 @@ async fn given_git_automation_mod_when_project_created_then_hook_runs_git() {
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+/// Scenario: overwrite mode replaces local duplicates
+/// Given a local entity and a bundle with the same (name, type) but different
+/// content, when imported with Overwrite, then the local entity is replaced.
+#[tokio::test]
+async fn given_duplicate_when_imported_with_overwrite_then_local_replaced() {
+    let pool = given_fresh_database().await;
+    repository::create_entity(
+        &pool,
+        &CreateEntity {
+            name: "svc token".to_string(),
+            description: None,
+            content: Some("OLD".to_string()),
+            type_id: "cmd".to_string(),
+            project_id: None,
+            tags: None,
+            metadata_json: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let bundle = share::KnowledgeBundle {
+        version: 1,
+        exported_at: "2026-01-01T00:00:00Z".to_string(),
+        entities: vec![share::SharedEntity {
+            name: "svc token".to_string(),
+            type_id: "cmd".to_string(),
+            description: None,
+            content: Some("NEW".to_string()),
+            parent: None,
+        }],
+        secrets: vec![],
+        secret_mode: "excluded".to_string(),
+    };
+
+    let report = share::import_knowledge_with_mode(&pool, &bundle, share::DuplicateMode::Overwrite)
+        .await
+        .unwrap();
+    assert_eq!(report.overwritten, 1);
+    assert_eq!(report.imported, 0);
+
+    let items = repository::list_entities(&pool, Some("cmd"), None)
+        .await
+        .unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].content.as_deref(), Some("NEW"));
+}
+
+/// Scenario: rename mode imports duplicates under -imported names
+/// Given a local entity and a conflicting bundle, when imported with Rename,
+/// then the incoming entity lands as `<name>-imported` and both exist.
+#[tokio::test]
+async fn given_duplicate_when_imported_with_rename_then_suffixed_copy_created() {
+    let pool = given_fresh_database().await;
+    repository::create_entity(
+        &pool,
+        &CreateEntity {
+            name: "deploy".to_string(),
+            description: None,
+            content: Some("LOCAL".to_string()),
+            type_id: "cmd".to_string(),
+            project_id: None,
+            tags: None,
+            metadata_json: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let bundle = share::KnowledgeBundle {
+        version: 1,
+        exported_at: "2026-01-01T00:00:00Z".to_string(),
+        entities: vec![share::SharedEntity {
+            name: "deploy".to_string(),
+            type_id: "cmd".to_string(),
+            description: None,
+            content: Some("INCOMING".to_string()),
+            parent: None,
+        }],
+        secrets: vec![],
+        secret_mode: "excluded".to_string(),
+    };
+
+    let report = share::import_knowledge_with_mode(&pool, &bundle, share::DuplicateMode::Rename)
+        .await
+        .unwrap();
+    assert_eq!(report.renamed, 1);
+
+    let items = repository::list_entities(&pool, Some("cmd"), None)
+        .await
+        .unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(items
+        .iter()
+        .any(|e| e.name == "deploy" && e.content.as_deref() == Some("LOCAL")));
+    assert!(items
+        .iter()
+        .any(|e| e.name == "deploy-imported" && e.content.as_deref() == Some("INCOMING")));
+}

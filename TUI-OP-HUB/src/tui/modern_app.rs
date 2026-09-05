@@ -159,6 +159,8 @@ pub struct ModernApp {
     project_detail: Option<ProjectDetailState>,
     cron_input: Option<String>,
     import_input: Option<String>,
+    import_dup_mode: crate::share::DuplicateMode,
+    export_input: Option<String>,
     register_input: Option<String>,
     plugins: Arc<crate::plugin::PluginManager>,
     secret_pass_prompt: Option<(String, String)>,
@@ -292,6 +294,8 @@ impl ModernApp {
             project_detail: None,
             cron_input: None,
             import_input: None,
+            import_dup_mode: crate::share::DuplicateMode::default(),
+            export_input: None,
             register_input: None,
             plugins: Arc::new(crate::plugin::PluginManager::new(
                 pool_for_plugins,
@@ -1561,7 +1565,62 @@ impl ModernApp {
             }
             return;
         }
+        if let Some(path) = self.export_input.as_mut() {
+            if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                // System directory picker (yazi / nnn / ranger / lf / zenity / kdialog)
+                let picked = crate::filepicker::pick(crate::filepicker::PickKind::Directory);
+                match picked {
+                    Ok(Some(dir)) => {
+                        let name = path
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or("tui-op-hub-export.json")
+                            .to_string();
+                        *path = dir.join(name).to_string_lossy().to_string();
+                    }
+                    Ok(None) => {
+                        self.status_message =
+                            Some(String::from("No picker available - type the path"));
+                    }
+                    Err(e) => self.status_message = Some(format!("{}", e)),
+                }
+                return;
+            }
+            match key.code {
+                KeyCode::Esc => {
+                    self.export_input = None;
+                }
+                KeyCode::Enter => {
+                    let target = path.clone();
+                    self.export_input = None;
+                    self.export_knowledge_to_path(&target).await;
+                }
+                KeyCode::Backspace => {
+                    path.pop();
+                }
+                KeyCode::Char(c) => path.push(c),
+                _ => {}
+            }
+            return;
+        }
         if let Some(path) = self.import_input.as_mut() {
+            if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                self.import_dup_mode = self.import_dup_mode.next();
+                return;
+            }
+            if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                // System file picker (yazi / nnn / ranger / lf / zenity / kdialog)
+                let picked = crate::filepicker::pick(crate::filepicker::PickKind::File);
+                match picked {
+                    Ok(Some(p)) => *path = p.to_string_lossy().to_string(),
+                    Ok(None) => {
+                        self.status_message =
+                            Some(String::from("No file picker available - type the path"));
+                    }
+                    Err(e) => self.status_message = Some(format!("{}", e)),
+                }
+                return;
+            }
             match key.code {
                 KeyCode::Esc => {
                     self.import_input = None;
@@ -1569,7 +1628,8 @@ impl ModernApp {
                 KeyCode::Enter => {
                     let entered = path.clone();
                     self.import_input = None;
-                    self.import_knowledge_from_path(&entered).await;
+                    let mode = self.import_dup_mode;
+                    self.import_knowledge_from_path(&entered, mode).await;
                 }
                 KeyCode::Backspace => {
                     path.pop();
@@ -1999,7 +2059,7 @@ impl ModernApp {
                 }
             }
             KeyCode::Char('x') => {
-                // Export knowledge base to JSON (US-CMD-01, sharing)
+                // Export knowledge base to a chosen path (US-CMD-01, sharing)
                 if matches!(
                     self.ui.state,
                     AppState::Commands
@@ -2008,7 +2068,7 @@ impl ModernApp {
                         | AppState::Workflows
                         | AppState::Secrets
                 ) {
-                    self.export_knowledge_base().await;
+                    self.export_input = Some(default_export_path());
                 }
             }
             KeyCode::Char('I') => {
@@ -2451,7 +2511,10 @@ impl ModernApp {
         f.render_widget(Paragraph::new(format!("{}\u{2588}", value)), rows[0]);
         f.render_widget(
             Paragraph::new(Span::styled(
-                "~ expands to $HOME  |  bundle, entity array or {entities:[...]}  |  Enter: import \u{b7} Esc: cancel",
+                format!(
+                    "~ = $HOME | Ctrl+O: picker | duplicates: {} | Enter: import \u{b7} Esc: cancel",
+                    self.import_dup_mode.as_str()
+                ),
                 Style::default().fg(self.ui.theme.border),
             )),
             rows[1],
@@ -2752,7 +2815,11 @@ impl ModernApp {
 
     /// Import a knowledge bundle from the path typed in the popup.
     /// Accepts full bundles, bare entity arrays and `entities`-only objects.
-    async fn import_knowledge_from_path(&mut self, entered: &str) {
+    async fn import_knowledge_from_path(
+        &mut self,
+        entered: &str,
+        mode: crate::share::DuplicateMode,
+    ) {
         let expanded = expand_tilde(entered);
         let path = std::path::PathBuf::from(expanded);
         if !path.exists() {
@@ -2773,24 +2840,28 @@ impl ModernApp {
                 return;
             }
         };
-        match crate::share::import_knowledge(&*self.pool, &bundle).await {
-            Ok((imported, skipped)) => {
+        match crate::share::import_knowledge_with_mode(&*self.pool, &bundle, mode).await {
+            Ok(report) => {
                 self.status_message = Some(format!(
-                    "\u{2713} Imported {} entities ({} skipped) from {}",
-                    imported,
-                    skipped,
+                    "✓ Imported {} ({} skipped, {} overwritten, {} renamed) from {}",
+                    report.imported,
+                    report.skipped,
+                    report.overwritten,
+                    report.renamed,
                     path.display()
                 ));
                 let _ = self.fetch_stats().await;
                 self.refresh_current_tab().await;
             }
-            Err(e) => self.status_message = Some(format!("\u{2717} Import failed: {}", e)),
+            Err(e) => self.status_message = Some(format!("✗ Import failed: {}", e)),
         }
     }
 
-    /// Export the knowledge base to `~/tui-op-hub-export.json`.
-    /// Excludes secrets by default for safety.
-    async fn export_knowledge_base(&mut self) {
+    /// Export the knowledge base to the chosen path (secrets excluded).
+    async fn export_knowledge_to_path(&mut self, entered: &str) {
+        let expanded = expand_tilde(entered);
+        let path = std::path::PathBuf::from(expanded.clone());
+        let user_id = self.current_user_profile_id().await;
         let user_id = self.current_user_profile_id().await;
         let bundle = match crate::share::export_knowledge(
             &*self.pool,
@@ -2813,7 +2884,7 @@ impl ModernApp {
                 return;
             }
         };
-        let path = dirs_home().join("tui-op-hub-export.json");
+        let path = std::path::PathBuf::from(expanded);
         match std::fs::write(&path, &json) {
             Ok(()) => {
                 self.status_message = Some(format!(
@@ -5981,6 +6052,11 @@ where
 
 /// Index of a theme preset name (unknown names map to the first preset).
 /// The pre-filled path for the import popup.
+fn default_export_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    format!("{home}/tui-op-hub-export.json")
+}
+
 fn default_import_path() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     format!("{home}/tui-op-hub-export.json")

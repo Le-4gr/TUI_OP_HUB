@@ -181,72 +181,222 @@ pub async fn export_knowledge(
     })
 }
 
-/// Import a bundle: merge entities by (name, type) — existing entries win so
-/// local edits are never overwritten. Returns (imported, skipped) counts.
+/// How to handle entities whose (name, type) already exists locally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DuplicateMode {
+    /// Keep the local version, ignore the incoming one (safest, default).
+    #[default]
+    Skip,
+    /// Replace the local version with the incoming one.
+    Overwrite,
+    /// Import the incoming entity under a `-imported` suffixed name.
+    Rename,
+}
+
+impl DuplicateMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DuplicateMode::Skip => "skip",
+            DuplicateMode::Overwrite => "overwrite",
+            DuplicateMode::Rename => "rename",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            DuplicateMode::Skip => DuplicateMode::Overwrite,
+            DuplicateMode::Overwrite => DuplicateMode::Rename,
+            DuplicateMode::Rename => DuplicateMode::Skip,
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "skip" => Some(DuplicateMode::Skip),
+            "overwrite" => Some(DuplicateMode::Overwrite),
+            "rename" => Some(DuplicateMode::Rename),
+            _ => None,
+        }
+    }
+}
+
+/// Result of an import run.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ImportReport {
+    pub imported: usize,
+    pub skipped: usize,
+    pub overwritten: usize,
+    pub renamed: usize,
+}
+
+/// Import a bundle (skip-duplicates default) — legacy wrapper.
 pub async fn import_knowledge(
     pool: &SqlitePool,
     bundle: &KnowledgeBundle,
 ) -> AppResult<(usize, usize)> {
-    let mut imported = 0usize;
-    let mut skipped = 0usize;
+    let report = import_knowledge_with_mode(pool, bundle, DuplicateMode::Skip).await?;
+    Ok((report.imported, report.skipped))
+}
+
+/// Import a bundle with an explicit duplicate strategy (US-CMD-01).
+/// Merge key is (name, type); children attach to parents by name.
+pub async fn import_knowledge_with_mode(
+    pool: &SqlitePool,
+    bundle: &KnowledgeBundle,
+    mode: DuplicateMode,
+) -> AppResult<ImportReport> {
+    let mut report = ImportReport::default();
 
     // Pass 1: top-level entities
     for item in bundle.entities.iter().filter(|e| e.parent.is_none()) {
-        if crate::repository::get_entity_by_name_and_type(pool, &item.name, &item.type_id)
-            .await
-            .is_ok()
-        {
-            skipped += 1;
-            continue;
+        let existing =
+            crate::repository::get_entity_by_name_and_type(pool, &item.name, &item.type_id).await;
+        let incoming = crate::models::CreateEntity {
+            name: item.name.clone(),
+            description: item.description.clone(),
+            content: item.content.clone(),
+            type_id: item.type_id.clone(),
+            project_id: None,
+            tags: None,
+            metadata_json: None,
+        };
+        if let Ok(existing) = existing {
+            match mode {
+                DuplicateMode::Skip => {
+                    report.skipped += 1;
+                    continue;
+                }
+                DuplicateMode::Overwrite => {
+                    crate::repository::update_entity(pool, &existing.id, &incoming).await?;
+                    report.overwritten += 1;
+                    continue;
+                }
+                DuplicateMode::Rename => {
+                    // fall through: create under a deduplicated name
+                }
+            }
         }
-        crate::repository::create_entity(
-            pool,
-            &crate::models::CreateEntity {
-                name: item.name.clone(),
-                description: item.description.clone(),
-                content: item.content.clone(),
-                type_id: item.type_id.clone(),
-                project_id: None,
-                tags: None,
-                metadata_json: None,
-            },
-        )
-        .await?;
-        imported += 1;
+        let name = if matches!(mode, DuplicateMode::Rename) {
+            let mut candidate = item.name.clone();
+            let mut n = 1;
+            loop {
+                let suffix = if n == 1 {
+                    "-imported".to_string()
+                } else {
+                    format!("-imported-{}", n)
+                };
+                candidate = format!("{}{}", item.name, suffix);
+                if crate::repository::get_entity_by_name_and_type(pool, &candidate, &item.type_id)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                n += 1;
+            }
+            candidate
+        } else {
+            item.name.clone()
+        };
+        let mut incoming = incoming;
+        incoming.name = name;
+        crate::repository::create_entity(pool, &incoming).await?;
+        if matches!(mode, DuplicateMode::Rename) {
+            report.renamed += 1;
+        } else {
+            report.imported += 1;
+        }
     }
 
-    // Pass 2: options/children, resolving the parent by name
+    // Pass 2: options/children, resolving the parent by name (original or
+    // the -imported rename produced above).
     for item in bundle.entities.iter().filter(|e| e.parent.is_some()) {
         let parent_name = item.parent.as_deref().unwrap_or_default();
-        let Ok(parent) =
-            crate::repository::get_entity_by_name_and_type(pool, parent_name, "cmd").await
-        else {
-            skipped += 1;
-            continue;
-        };
-        if crate::repository::get_entity_by_name_and_type(pool, &item.name, &item.type_id)
+        let parent = match crate::repository::get_entity_by_name_and_type(pool, parent_name, "cmd")
             .await
-            .is_ok()
         {
-            skipped += 1;
-            continue;
+            Ok(p) => p,
+            Err(_) => {
+                // Parent may have been renamed during this import
+                let renamed = format!("{}-imported", parent_name);
+                match crate::repository::get_entity_by_name_and_type(pool, &renamed, "cmd").await {
+                    Ok(p) => p,
+                    Err(_) => {
+                        report.skipped += 1;
+                        continue;
+                    }
+                }
+            }
+        };
+        let existing =
+            crate::repository::get_entity_by_name_and_type(pool, &item.name, &item.type_id).await;
+        let incoming = crate::models::CreateEntity {
+            name: item.name.clone(),
+            description: item.description.clone(),
+            content: item.content.clone(),
+            type_id: item.type_id.clone(),
+            project_id: None,
+            tags: None,
+            metadata_json: None,
+        };
+        if let Ok(existing) = existing {
+            match mode {
+                DuplicateMode::Skip => {
+                    report.skipped += 1;
+                    continue;
+                }
+                DuplicateMode::Overwrite => {
+                    crate::repository::update_entity(pool, &existing.id, &incoming).await?;
+                    report.overwritten += 1;
+                    continue;
+                }
+                DuplicateMode::Rename => {
+                    // fall through to create under a deduplicated name
+                }
+            }
         }
+        let name = if matches!(mode, DuplicateMode::Rename) {
+            let mut candidate = item.name.clone();
+            let mut n = 1;
+            loop {
+                let suffix = if n == 1 {
+                    "-imported".to_string()
+                } else {
+                    format!("-imported-{}", n)
+                };
+                candidate = format!("{}{}", item.name, suffix);
+                if crate::repository::get_entity_by_name_and_type(pool, &candidate, &item.type_id)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                n += 1;
+            }
+            candidate
+        } else {
+            item.name.clone()
+        };
         let id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
             "INSERT INTO entities (id, name, description, content, type_id, parent_id) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
-        .bind(&item.name)
+        .bind(&name)
         .bind(&item.description)
         .bind(&item.content)
         .bind(&item.type_id)
         .bind(&parent.id)
         .execute(pool)
         .await?;
-        imported += 1;
+        if matches!(mode, DuplicateMode::Rename) {
+            report.renamed += 1;
+        } else {
+            report.imported += 1;
+        }
     }
 
-    Ok((imported, skipped))
+    Ok(report)
 }
 
 /// Import secrets from a bundle. `Encrypted` secrets are decrypted with
