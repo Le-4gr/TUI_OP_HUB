@@ -127,6 +127,7 @@ enum DeleteKind {
     Entity,
     Project,
     Secret,
+    Config,
 }
 
 /// Result popup after running a command or workflow
@@ -267,6 +268,15 @@ pub struct ModernApp {
     users_panel: Option<UsersPanel>,
     /// Type filter of the Knowledge tab (US-TUI-11/12): one tab, filtered list
     kb_filter: KbFilter,
+    /// Managed-config list (Configs tab, US-CFG-09..12)
+    configs_list: ListState<crate::config_manager::ConfigEntry>,
+    /// Source-path popup for registering an existing config file
+    config_input: Option<String>,
+    /// Target-path popup for deploying the selected config
+    config_target_input: Option<String>,
+    /// Where managed configs are stored (temp dir in tests)
+    config_store_dir: std::path::PathBuf,
+
     /// SSH host manager panel (Secrets → `H`)
     ssh_panel: Option<SshPanel>,
     // New project creation form (US-PROJ)
@@ -447,6 +457,10 @@ impl ModernApp {
             running_workflow: None,
             users_panel: None,
             kb_filter: KbFilter::default(),
+            configs_list: ListState::default(),
+            config_input: None,
+            config_target_input: None,
+            config_store_dir: dirs_home().join(".config/tui-op-hub/configs"),
             ssh_panel: None,
             dev_user_manager: false,
             dev_user_list: Vec::new(),
@@ -474,7 +488,8 @@ impl ModernApp {
     /// Switch to the tab for digit 1-9 (US-APP-02 tab keys). Works from ANY
     /// screen, including Settings/Advanced, so digits always mean tabs.
     /// Default Tab-cycle order (US-TUI-12): Settings is intentionally LAST.
-    const DEFAULT_TAB_ORDER: [&'static str; 7] = ["dash", "kb", "proj", "wf", "sec", "plug", "set"];
+    const DEFAULT_TAB_ORDER: [&'static str; 8] =
+        ["dash", "kb", "proj", "wf", "sec", "cfg", "plug", "set"];
 
     /// Resolve the configured Tab-cycle order to AppState values (US-TUI-12).
     /// Unknown ids are dropped; an empty result falls back to the default.
@@ -486,6 +501,7 @@ impl ModernApp {
             "proj" => Some(AppState::Projects),
             "wf" => Some(AppState::Workflows),
             "sec" => Some(AppState::Secrets),
+            "cfg" => Some(AppState::Configs),
             "plug" => Some(AppState::Plugins),
             "set" => Some(AppState::Settings),
             _ => None,
@@ -523,7 +539,8 @@ impl ModernApp {
             '3' => AppState::Projects,
             '4' => AppState::Workflows,
             '5' => AppState::Secrets,
-            '6' => AppState::Plugins,
+            '6' => AppState::Configs,
+            '7' => AppState::Plugins,
             '0' => AppState::Settings,
             '1' => AppState::Dashboard,
             _ => return, // unmapped digits do nothing
@@ -745,6 +762,179 @@ impl ModernApp {
         Ok(())
     }
 
+    // ------------------------------------------------------------------
+    // Configs tab (US-CFG-09..12)
+    // ------------------------------------------------------------------
+
+    /// ConfigManager bound to this app's store directory (created lazily so
+    /// tests can point `config_store_dir` at a temp dir).
+    fn config_manager(&self) -> crate::config_manager::ConfigManager {
+        crate::config_manager::ConfigManager::new(self.config_store_dir.clone())
+    }
+
+    /// Load the managed-config registry into the list.
+    async fn fetch_configs(&mut self) -> anyhow::Result<()> {
+        let entries = self.config_manager().load_registry();
+        let total = entries.len();
+        self.configs_list.set_items(entries, total);
+        Ok(())
+    }
+
+    /// Register an existing file as a managed config (source-path popup).
+    async fn register_config_from_path(&mut self, raw: &str) {
+        let path = expand_tilde(raw);
+        let source = std::path::PathBuf::from(&path);
+        let name = source
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "config".to_string());
+        match self.config_manager().register_existing(&source, &name) {
+            Ok(entry) => {
+                self.status_message = Some(format!(
+                    "✓ Managed '{}' (v{} stored)",
+                    entry.name, entry.version
+                ));
+                self.fetch_configs().await.ok();
+            }
+            Err(e) => self.status_message = Some(format!("✗ {}", e)),
+        }
+    }
+
+    /// `m`: cycle the selected config's deploy mode (US-CFG-10).
+    async fn cycle_config_deploy_mode(&mut self) {
+        let Some(selected) = self.configs_list.get_selected().cloned() else {
+            self.status_message = Some("Nothing selected".to_string());
+            return;
+        };
+        let mut entries = self.config_manager().load_registry();
+        let mut label = String::new();
+        if let Some(entry) = entries.iter_mut().find(|e| e.id == selected.id) {
+            entry.deploy_mode = entry.deploy_mode.next();
+            label = entry.deploy_mode.label().to_string();
+        }
+        self.config_manager().save_registry(&entries).ok();
+        if !label.is_empty() {
+            self.status_message = Some(format!("Deploy mode: {}", label));
+        }
+        self.fetch_configs().await.ok();
+    }
+
+    /// `t`: add the entered target path to the selected config (US-CFG-10).
+    async fn add_config_target(&mut self, raw: &str) {
+        let target = expand_tilde(raw);
+        if target.trim().is_empty() {
+            return;
+        }
+        let Some(selected) = self.configs_list.get_selected().cloned() else {
+            return;
+        };
+        let mut entries = self.config_manager().load_registry();
+        let mut total = 0usize;
+        if let Some(entry) = entries.iter_mut().find(|e| e.id == selected.id) {
+            if !entry.targets.contains(&target) {
+                entry.targets.push(target);
+            }
+            total = entry.targets.len();
+        }
+        self.config_manager().save_registry(&entries).ok();
+        if total > 0 {
+            self.status_message = Some(format!("✓ Target added ({} total)", total));
+        }
+        self.fetch_configs().await.ok();
+    }
+
+    /// `l`: deploy the selected config to all targets (US-CFG-10).
+    async fn deploy_selected_config(&mut self) {
+        let Some(selected) = self.configs_list.get_selected().cloned() else {
+            self.status_message = Some("Nothing selected".to_string());
+            return;
+        };
+        if selected.targets.is_empty() {
+            self.status_message = Some("No targets yet — press t to add one".to_string());
+            return;
+        }
+        match self.config_manager().deploy(&selected) {
+            Ok(results) => {
+                let ok = results.iter().filter(|r| r.ok).count();
+                let drift = results.iter().filter(|r| r.had_drift).count();
+                self.status_message = Some(format!(
+                    "✓ Deployed {}/{} ({}) — drift on {}",
+                    ok,
+                    results.len(),
+                    selected.deploy_mode.label(),
+                    drift
+                ));
+            }
+            Err(e) => self.status_message = Some(format!("✗ {}", e)),
+        }
+    }
+
+    /// `u`: sync source into the master, then re-deploy (US-CFG-11).
+    async fn update_selected_config(&mut self) {
+        let Some(selected) = self.configs_list.get_selected().cloned() else {
+            self.status_message = Some("Nothing selected".to_string());
+            return;
+        };
+        let mut entry = selected;
+        let synced = match self.config_manager().sync_source(&mut entry) {
+            Ok(v) => v,
+            Err(e) => {
+                self.status_message = Some(format!("✗ sync failed: {}", e));
+                return;
+            }
+        };
+        // Persist the (possibly version-bumped) entry
+        let mut entries = self.config_manager().load_registry();
+        if let Some(e) = entries.iter_mut().find(|e| e.id == entry.id) {
+            e.version = entry.version;
+        }
+        self.config_manager().save_registry(&entries).ok();
+
+        if entry.targets.is_empty() {
+            self.status_message = Some(if synced {
+                "✓ Master updated (no targets to deploy)".to_string()
+            } else {
+                "No changes — master already current".to_string()
+            });
+            self.fetch_configs().await.ok();
+            return;
+        }
+        match self.config_manager().deploy(&entry) {
+            Ok(results) => {
+                let drift = results.iter().filter(|r| r.had_drift).count();
+                self.status_message = Some(format!(
+                    "✓ Updated{} and deployed {} target(s) (drift fixed on {})",
+                    if synced { "+version bump" } else { "" },
+                    results.len(),
+                    drift
+                ));
+            }
+            Err(e) => self.status_message = Some(format!("✗ {}", e)),
+        }
+        self.fetch_configs().await.ok();
+    }
+
+    /// `g`: commit the config store to git (US-CFG-12).
+    async fn git_commit_configs(&mut self) {
+        match self.config_manager().git_commit("update managed configs") {
+            Ok(out) => {
+                let log = self.config_manager().git_log().unwrap_or_default();
+                self.run_result = Some(RunResult {
+                    title: "Config git".to_string(),
+                    success: true,
+                    text: format!(
+                        "commit: {}
+
+log:
+{}",
+                        out, log
+                    ),
+                });
+            }
+            Err(e) => self.status_message = Some(format!("✗ {}", e)),
+        }
+    }
+
     /// Resolve the current user's `user_profiles.id` (creates the profile row if
     /// missing). Secrets are keyed by profile id, not by username.
     async fn current_user_profile_id(&self) -> String {
@@ -765,6 +955,7 @@ impl ModernApp {
             AppState::Projects => self.fetch_projects().await?,
             AppState::Workflows => self.fetch_workflows().await?,
             AppState::Secrets => self.fetch_secrets().await?,
+            AppState::Configs => self.fetch_configs().await?,
             AppState::Dashboard => self.fetch_stats().await?,
             AppState::Dashboard => self.fetch_monitor().await,
             AppState::Plugins => self.fetch_plugins().await,
@@ -889,6 +1080,12 @@ impl ModernApp {
             self.render_options_popup(f);
         }
         if let Some(path) = &self.register_input {
+            if let Some(path) = &self.config_input {
+                self.render_path_input(f, " Register existing config file ", path);
+            }
+            if let Some(path) = &self.config_target_input {
+                self.render_path_input(f, " Deploy target path ", path);
+            }
             self.render_register_input(f, path);
         }
         if let Some(path) = &self.import_input {
@@ -955,6 +1152,9 @@ impl ModernApp {
             }
             AppState::Secrets => {
                 self.render_secrets_list(f);
+            }
+            AppState::Configs => {
+                self.render_configs_list(f);
             }
             AppState::Settings => {
                 // Dedicated settings screen (US-APP-01/02/06)
@@ -1821,6 +2021,38 @@ impl ModernApp {
             }
             return;
         }
+        if let Some(path) = self.config_input.as_mut() {
+            match key.code {
+                KeyCode::Esc => self.config_input = None,
+                KeyCode::Enter => {
+                    let entered = path.clone();
+                    self.config_input = None;
+                    self.register_config_from_path(&entered).await;
+                }
+                KeyCode::Backspace => {
+                    path.pop();
+                }
+                KeyCode::Char(c) => path.push(c),
+                _ => {}
+            }
+            return;
+        }
+        if let Some(path) = self.config_target_input.as_mut() {
+            match key.code {
+                KeyCode::Esc => self.config_target_input = None,
+                KeyCode::Enter => {
+                    let entered = path.clone();
+                    self.config_target_input = None;
+                    self.add_config_target(&entered).await;
+                }
+                KeyCode::Backspace => {
+                    path.pop();
+                }
+                KeyCode::Char(c) => path.push(c),
+                _ => {}
+            }
+            return;
+        }
         if let Some(path) = self.import_input.as_mut() {
             if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 self.import_dup_mode = self.import_dup_mode.next();
@@ -1924,6 +2156,7 @@ impl ModernApp {
             | AppState::Projects
             | AppState::Workflows
             | AppState::Secrets
+            | AppState::Configs
             | AppState::Knowledge => {
                 // Handle dashboard and other app state keys
                 self.handle_dashboard_key(key).await;
@@ -2018,6 +2251,41 @@ impl ModernApp {
     }
 
     async fn handle_dashboard_key(&mut self, key: KeyEvent) {
+        // Configs tab: register/deploy/update/git keys; everything else
+        // (navigation, delete) falls through to the list handling (US-CFG).
+        if self.ui.state == AppState::Configs {
+            match key.code {
+                KeyCode::Char('n') => {
+                    self.config_input = Some(String::new());
+                    return;
+                }
+                KeyCode::Char('t') => {
+                    if self.configs_list.get_selected().is_some() {
+                        self.config_target_input = Some(String::new());
+                    } else {
+                        self.status_message = Some("Nothing selected".to_string());
+                    }
+                    return;
+                }
+                KeyCode::Char('m') => {
+                    self.cycle_config_deploy_mode().await;
+                    return;
+                }
+                KeyCode::Char('l') => {
+                    self.deploy_selected_config().await;
+                    return;
+                }
+                KeyCode::Char('u') => {
+                    self.update_selected_config().await;
+                    return;
+                }
+                KeyCode::Char('g') => {
+                    self.git_commit_configs().await;
+                    return;
+                }
+                _ => {}
+            }
+        }
         // Knowledge tab: `f` cycles the type filter, `n` creates an item of
         // the filtered type; EVERY other key falls through to the normal
         // list handling so navigation/run/copy/etc. work here too (US-TUI-11).
@@ -2081,6 +2349,10 @@ impl ModernApp {
                 let _ = self.fetch_secrets().await;
             }
             KeyCode::Char('6') => {
+                self.ui.state = AppState::Configs;
+                let _ = self.fetch_configs().await;
+            }
+            KeyCode::Char('7') => {
                 self.ui.state = AppState::Plugins;
                 self.fetch_plugins().await;
             }
@@ -2238,6 +2510,15 @@ impl ModernApp {
                                 id: secret.id.clone(),
                                 label: secret.name.clone(),
                                 kind: DeleteKind::Secret,
+                            });
+                        }
+                    }
+                    AppState::Configs => {
+                        if let Some(config) = self.configs_list.get_selected() {
+                            self.confirm_delete = Some(ConfirmDelete {
+                                id: config.id.clone(),
+                                label: config.name.clone(),
+                                kind: DeleteKind::Config,
                             });
                         }
                     }
@@ -2657,6 +2938,40 @@ impl ModernApp {
             &self.commands_list.items,
             self.commands_list.selected,
             self.ui.theme.primary,
+        );
+    }
+
+    /// Configs list (US-CFG-09..12).
+    fn render_configs_list(&self, f: &mut Frame) {
+        let title = format!(
+            "Managed configs ({}) \u{2014} deploy mode cycles with m",
+            self.configs_list.items.len()
+        );
+        self.render_list(
+            f,
+            &title,
+            &self.configs_list.items,
+            self.configs_list.selected,
+            self.ui.theme.secondary,
+        );
+    }
+
+    /// Generic single-line path input popup (shared by the config popups).
+    fn render_path_input(&self, f: &mut Frame, title: &str, value: &str) {
+        let area = self.centered_rect(70, 7, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.warning))
+            .title(title.to_string())
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        f.render_widget(
+            Paragraph::new(format!("{}\u{2502}", value))
+                .style(Style::default().fg(self.ui.theme.fg)),
+            inner,
         );
     }
 
@@ -3144,6 +3459,18 @@ impl ModernApp {
                 ("?", "Keybinds"),
                 ("q", "Quit"),
             ],
+            AppState::Configs => vec![
+                ("\u{2191}\u{2193}", "Navigate"),
+                ("n", "Register"),
+                ("t", "Add target"),
+                ("m", "Mode"),
+                ("l", "Deploy"),
+                ("u", "Update"),
+                ("g", "Git commit"),
+                ("d", "Delete"),
+                ("?", "Keybinds"),
+                ("q", "Quit"),
+            ],
             AppState::Knowledge => vec![
                 ("\u{2191}\u{2193}", "Navigate"),
                 ("f", "Filter type"),
@@ -3240,6 +3567,7 @@ impl ModernApp {
                         DeleteKind::Secret => {
                             repository::delete_secret(&*self.pool, &confirm.id).await
                         }
+                        DeleteKind::Config => self.config_manager().remove_entry(&confirm.id),
                     };
                     match result {
                         Ok(()) => {
@@ -6871,8 +7199,8 @@ impl ModernApp {
             "Switch tabs (configurable order, Settings last)",
         ));
         lines.push(row(
-            "1-6,0",
-            "1 Dashboard · 2 Knowledge (cmd/app/script, f filters) · 3 Projects · 4 Workflows · 5 Secrets · 6 Plugins · 0 Settings",
+            "1-7,0",
+            "1 Dashboard · 2 Knowledge · 3 Projects · 4 Workflows · 5 Secrets · 6 Configs · 7 Plugins · 0 Settings",
         ));
         lines.push(row(
             "f",
@@ -6932,6 +7260,14 @@ impl ModernApp {
         lines.push(row("a", "Advanced mode (visual theme editor)"));
         lines.push(row("u", "Admin: manage users (delete / reset password)"));
         lines.push(row("Ctrl+S", "Save settings to config.conf"));
+        lines.push(Line::from(""));
+        lines.push(section("Configs"));
+        lines.push(row("n", "Register an existing config file"));
+        lines.push(row("t", "Add a deploy target to the selected config"));
+        lines.push(row("m", "Cycle deploy mode (symlink/hard link/copy)"));
+        lines.push(row("l", "Deploy to all targets"));
+        lines.push(row("u", "Update: sync source + re-deploy (shows drift)"));
+        lines.push(row("g", "Git commit the config store"));
 
         if crate::auth::dev_mode_enabled() {
             lines.push(Line::from(""));
@@ -8066,7 +8402,7 @@ mod tests {
         app.handle_key(key(KeyCode::Char('3'))).await;
         assert_eq!(app.ui.state, AppState::Projects);
 
-        app.handle_key(key(KeyCode::Char('6'))).await;
+        app.handle_key(key(KeyCode::Char('7'))).await;
         assert_eq!(app.ui.state, AppState::Plugins);
 
         // Back to Settings, then to Workflows
@@ -8286,9 +8622,10 @@ mod knowledge_nav_tests {
             crate::config::AppConfig::default(),
         );
         let cycle = app.tab_cycle();
-        assert_eq!(cycle.len(), 7);
+        assert_eq!(cycle.len(), 8);
         assert_eq!(cycle[0], AppState::Dashboard);
         assert_eq!(cycle[1], AppState::Knowledge);
+        assert_eq!(cycle[5], AppState::Configs);
         assert_eq!(cycle[cycle.len() - 1], AppState::Settings, "last tab");
     }
 
@@ -8313,7 +8650,7 @@ mod knowledge_nav_tests {
         let mut app = test_app().await;
         app.config.tui.tab_order = Some("bogus,,nope".to_string());
         let cycle = app.tab_cycle();
-        assert_eq!(cycle.len(), 7, "falls back to the default order");
+        assert_eq!(cycle.len(), 8, "falls back to the default order");
         assert_eq!(cycle[cycle.len() - 1], AppState::Settings);
     }
 
@@ -8332,6 +8669,8 @@ mod knowledge_nav_tests {
         app.handle_key(key(KeyCode::Char('5'))).await;
         assert_eq!(app.ui.state, AppState::Secrets);
         app.handle_key(key(KeyCode::Char('6'))).await;
+        assert_eq!(app.ui.state, AppState::Configs);
+        app.handle_key(key(KeyCode::Char('7'))).await;
         assert_eq!(app.ui.state, AppState::Plugins);
         app.handle_key(key(KeyCode::Char('0'))).await;
         assert_eq!(app.ui.state, AppState::Settings);
@@ -8415,5 +8754,135 @@ mod knowledge_picker_tests {
             ..e.clone()
         };
         assert!(app_entity.to_string().starts_with("🚀 "));
+    }
+}
+
+#[cfg(test)]
+mod configs_tab_tests {
+    use super::*;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    fn ctrl_s() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
+    }
+
+    async fn test_app() -> ModernApp {
+        let pool = std::sync::Arc::new(
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        crate::db::run_migrations(&pool).await.unwrap();
+        ModernApp::new(pool, crate::config::AppConfig::default())
+    }
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("tuihub-cfgtab-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[tokio::test]
+    async fn given_configs_tab_when_registered_via_popup_then_entry_listed() {
+        let mut app = test_app().await;
+        let dir = tmp("reg");
+        app.config_store_dir = dir.join("store");
+        let src = dir.join("hypr.conf");
+        std::fs::write(&src, "monitor=,1920x1080").unwrap();
+
+        app.ui.state = AppState::Configs;
+        app.fetch_configs().await.unwrap();
+        assert!(app.configs_list.items.is_empty());
+
+        // `n` opens the source-path popup; type the path; Enter registers
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        assert!(app.config_input.is_some());
+        for c in src.to_string_lossy().chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Enter)).await;
+
+        assert!(app.config_input.is_none());
+        assert_eq!(app.configs_list.items.len(), 1);
+        assert_eq!(app.configs_list.items[0].name, "hypr.conf");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn given_config_when_target_added_and_deployed_then_symlink_created() {
+        let mut app = test_app().await;
+        let dir = tmp("dep");
+        app.config_store_dir = dir.join("store");
+        let src = dir.join("kitty.conf");
+        std::fs::write(&src, "font_size 12").unwrap();
+
+        app.ui.state = AppState::Configs;
+        app.fetch_configs().await.unwrap();
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        for c in src.to_string_lossy().chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Enter)).await;
+
+        // `t` opens the target popup; Enter adds the target
+        let target = dir.join("deployed").to_string_lossy().to_string();
+        app.handle_key(key(KeyCode::Char('t'))).await;
+        assert!(app.config_target_input.is_some());
+        for c in target.chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert_eq!(app.configs_list.items[0].targets.len(), 1);
+
+        // `m` cycles the mode: symlink -> hard link (starts at symlink)
+        app.handle_key(key(KeyCode::Char('m'))).await;
+        eprintln!(
+            "DEBUG status={:?} mode={:?}",
+            app.status_message, app.configs_list.items[0].deploy_mode
+        );
+        // Cycle back to symlink and deploy with `l`
+        app.handle_key(key(KeyCode::Char('m'))).await;
+        app.handle_key(key(KeyCode::Char('m'))).await;
+        app.handle_key(key(KeyCode::Char('l'))).await;
+
+        let link = std::fs::symlink_metadata(&target).unwrap();
+        assert!(link.file_type().is_symlink());
+
+        // `d` + Enter deletes the managed config
+        app.handle_key(key(KeyCode::Char('d'))).await;
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert!(app.configs_list.items.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn given_config_when_u_pressed_then_source_synced_into_master() {
+        let mut app = test_app().await;
+        let dir = tmp("upd");
+        app.config_store_dir = dir.join("store");
+        let src = dir.join("zshrc");
+        std::fs::write(&src, "export A=1").unwrap();
+
+        app.ui.state = AppState::Configs;
+        app.fetch_configs().await.unwrap();
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        for c in src.to_string_lossy().chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert_eq!(app.configs_list.items[0].version, 1);
+
+        // Change the source, then `u` updates the master (version bump)
+        std::fs::write(&src, "export A=2").unwrap();
+        app.handle_key(key(KeyCode::Char('u'))).await;
+        assert_eq!(app.configs_list.items[0].version, 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

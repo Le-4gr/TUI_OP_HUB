@@ -431,10 +431,10 @@ real config files/folders on disk — dotfiles, app configs, project configs.
 
 | ID | Story | Priority | Points |
 |:---|:---|:---:|:---:|
-| `US-CFG-09` | As a **User**, I want to **register an existing file or folder** as a managed config, or **create a new one** from the Configs page, so that all my configs are tracked in one place. | 🟡 | 3 |
-| `US-CFG-10` | As a **User**, I want each managed config to support **link or copy deployment** — symlink, hard link, or plain copy to one or more target locations — so that one config can serve many consumers. | 🟡 | 5 |
-| `US-CFG-11` | As a **User**, I want an **"update" action** that re-deploys a config to its targets and shows drift between source and deployed copies, so that changes propagate predictably. | 🟡 | 3 |
-| `US-CFG-12` | As a **User**, I want **git integration per managed config** (init, commit, log/diff, optional remote push/pull), so that my dotfiles are versioned without leaving the hub. | 🟡 | 5 |
+| `US-CFG-09` | As a **User**, I want to **register an existing file or folder** as a managed config, or **create a new one** from the Configs page, so that all my configs are tracked in one place. | ✅ | 3 |
+| `US-CFG-10` | As a **User**, I want each managed config to support **link or copy deployment** — symlink, hard link, or plain copy to one or more target locations — so that one config can serve many consumers. | ✅ | 5 |
+| `US-CFG-11` | As a **User**, I want an **"update" action** that re-deploys a config to its targets and shows drift between source and deployed copies, so that changes propagate predictably. | ✅ | 3 |
+| `US-CFG-12` | As a **User**, I want **git integration per managed config** (init, commit, log/diff, optional remote push/pull), so that my dotfiles are versioned without leaving the hub (git init/commit/log done; remote push/pull optional). | ✅ | 5 |
 
 ### 22.3 🧩 Plugin-driven project templates & UI actions (US-PLG, US-PROJ)
 

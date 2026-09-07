@@ -10,10 +10,7 @@
 1. **✅ DONE (Session 18) — Navigation restructure (US-TUI-11/12)**: Knowledge Base parent
    page (key 2) with live counts; digits now 1-9 + 0 (0 = Settings); Tab cycle configurable
    via `[tui].tab_order` in config.conf, Settings last by default.
-2. **🟡 P1 — Config management page (US-CFG-09..12)**: register existing files/folders or
-   create new; deploy via symlink / hard link / copy to multiple targets; drift check +
-   re-deploy; per-config git (init/commit/log, optional remote). Backend `config_manager.rs`
-   exists as a starting point. New tab/panel + repository functions.
+2. **✅ DONE (Session 19) — Config management page (US-CFG-09..12)**: Configs tab (key 6) — register via `n`, deploy targets via `t`, mode cycle via `m`, deploy `l`, update+drift `u`, git `g`.
 3. **🟡 P2 — Plugin project templates (US-PLG-14/15, US-PROJ-08)**: plugins ship scaffold
    templates (files/folders/git/commands); optional (never default) template picker in the
    project creation flow; preview + edit before apply.
@@ -28,7 +25,33 @@
    quick-connect only); plugin approval workflow for headless service runs.
 
 ---
-## ## 🎯 Session 18c: Knowledge redesign — ONE tab + type filter (completed)
+## ## 🎯 Session 19: story #2 — Config management page (US-CFG-09..12) (completed)
+
+**New Configs tab (key 6)** for managed config files (dotfiles etc.):
+
+- **`n` register**: path popup (~ expanded) stores a master copy of an existing file in the
+  central store (`~/.config/tui-op-hub/configs/<id>/v1.conf`) and persists it in a JSON registry.
+- **`t` add target / `l` deploy / `m` mode (US-CFG-10)**: one config can deploy to MANY targets;
+  modes: symlink, hard link (same-inode verified), or plain copy.
+- **`u` update (US-CFG-11)**: syncs the source into the master (bumps the version when it changed),
+  re-deploys all targets and reports DRIFT (stale copies / broken links) per target.
+- **`g` git (US-CFG-12)**: the whole config store is one git repo — init (idempotent), commit, log.
+- **`d` delete** with confirmation removes the entry + master copy.
+
+Backend: `config_manager.rs` gained `DeployMode`, `Deployment`, registry load/save,
+`register_existing`, `remove_entry`, `sync_source`, `deploy`/`deploy_one`, `link_points_to`,
+`git_init/commit/log`. Digit mapping now 1-7 + 0 (6=Configs, 7=Plugins); Tab cycle 8 entries.
+
+Tests: +13 (10 config_manager unit tests incl. drift/hard-link/git-skip, 3 TUI tests driving
+the popups over real temp files, 1 BDD lifecycle scenario register->deploy->drift->update->delete).
+**221 total (173 lib + 48 BDD), clippy 0, build ok.**
+
+Gotchas: fresh deploys are NOT drift (only stale/broken ones); `DeployMode` field missing in old
+test literals was a compile error, serde defaults keep old registry JSONs loading.
+
+---
+
+## 🎯 Session 18c: Knowledge redesign — ONE tab + type filter (completed)
 
 User feedback: Commands/Apps/Scripts must NOT be separate tabs — one parent tab with a
 filter; and the KB page swallowed keys (its `_ => {}` ate digits/Tab/q).

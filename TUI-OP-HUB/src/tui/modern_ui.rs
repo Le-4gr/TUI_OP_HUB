@@ -164,6 +164,8 @@ pub enum AppState {
     Projects,
     Workflows,
     Secrets,
+    /// Managed config files (US-CFG-09..12)
+    Configs,
     Plugins,
     Settings,
     Help,

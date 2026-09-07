@@ -29,6 +29,7 @@ secure secret storage — local-first, single binary, keyboard-driven.
   (their secrets are removed with them) and reset forgotten passwords
 - **Secret classification & access control**: kinds (`password`, `ssh_key`, `gpg_key`,
   `api_key`) + `requires_reauth` flag for secrets that need more than just being logged in
+- **Config management (US-CFG)**: register existing config files, deploy them as symlink / hard link / copy to multiple targets, detect + fix drift with one `u`, and version the whole store with git
 - **SSH & GPG keygen**: `k` on the Secrets tab generates keys via the known tools
   (`ssh-keygen`, `gpg`); private key location and passphrase stored encrypted
 - **File-backed scripts & workflows**: metadata `{"file": "…"}` runs Lua, JSON, Python,
@@ -172,9 +173,10 @@ The Settings screen (`8`) previews live and `a` opens the visual color editor.
 
 | Key | Action |
 |:----|:-------|
-| 1-6, 0 | Switch tab (from any screen) — 1 Dashboard, 2 Knowledge Base, 3 Projects, 4 Workflows, 5 Secrets, 6 Plugins, 0 Settings |
+| 1-7, 0 | Switch tab (from any screen) — 1 Dashboard, 2 Knowledge Base, 3 Projects, 4 Workflows, 5 Secrets, 6 Configs, 7 Plugins, 0 Settings |
 | Tab | Cycle tabs (order from `[tui].tab_order` in config.conf; Settings last by default) |
 | f | Knowledge tab: cycle the type filter (All, Commands, Apps, Scripts) |
+| n / t / m / l / u / g | Configs tab: register file, add deploy target, cycle mode (symlink/hard link/copy), deploy, update (drift fix), git commit |
 | Up/Down | Navigate items |
 | Enter | Select / open project detail |
 | n | Create new |

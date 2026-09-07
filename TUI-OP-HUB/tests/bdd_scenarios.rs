@@ -774,7 +774,7 @@ async fn given_settings_open_when_digit_pressed_then_switches_tab() {
     assert_eq!(app.bdd_state(), AppState::Projects);
     app.bdd_press(crossterm::event::KeyCode::Char('0')).await;
     assert_eq!(app.bdd_state(), AppState::Settings);
-    app.bdd_press(crossterm::event::KeyCode::Char('6')).await;
+    app.bdd_press(crossterm::event::KeyCode::Char('7')).await;
     assert_eq!(app.bdd_state(), AppState::Plugins);
 }
 
@@ -1799,4 +1799,59 @@ async fn given_ssh_host_when_managed_then_crud_round_trips() {
     repository::delete_ssh_host(&pool, &host.id).await.unwrap();
     assert!(repository::list_ssh_hosts(&pool).await.unwrap().is_empty());
     assert!(repository::delete_ssh_host(&pool, &host.id).await.is_err());
+}
+
+// ============================================================================
+// Feature: Managed config files (US-CFG-09..12)
+// ============================================================================
+
+/// Scenario: register, deploy with drift detection, update, and delete a config
+/// Given an existing config file, when it is registered, deployed with copy
+/// mode, the source changes and the update action runs, then the deployed
+/// copy is refreshed and deletion removes the entry.
+#[tokio::test]
+async fn given_config_file_when_registered_deployed_updated_then_lifecycle_round_trips() {
+    let dir = std::env::temp_dir().join(format!("tuihub-bdd-cfg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("hyprland.conf");
+    std::fs::write(&src, "monitor=eDP-1,1920x1080").unwrap();
+
+    let man = tui_op_hub::config_manager::ConfigManager::new(dir.join("store"));
+
+    // Register (US-CFG-09): master copy stored, registry persisted
+    let mut entry = man.register_existing(&src, "hyprland").unwrap();
+    assert_eq!(man.load_registry().len(), 1);
+
+    // Deploy copy-mode to two targets (US-CFG-10)
+    entry.deploy_mode = tui_op_hub::config_manager::DeployMode::Copy;
+    entry.targets = vec![
+        dir.join("t1").to_string_lossy().to_string(),
+        dir.join("t2").to_string_lossy().to_string(),
+    ];
+    man.save_registry(&[entry.clone()]).unwrap();
+    let results = man.deploy(&entry).unwrap();
+    assert!(results.iter().all(|r| r.ok));
+
+    // Source changes -> deployed copies are stale (drift) until update (US-CFG-11)
+    std::fs::write(&src, "monitor=eDP-1,2560x1440").unwrap();
+    assert!(man.sync_source(&mut entry).unwrap(), "master updated");
+    let results = man.deploy(&entry).unwrap();
+    assert!(results.iter().all(|r| r.had_drift), "targets were stale");
+    assert_eq!(
+        std::fs::read_to_string(&entry.targets[0]).unwrap(),
+        "monitor=eDP-1,2560x1440"
+    );
+
+    // Git versioning (US-CFG-12): init + commit when git is available
+    if tui_op_hub::keygen::which("git") {
+        man.git_init().unwrap();
+        let out = man.git_commit("manage hyprland").unwrap();
+        assert!(!out.is_empty());
+    }
+
+    // Deletion removes registry entry + master copy
+    man.remove_entry(&entry.id).unwrap();
+    assert!(man.load_registry().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
 }
