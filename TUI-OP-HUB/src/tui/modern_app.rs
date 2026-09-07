@@ -2283,6 +2283,33 @@ log:
                     self.git_commit_configs().await;
                     return;
                 }
+                // Numpad navigation (NumLock on): 2/8 move, 4/6 cycle mode,
+                // 7/9 home/end (US-APP-06)
+                KeyCode::Char('2') | KeyCode::Char('8') if !self.configs_list.items.is_empty() => {
+                    let d = if key.code == KeyCode::Char('2') {
+                        1
+                    } else {
+                        -1
+                    };
+                    let len = self.configs_list.items.len();
+                    let cur = self.configs_list.selected as isize;
+                    self.configs_list.selected = ((cur + d).rem_euclid(len as isize)) as usize;
+                    return;
+                }
+                KeyCode::Char('4') | KeyCode::Char('6') => {
+                    self.cycle_config_deploy_mode().await;
+                    return;
+                }
+                KeyCode::Char('7') => {
+                    self.configs_list.selected = 0;
+                    return;
+                }
+                KeyCode::Char('9') => {
+                    if !self.configs_list.items.is_empty() {
+                        self.configs_list.selected = self.configs_list.items.len() - 1;
+                    }
+                    return;
+                }
                 _ => {}
             }
         }
@@ -2734,9 +2761,20 @@ log:
                 }
             }
             k if Some(k) == kb_search => {
-                // Start search mode
-                self.search_state.active = true;
-                self.search_state.query.clear();
+                // Start search mode — only on list tabs; on other screens a
+                // stray `/` used to activate an invisible search that ate
+                // every following keypress (looked like "keys don't work")
+                if matches!(
+                    self.ui.state,
+                    AppState::Knowledge
+                        | AppState::Projects
+                        | AppState::Workflows
+                        | AppState::Secrets
+                        | AppState::Configs
+                ) {
+                    self.search_state.active = true;
+                    self.search_state.query.clear();
+                }
             }
             k if Some(k) == kb_filter => {
                 // Toggle filter mode
@@ -3471,6 +3509,8 @@ log:
             ],
             AppState::Configs => vec![
                 ("\u{2191}\u{2193}", "Navigate"),
+                ("2/8", "Numpad nav"),
+                ("4/6", "Numpad mode"),
                 ("n", "Register"),
                 ("t", "Add target"),
                 ("m", "Mode"),
@@ -8687,10 +8727,11 @@ mod knowledge_nav_tests {
         assert_eq!(app.ui.state, AppState::Secrets);
         app.handle_key(key(KeyCode::Char('6'))).await;
         assert_eq!(app.ui.state, AppState::Configs);
-        app.handle_key(key(KeyCode::Char('7'))).await;
-        assert_eq!(app.ui.state, AppState::Plugins);
+        // From Configs, 7 is numpad-home; leave with 0 first
         app.handle_key(key(KeyCode::Char('0'))).await;
         assert_eq!(app.ui.state, AppState::Settings);
+        app.handle_key(key(KeyCode::Char('7'))).await;
+        assert_eq!(app.ui.state, AppState::Plugins);
         app.handle_key(key(KeyCode::Char('1'))).await;
         assert_eq!(app.ui.state, AppState::Dashboard);
         // Unmapped digits do nothing
@@ -8876,6 +8917,77 @@ mod configs_tab_tests {
         app.handle_key(key(KeyCode::Char('d'))).await;
         app.handle_key(key(KeyCode::Enter)).await;
         assert!(app.configs_list.items.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn given_dashboard_when_six_then_n_then_escape_then_seven_then_zero_then_keys_work() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Dashboard;
+
+        // User presses 6 to reach the Configs page
+        app.handle_key(key(KeyCode::Char('6'))).await;
+        assert_eq!(app.ui.state, AppState::Configs);
+
+        // q must NOT quit?? (quit arm) - check Esc does not break
+        app.handle_key(key(KeyCode::Esc)).await;
+
+        // Press 2 (Knowledge), then 6 back — digits must work FROM configs
+        app.handle_key(key(KeyCode::Char('2'))).await;
+        assert_eq!(app.ui.state, AppState::Knowledge);
+        app.handle_key(key(KeyCode::Char('6'))).await;
+        assert_eq!(app.ui.state, AppState::Configs);
+
+        // `n` opens the register popup; Esc closes it
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        assert!(app.config_input.is_some(), "n must open the register popup");
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert!(app.config_input.is_none());
+
+        // `t` on empty list -> status, not hang
+        app.handle_key(key(KeyCode::Char('t'))).await;
+
+        // 0 -> Settings from Configs (7 is numpad-home here now)
+        app.handle_key(key(KeyCode::Char('0'))).await;
+        assert_eq!(app.ui.state, AppState::Settings);
+    }
+
+    #[tokio::test]
+    async fn given_configs_tab_when_numpad_digits_pressed_then_navigate_and_cycle() {
+        let mut app = test_app().await;
+        let dir = tmp("numpad");
+        app.config_store_dir = dir.join("store");
+        for (i, name) in ["a.conf", "b.conf", "c.conf"].iter().enumerate() {
+            let src = dir.join(name);
+            std::fs::write(&src, format!("{}", i)).unwrap();
+            app.ui.state = AppState::Configs;
+            app.fetch_configs().await.unwrap();
+            app.handle_key(key(KeyCode::Char('n'))).await;
+            for c in src.to_string_lossy().chars() {
+                app.handle_key(key(KeyCode::Char(c))).await;
+            }
+            app.handle_key(key(KeyCode::Enter)).await;
+        }
+        app.ui.state = AppState::Configs;
+        app.fetch_configs().await.unwrap();
+
+        // Numpad 2 = down, 8 = up (NumLock on)
+        app.handle_key(key(KeyCode::Char('2'))).await;
+        assert_eq!(app.configs_list.selected, 1);
+        app.handle_key(key(KeyCode::Char('8'))).await;
+        assert_eq!(app.configs_list.selected, 0);
+        // Numpad 9 = end, 7 = home
+        app.handle_key(key(KeyCode::Char('9'))).await;
+        assert_eq!(app.configs_list.selected, 2);
+        app.handle_key(key(KeyCode::Char('7'))).await;
+        assert_eq!(app.configs_list.selected, 0);
+        // Numpad 4 = previous mode in the cycle (symlink <- copy)
+        app.configs_list.items[0].deploy_mode = crate::config_manager::DeployMode::Copy;
+        app.handle_key(key(KeyCode::Char('4'))).await;
+        assert_eq!(
+            app.configs_list.items[0].deploy_mode,
+            crate::config_manager::DeployMode::HardLink
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
