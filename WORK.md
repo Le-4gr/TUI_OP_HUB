@@ -7,6 +7,17 @@
 
 ## 🎯 Session 16 — COMPLETE SESSION SUMMARY (all work in this chat)
 
+> **Update 14 (same session):** Structure normalised (uniform folder rule).
+> Rule: folders only when a module has multiple files; single-file modules are flat.
+> Flattened: config_manager, environment, process, scheduler, service (mod.rs -> <name>.rs).
+> Deleted dead code: the 1342-line legacy TUI in tui/mod.rs (App/Tab/EntityForm/SecretForm/
+> ProjectForm — zero external references, fully superseded by modern_app/modern_ui; slim
+> 12-line module file written) and the unreferenced tui/login_view.rs (331 lines, LoginView
+> never constructed; modern_app has its own render_login/render_signup). src/ is now 33 files,
+> 18.4k lines (was 34 files / 20.1k): 10 folders with real submodules (api, auth, config, db,
+> keygen, models, plugin, repository, secrets, tui, workflow), everything else flat.
+> 147 lib + 45 BDD = 192 pass, clippy 0 errors.
+
 > **Update 13 (same session):** Continuation pass — dedup, dead code, sudo routing fix.
 > **Bug found & fixed:** `handle_sudo_password_key` had zero call sites (same bug class as
 > the project form) — the `R` sudo-password popup rendered but typed characters leaked into
