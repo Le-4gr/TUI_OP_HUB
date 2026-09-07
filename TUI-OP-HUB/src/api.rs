@@ -91,6 +91,13 @@ pub fn router(pool: Arc<SqlitePool>) -> Router {
             "/schedules/{id}",
             axum::routing::delete(delete_schedule_handler),
         )
+        // Workflow run cancellation (US-WF-09): list in-flight runs and
+        // cooperatively cancel one by run_id.
+        .route("/runs", axum::routing::get(list_runs_handler))
+        .route(
+            "/runs/{run_id}/cancel",
+            axum::routing::post(cancel_run_handler),
+        )
         // Knowledge-base sharing (US-CMD-01)
         .route("/export", axum::routing::get(export_handler))
         .route("/import", axum::routing::post(import_handler))
@@ -553,6 +560,25 @@ async fn list_schedules_handler(
         .await
         .map(Json)
         .map_err(|e| e.to_string())
+}
+
+/// List in-flight workflow run ids (US-WF-09).
+async fn list_runs_handler() -> Json<Vec<String>> {
+    Json(crate::workflow::active_run_ids())
+}
+
+/// Cooperatively cancel a running workflow (US-WF-09).
+async fn cancel_run_handler(
+    axum::extract::Path(run_id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, String> {
+    if crate::workflow::cancel_run(&run_id) {
+        Ok(Json(serde_json::json!({
+            "run_id": run_id,
+            "cancelled": true
+        })))
+    } else {
+        Err(format!("no active run with id {}", run_id))
+    }
 }
 
 async fn delete_schedule_handler(

@@ -183,10 +183,13 @@ The Settings screen (`8`) previews live and `a` opens the visual color editor.
 | r | Run (commands/workflows) |
 | R | Run with sudo/doas/su |
 | s | Schedule workflow (Workflows tab) |
+| X | Cancel the running background workflow (Workflows tab) |
 | v | Visual workflow builder |
 | S | Load SSH keys into ssh-agent (Secrets tab) |
 | t | Open SSH terminal (Secrets tab) |
 | k | Keygen (Secrets tab) |
+| H | SSH host manager — CRUD + quick connect (Secrets tab) |
+| u | Admin: manage users (Settings tab) |
 | x / I | Export / Import knowledge base |
 | a | Approve plugin (Plugins tab) |
 | g/d/k/n | Quick launch lazygit/lazydocker/k9s/lazynpm (Dashboard) |

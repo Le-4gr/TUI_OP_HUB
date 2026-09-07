@@ -1702,3 +1702,97 @@ async fn given_duplicate_when_imported_with_rename_then_suffixed_copy_created() 
         .iter()
         .any(|e| e.name == "deploy-imported" && e.content.as_deref() == Some("INCOMING")));
 }
+
+// ============================================================================
+// Feature: Workflow run cancellation (US-WF-09)
+// ============================================================================
+
+/// Scenario: a background workflow run can be cancelled cooperatively
+/// Given a long-running workflow executed in the background, when cancel_run
+/// is called with its run id, then the engine stops before the next step and
+/// reports the run as cancelled with partial progress preserved.
+#[tokio::test]
+async fn given_running_workflow_when_cancel_requested_then_result_reports_cancel() {
+    let pool = given_fresh_database().await;
+    let steps: Vec<WorkflowStep> = (0..30)
+        .map(|i| WorkflowStep {
+            name: format!("step-{}", i),
+            script: "run_command('sleep 0.05')".to_string(),
+            depends_on: Vec::new(),
+        })
+        .collect();
+    let wf = repository::create_entity(
+        &pool,
+        &CreateEntity {
+            name: "long runner".to_string(),
+            description: None,
+            content: Some(serde_json::json!({ "name": "long runner", "steps": steps }).to_string()),
+            type_id: "wf".to_string(),
+            project_id: None,
+            tags: None,
+            metadata_json: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    // When: start the run in the background (same path the TUI uses)
+    let (run_id, task) = workflow::spawn_workflow_run(pool.clone(), &wf.id, None, None)
+        .await
+        .unwrap();
+    assert!(workflow::active_run_ids().contains(&run_id));
+
+    // When: request cooperative cancellation
+    assert!(workflow::cancel_run(&run_id), "run must be cancellable");
+    let result = task.await.unwrap().unwrap();
+
+    // Then: the run is reported as cancelled, not successful
+    assert!(!result.success, "cancelled run must not report success");
+    assert!(result.error.unwrap_or_default().contains("cancelled"));
+    assert!(
+        !workflow::active_run_ids().contains(&run_id),
+        "run unregistered"
+    );
+}
+
+// ============================================================================
+// Feature: SSH host manager (US-SSH-01..05)
+// ============================================================================
+
+/// Scenario: hosts can be created, updated, listed and deleted
+/// Given a fresh database, when an SSH host is created and edited, then the
+/// changes persist and deletion removes it.
+#[tokio::test]
+async fn given_ssh_host_when_managed_then_crud_round_trips() {
+    let pool = given_fresh_database().await;
+
+    // Create (US-SSH-02)
+    let host = repository::create_ssh_host(
+        &pool,
+        "bastion",
+        "203.0.113.7",
+        22,
+        Some("ops"),
+        Some("~/.ssh/id_ed25519"),
+    )
+    .await
+    .unwrap();
+
+    // Update (US-SSH-03)
+    let mut edited = host.clone();
+    edited.port = 2200;
+    edited.hostname = "bastion.internal".into();
+    let updated = repository::update_ssh_host(&pool, &edited).await.unwrap();
+    assert_eq!(updated.port, 2200);
+    assert_eq!(updated.hostname, "bastion.internal");
+
+    // List (US-SSH-01)
+    let listed = repository::list_ssh_hosts(&pool).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].username.as_deref(), Some("ops"));
+
+    // Delete (US-SSH-04)
+    repository::delete_ssh_host(&pool, &host.id).await.unwrap();
+    assert!(repository::list_ssh_hosts(&pool).await.unwrap().is_empty());
+    assert!(repository::delete_ssh_host(&pool, &host.id).await.is_err());
+}

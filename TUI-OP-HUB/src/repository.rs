@@ -655,6 +655,36 @@ pub async fn create_ssh_host(
         .map_err(AppError::Database)
 }
 
+/// Update an SSH host (US-SSH-03). Missing id → NotFound.
+pub async fn update_ssh_host(
+    pool: &SqlitePool,
+    host: &crate::models::SshHost,
+) -> AppResult<crate::models::SshHost> {
+    let result = sqlx::query(
+        "UPDATE ssh_hosts SET name = ?, hostname = ?, port = ?, username = ?, key_path = ?, \
+         updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(&host.name)
+    .bind(&host.hostname)
+    .bind(host.port)
+    .bind(&host.username)
+    .bind(&host.key_path)
+    .bind(&host.id)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound {
+            entity: "ssh_host",
+            id: host.id.clone(),
+        });
+    }
+    sqlx::query_as::<_, crate::models::SshHost>("SELECT * FROM ssh_hosts WHERE id = ?")
+        .bind(&host.id)
+        .fetch_one(pool)
+        .await
+        .map_err(AppError::Database)
+}
+
 pub async fn list_ssh_hosts(pool: &SqlitePool) -> AppResult<Vec<crate::models::SshHost>> {
     sqlx::query_as::<_, crate::models::SshHost>("SELECT * FROM ssh_hosts ORDER BY name")
         .fetch_all(pool)
@@ -1033,5 +1063,44 @@ mod tests {
         assert_eq!(deleted, 2);
         assert_eq!(count_users(&pool).await.unwrap(), 0);
         assert!(list_secrets(&pool, &a.id).await.unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod ssh_host_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn update_ssh_host_round_trip() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::db::run_migrations(&pool).await.unwrap();
+
+        let created = create_ssh_host(&pool, "srv", "10.0.0.5", 22, Some("root"), None)
+            .await
+            .unwrap();
+
+        let mut edited = created.clone();
+        edited.name = "srv-prod".into();
+        edited.hostname = "prod.example.com".into();
+        edited.port = 2222;
+        edited.key_path = Some("~/.ssh/id_ed25519".into());
+        let updated = update_ssh_host(&pool, &edited).await.unwrap();
+        assert_eq!(updated.name, "srv-prod");
+        assert_eq!(updated.hostname, "prod.example.com");
+        assert_eq!(updated.port, 2222);
+        assert_eq!(updated.key_path.as_deref(), Some("~/.ssh/id_ed25519"));
+
+        let listed = list_ssh_hosts(&pool).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "srv-prod");
+
+        // Unknown id → NotFound (US-SSH-03)
+        let mut ghost = edited;
+        ghost.id = "missing".into();
+        assert!(update_ssh_host(&pool, &ghost).await.is_err());
     }
 }

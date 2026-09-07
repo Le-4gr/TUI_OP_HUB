@@ -22,7 +22,7 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph},
@@ -136,6 +136,81 @@ struct RunResult {
     text: String,
 }
 
+/// A workflow running in the background; polled every loop iteration and
+/// cancellable with `X` on the Workflows tab (US-WF-09).
+struct RunningWorkflow {
+    run_id: String,
+    name: String,
+    task: tokio::task::JoinHandle<Result<crate::workflow::WorkflowResult, crate::error::AppError>>,
+}
+
+/// Admin user-management panel, opened from Settings with `u` (US-SEC).
+#[derive(Clone)]
+struct UsersPanel {
+    users: Vec<crate::models::UserProfile>,
+    selected: usize,
+    /// When true, the next Enter deletes the selected user.
+    confirm_delete: bool,
+    message: Option<String>,
+}
+
+/// SSH host manager panel, opened from Secrets with `H` (US-SSH-01..05).
+struct SshPanel {
+    hosts: Vec<crate::models::SshHost>,
+    selected: usize,
+    form: Option<SshForm>,
+    /// Id of the host being edited (`None` while creating).
+    editing_id: Option<String>,
+    confirm_delete: bool,
+    message: Option<String>,
+}
+
+/// Create/edit form for an SSH host (US-SSH-02/03).
+#[derive(Clone)]
+struct SshForm {
+    name: String,
+    hostname: String,
+    port: String,
+    username: String,
+    key_path: String,
+    field: usize,
+}
+
+impl SshForm {
+    const FIELDS: [&'static str; 5] = ["Name", "Hostname", "Port", "Username", "Key path"];
+    fn new() -> Self {
+        Self {
+            name: String::new(),
+            hostname: String::new(),
+            port: "22".to_string(),
+            username: String::new(),
+            key_path: String::new(),
+            field: 0,
+        }
+    }
+    /// Build the quick-connect command: `ssh [-i key] [-p port] user@host`.
+    fn connect_command(&self) -> Option<String> {
+        if self.hostname.trim().is_empty() {
+            return None;
+        }
+        let mut cmd = String::from("ssh");
+        if !self.key_path.trim().is_empty() {
+            cmd.push_str(&format!(" -i {}", self.key_path.trim()));
+        }
+        let port: u32 = self.port.trim().parse().unwrap_or(22);
+        cmd.push_str(&format!(" -p {}", port));
+        let user = self.username.trim();
+        let host = self.hostname.trim();
+        if user.is_empty() {
+            cmd.push(' ');
+            cmd.push_str(host);
+        } else {
+            cmd.push_str(&format!(" {}@{}", user, host));
+        }
+        Some(cmd)
+    }
+}
+
 /// Modern application with integrated auth
 pub struct ModernApp {
     ui: ModernUI,
@@ -186,6 +261,12 @@ pub struct ModernApp {
     sudo_password: Option<String>,
     // Pending command to run after sudo password is entered
     sudo_pending_command: Option<String>,
+    /// Background workflow run, polled each loop iteration (US-WF-09)
+    running_workflow: Option<RunningWorkflow>,
+    /// Admin user management panel (Settings → `u`)
+    users_panel: Option<UsersPanel>,
+    /// SSH host manager panel (Secrets → `H`)
+    ssh_panel: Option<SshPanel>,
     // New project creation form (US-PROJ)
     new_project_open: bool,
     new_project_name: String,
@@ -317,6 +398,9 @@ impl ModernApp {
             dev_confirm_wipe: false,
             sudo_password: None,
             sudo_pending_command: None,
+            running_workflow: None,
+            users_panel: None,
+            ssh_panel: None,
             dev_user_manager: false,
             dev_user_list: Vec::new(),
             dev_user_selected: 0,
@@ -599,6 +683,9 @@ impl ModernApp {
                 self.fetch_monitor().await;
             }
 
+            // Collect finished background workflow runs (US-WF-09)
+            self.poll_workflow_task().await;
+
             // Quick launch: open a NEW terminal window running a tool (lazygit, ...)
             if let Some((cmd, cwd)) = self.wants_terminal_cmd.take() {
                 match terminal_window_command_for(&cmd, Some(&cwd)) {
@@ -707,6 +794,12 @@ impl ModernApp {
         }
         if let Some(detail) = &self.project_detail {
             self.render_project_detail(f, detail);
+        }
+        if self.ssh_panel.is_some() {
+            self.render_ssh_panel(f);
+        }
+        if self.users_panel.is_some() {
+            self.render_users_panel(f);
         }
         if self.keybinds_overlay {
             self.render_keybinds_overlay(f);
@@ -1439,6 +1532,8 @@ impl ModernApp {
     }
 
     async fn handle_key(&mut self, key: KeyEvent) {
+        // Collect finished background workflow runs (US-WF-09) before routing
+        self.poll_workflow_task().await;
         // Overlays take priority over normal tab handling (top of the input stack)
         if self.sudo_password.is_some() {
             // The sudo password popup renders last = topmost; without this
@@ -1450,6 +1545,14 @@ impl ModernApp {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter) {
                 self.keybinds_overlay = false;
             }
+            return;
+        }
+        if self.users_panel.is_some() {
+            self.handle_users_panel_key(key).await;
+            return;
+        }
+        if self.ssh_panel.is_some() {
+            self.handle_ssh_panel_key(key).await;
             return;
         }
         if self.options_popup.is_some() {
@@ -2076,6 +2179,24 @@ impl ModernApp {
                         | AppState::Secrets
                 ) {
                     self.export_input = Some(default_bundle_path());
+                }
+            }
+            KeyCode::Char('X') => {
+                // Cancel a running background workflow (US-WF-09)
+                if self.ui.state == AppState::Workflows {
+                    self.cancel_running_workflow();
+                }
+            }
+            KeyCode::Char('H') => {
+                // SSH host manager (US-SSH-01..05)
+                if self.ui.state == AppState::Secrets {
+                    self.open_ssh_panel().await;
+                }
+            }
+            KeyCode::Char('u') => {
+                // Admin user management (Settings → `u`, US-SEC)
+                if self.ui.state == AppState::Settings {
+                    self.open_users_panel().await;
                 }
             }
             KeyCode::Char('I') => {
@@ -2988,6 +3109,7 @@ impl ModernApp {
                 ("e", "Edit"),
                 ("d", "Delete"),
                 ("r", "Run"),
+                ("X", "Cancel"),
                 ("c", "Copy"),
                 ("v", "Visual"),
                 ("/", "Find"),
@@ -3008,6 +3130,7 @@ impl ModernApp {
                 ("d", "Delete"),
                 ("c", "Copy"),
                 ("k", "Keygen"),
+                ("H", "SSH hosts"),
                 ("?", "Keybinds"),
                 ("q", "Quit"),
             ],
@@ -3805,58 +3928,479 @@ impl ModernApp {
                 }
             }
             AppState::Workflows => {
+                if self.running_workflow.is_some() {
+                    self.status_message =
+                        Some("A workflow is already running — X to cancel".to_string());
+                    return;
+                }
                 let selected = self.workflows_list.get_selected().cloned();
                 let Some(entity) = selected else {
                     self.status_message = Some("Nothing selected".to_string());
                     return;
                 };
                 let user_id = self.current_user_profile_id().await;
-                let result = workflow::execute_workflow_by_id_for_user(
+                // Run in the background so the TUI stays responsive and the
+                // run can be cancelled with `X` (US-WF-09).
+                match workflow::spawn_workflow_run(
                     self.pool.clone(),
                     &entity.id,
                     None,
                     Some(user_id),
                 )
-                .await;
-                match result {
-                    Ok(result) => {
-                        // Persist run history (US-WF-08)
-                        let run = crate::models::WorkflowRun {
-                            run_id: result.run_id.clone(),
-                            workflow_id: entity.id.clone(),
-                            success: result.success,
-                            output: Some(result.output.clone()),
-                            error: result.error.clone(),
-                            duration_ms: Some(result.duration_ms as i64),
-                            steps_completed: Some(result.steps_completed as i32),
-                            created_at: chrono::Utc::now().to_rfc3339(),
-                        };
-                        let _ = repository::insert_workflow_run(&*self.pool, &run).await;
-                        self.run_result = Some(RunResult {
-                            title: format!("Workflow: {}", entity.name),
-                            success: result.success,
-                            text: format!(
-                                "run id: {}\nsteps completed: {}\nduration: {}ms\n\n--- output ---\n{}\n--- error ---\n{}",
-                                result.run_id,
-                                result.steps_completed,
-                                result.duration_ms,
-                                result.output,
-                                result.error.unwrap_or_else(|| "(none)".to_string())
-                            ),
+                .await
+                {
+                    Ok((run_id, task)) => {
+                        self.running_workflow = Some(RunningWorkflow {
+                            run_id,
+                            name: entity.name.clone(),
+                            task,
                         });
+                        self.status_message =
+                            Some(format!("▶ Running '{}' — X to cancel", entity.name));
                     }
                     Err(e) => {
-                        self.run_result = Some(RunResult {
-                            title: format!("Workflow: {}", entity.name),
-                            success: false,
-                            text: format!("Execution failed: {}", e),
-                        });
+                        self.status_message = Some(format!("Cannot start workflow: {}", e));
                     }
                 }
             }
             _ => {
                 self.status_message =
                     Some("Run is only available for commands and workflows".to_string());
+            }
+        }
+    }
+
+    /// Poll the background workflow task; when finished, record the result
+    /// (history + popup). Called from `handle_key` and the run loop (US-WF-09).
+    async fn poll_workflow_task(&mut self) {
+        let finished = self
+            .running_workflow
+            .as_ref()
+            .map(|rw| rw.task.is_finished())
+            .unwrap_or(false);
+        if !finished {
+            return;
+        }
+        if let Some(rw) = self.running_workflow.take() {
+            match rw.task.await {
+                Ok(Ok(result)) => self.record_workflow_result(&rw.name, result).await,
+                Ok(Err(e)) => {
+                    self.status_message = Some(format!("Workflow '{}' failed: {}", rw.name, e))
+                }
+                Err(e) => self.status_message = Some(format!("Workflow task panicked: {}", e)),
+            }
+        }
+    }
+
+    /// Persist a finished workflow run and show the result popup (US-WF-08/09).
+    async fn record_workflow_result(
+        &mut self,
+        name: &str,
+        result: crate::workflow::WorkflowResult,
+    ) {
+        let run = crate::models::WorkflowRun {
+            run_id: result.run_id.clone(),
+            workflow_id: String::new(),
+            success: result.success,
+            output: Some(result.output.clone()),
+            error: result.error.clone(),
+            duration_ms: Some(result.duration_ms as i64),
+            steps_completed: Some(result.steps_completed as i32),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let _ = repository::insert_workflow_run(&*self.pool, &run).await;
+        let cancelled = result
+            .error
+            .as_deref()
+            .map(|e| e.contains("cancelled"))
+            .unwrap_or(false);
+        self.status_message = Some(if cancelled {
+            format!("✗ '{}' cancelled", name)
+        } else if result.success {
+            format!("✓ '{}' finished", name)
+        } else {
+            format!("✗ '{}' failed", name)
+        });
+        self.run_result = Some(RunResult {
+            title: format!("Workflow: {}", name),
+            success: result.success,
+            text: format!(
+                "run id: {}\nsteps completed: {}\nduration: {}ms\n\n--- output ---\n{}\n--- error ---\n{}",
+                result.run_id,
+                result.steps_completed,
+                result.duration_ms,
+                result.output,
+                result.error.unwrap_or_else(|| "(none)".to_string())
+            ),
+        });
+    }
+
+    /// Cancel the running workflow, if any (US-WF-09).
+    fn cancel_running_workflow(&mut self) {
+        match &self.running_workflow {
+            Some(rw) => {
+                let ok = workflow::cancel_run(&rw.run_id);
+                self.status_message = Some(if ok {
+                    format!("Cancelling '{}'…", rw.name)
+                } else {
+                    "Run is no longer active".to_string()
+                });
+            }
+            None => self.status_message = Some("No workflow is running".to_string()),
+        }
+    }
+
+    /// Open the admin user-management panel (Settings → `u`, US-SEC).
+    async fn open_users_panel(&mut self) {
+        let admin_id = self.current_user_profile_id().await;
+        match repository::is_admin(&*self.pool, &admin_id).await {
+            Ok(true) => match repository::list_user_profiles(&*self.pool).await {
+                Ok(users) => {
+                    self.users_panel = Some(UsersPanel {
+                        users,
+                        selected: 0,
+                        confirm_delete: false,
+                        message: None,
+                    });
+                }
+                Err(e) => self.status_message = Some(format!("Cannot list users: {}", e)),
+            },
+            Ok(false) => self.status_message = Some("Only admins can manage users".to_string()),
+            Err(e) => self.status_message = Some(format!("Cannot check admin status: {}", e)),
+        }
+    }
+
+    /// Handle keys while the users panel is open (US-SEC).
+    async fn handle_users_panel_key(&mut self, key: KeyEvent) {
+        let Some(panel) = &mut self.users_panel else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.users_panel = None;
+            }
+            KeyCode::Up => {
+                panel.confirm_delete = false;
+                if panel.selected > 0 {
+                    panel.selected -= 1;
+                }
+            }
+            KeyCode::Down => {
+                panel.confirm_delete = false;
+                if panel.selected + 1 < panel.users.len() {
+                    panel.selected += 1;
+                }
+            }
+            KeyCode::Char('d') => {
+                panel.confirm_delete = !panel.confirm_delete;
+                panel.message = panel
+                    .confirm_delete
+                    .then(|| "Enter to confirm delete".into());
+            }
+            KeyCode::Enter => {
+                let (user, confirm) = {
+                    let Some(panel) = &self.users_panel else {
+                        return;
+                    };
+                    (
+                        panel.users.get(panel.selected).cloned(),
+                        panel.confirm_delete,
+                    )
+                };
+                let Some(user) = user else { return };
+                if confirm {
+                    match repository::delete_user(&*self.pool, &user.id).await {
+                        Ok(()) => {
+                            self.open_users_panel().await;
+                            if let Some(p) = &mut self.users_panel {
+                                p.message = Some(format!("Deleted {}", user.username));
+                            }
+                        }
+                        Err(e) => {
+                            if let Some(p) = &mut self.users_panel {
+                                p.message = Some(format!("Delete failed: {}", e));
+                                p.confirm_delete = false;
+                            }
+                        }
+                    }
+                } else {
+                    // Reset password to a known value; the old user key stays
+                    // undecryptable (documented US-SEC behaviour).
+                    let admin_id = self.current_user_profile_id().await;
+                    match crate::auth::admin_reset_password(
+                        &*self.pool,
+                        &admin_id,
+                        &user.username,
+                        "reset-me",
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            if let Some(p) = &mut self.users_panel {
+                                p.message = Some(format!(
+                                    "Password of '{}' reset to 'reset-me'",
+                                    user.username
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            if let Some(p) = &mut self.users_panel {
+                                p.message = Some(format!("Reset failed: {}", e));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Open the SSH host manager (Secrets → `H`, US-SSH-01).
+    async fn open_ssh_panel(&mut self) {
+        match repository::list_ssh_hosts(&*self.pool).await {
+            Ok(hosts) => {
+                self.ssh_panel = Some(SshPanel {
+                    hosts,
+                    selected: 0,
+                    form: None,
+                    editing_id: None,
+                    confirm_delete: false,
+                    message: None,
+                });
+            }
+            Err(e) => self.status_message = Some(format!("Cannot list SSH hosts: {}", e)),
+        }
+    }
+
+    /// Handle keys while the SSH host panel is open (US-SSH-01..05).
+    async fn handle_ssh_panel_key(&mut self, key: KeyEvent) {
+        // The create/edit form is topmost inside the panel
+        if self.ssh_panel.as_ref().map(|p| p.form.is_some()) == Some(true) {
+            self.handle_ssh_form_key(key).await;
+            return;
+        }
+        let Some(panel) = &mut self.ssh_panel else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.ssh_panel = None;
+            }
+            KeyCode::Up => {
+                panel.confirm_delete = false;
+                if panel.selected > 0 {
+                    panel.selected -= 1;
+                }
+            }
+            KeyCode::Down => {
+                panel.confirm_delete = false;
+                if panel.selected + 1 < panel.hosts.len() {
+                    panel.selected += 1;
+                }
+            }
+            KeyCode::Char('n') => {
+                if let Some(p) = &mut self.ssh_panel {
+                    p.form = Some(SshForm::new());
+                    p.editing_id = None;
+                }
+            }
+            KeyCode::Char('e') => {
+                let host = panel.hosts.get(panel.selected).cloned();
+                if let Some(h) = host {
+                    if let Some(p) = &mut self.ssh_panel {
+                        p.form = Some(SshForm {
+                            name: h.name.clone(),
+                            hostname: h.hostname.clone(),
+                            port: h.port.to_string(),
+                            username: h.username.clone().unwrap_or_default(),
+                            key_path: h.key_path.clone().unwrap_or_default(),
+                            field: 0,
+                        });
+                        p.editing_id = Some(h.id);
+                    }
+                }
+            }
+            KeyCode::Char('d') => {
+                panel.confirm_delete = !panel.confirm_delete;
+                panel.message = panel
+                    .confirm_delete
+                    .then(|| "Enter to confirm delete".into());
+            }
+            KeyCode::Enter | KeyCode::Char('c') => {
+                // Confirmed delete takes priority over connect
+                if panel.confirm_delete {
+                    let host = panel.hosts.get(panel.selected).cloned();
+                    if let Some(h) = host {
+                        match repository::delete_ssh_host(&*self.pool, &h.id).await {
+                            Ok(()) => {
+                                self.open_ssh_panel().await;
+                                if let Some(p) = &mut self.ssh_panel {
+                                    p.message = Some(format!("Deleted {}", h.name));
+                                }
+                            }
+                            Err(e) => {
+                                if let Some(p) = &mut self.ssh_panel {
+                                    p.message = Some(format!("Delete failed: {}", e));
+                                    p.confirm_delete = false;
+                                }
+                            }
+                        }
+                    }
+                    return;
+                }
+                let host = panel.hosts.get(panel.selected).cloned();
+                if let Some(h) = host {
+                    // Quick connect (US-SSH-05): ssh in a NEW terminal window
+                    let user = h.username.unwrap_or_default();
+                    let target = if user.is_empty() {
+                        h.hostname.clone()
+                    } else {
+                        format!("{}@{}", user, h.hostname)
+                    };
+                    let mut cmd = format!("ssh -p {}", h.port);
+                    if let Some(key) = &h.key_path {
+                        cmd.push_str(&format!(" -i {}", key));
+                    }
+                    cmd.push(' ');
+                    cmd.push_str(&target);
+                    self.wants_terminal_cmd =
+                        Some((cmd, dirs_home().to_string_lossy().to_string()));
+                    self.ssh_panel = None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle keys inside the SSH host create/edit form (US-SSH-02/03).
+    async fn handle_ssh_form_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(p) = &mut self.ssh_panel {
+                    p.form = None;
+                    p.editing_id = None;
+                }
+            }
+            KeyCode::Tab => {
+                if let Some(p) = &mut self.ssh_panel {
+                    if let Some(f) = &mut p.form {
+                        f.field = (f.field + 1) % SshForm::FIELDS.len();
+                    }
+                }
+            }
+            KeyCode::BackTab => {
+                if let Some(p) = &mut self.ssh_panel {
+                    if let Some(f) = &mut p.form {
+                        f.field = (f.field + SshForm::FIELDS.len() - 1) % SshForm::FIELDS.len();
+                    }
+                }
+            }
+            KeyCode::Up => {
+                if let Some(p) = &mut self.ssh_panel {
+                    if let Some(f) = &mut p.form {
+                        f.field = f.field.saturating_sub(1);
+                    }
+                }
+            }
+            KeyCode::Down => {
+                if let Some(p) = &mut self.ssh_panel {
+                    if let Some(f) = &mut p.form {
+                        if f.field + 1 < SshForm::FIELDS.len() {
+                            f.field += 1;
+                        }
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(p) = &mut self.ssh_panel {
+                    if let Some(f) = &mut p.form {
+                        let buf = match f.field {
+                            0 => &mut f.name,
+                            1 => &mut f.hostname,
+                            2 => &mut f.port,
+                            3 => &mut f.username,
+                            _ => &mut f.key_path,
+                        };
+                        buf.pop();
+                    }
+                }
+            }
+            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.save_ssh_host().await;
+            }
+            KeyCode::Char(c) => {
+                if let Some(p) = &mut self.ssh_panel {
+                    if let Some(f) = &mut p.form {
+                        let buf = match f.field {
+                            0 => &mut f.name,
+                            1 => &mut f.hostname,
+                            2 => &mut f.port,
+                            3 => &mut f.username,
+                            _ => &mut f.key_path,
+                        };
+                        buf.push(c);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Validate + persist the SSH host form (US-SSH-02/03).
+    async fn save_ssh_host(&mut self) {
+        let (form, editing_id) = {
+            let Some(p) = &self.ssh_panel else { return };
+            (p.form.clone(), p.editing_id.clone())
+        };
+        let Some(form) = form else { return };
+        if form.name.trim().is_empty() || form.hostname.trim().is_empty() {
+            if let Some(p) = &mut self.ssh_panel {
+                p.message = Some("Name and hostname are required".to_string());
+            }
+            return;
+        }
+        let port: i32 = form.port.trim().parse().unwrap_or(22);
+        let result = match &editing_id {
+            Some(id) => {
+                let host = crate::models::SshHost {
+                    id: id.clone(),
+                    name: form.name.trim().to_string(),
+                    hostname: form.hostname.trim().to_string(),
+                    port,
+                    username: some_if_not_empty(form.username.trim()),
+                    key_path: some_if_not_empty(form.key_path.trim()),
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                };
+                repository::update_ssh_host(&*self.pool, &host).await
+            }
+            None => {
+                repository::create_ssh_host(
+                    &*self.pool,
+                    form.name.trim(),
+                    form.hostname.trim(),
+                    port,
+                    some_if_not_empty(form.username.trim()).as_deref(),
+                    some_if_not_empty(form.key_path.trim()).as_deref(),
+                )
+                .await
+            }
+        };
+        match result {
+            Ok(_) => {
+                self.open_ssh_panel().await;
+                if let Some(p) = &mut self.ssh_panel {
+                    p.message = Some(if editing_id.is_some() {
+                        "✓ Host updated".to_string()
+                    } else {
+                        "✓ Host created".to_string()
+                    });
+                }
+            }
+            Err(e) => {
+                if let Some(p) = &mut self.ssh_panel {
+                    p.message = Some(format!("Save failed: {}", e));
+                }
             }
         }
     }
@@ -5648,6 +6192,10 @@ impl ModernApp {
                 self.advanced.active = true;
                 self.advanced.error = None;
             }
+            KeyCode::Char('u') => {
+                // Admin: manage users (delete / reset password, US-SEC)
+                self.open_users_panel().await;
+            }
             KeyCode::Char('D') if crate::auth::dev_mode_enabled() => {
                 // DEV: wipe entire database
                 self.dev_wipe_database().await;
@@ -6031,6 +6579,185 @@ fn preset_index(name: &str) -> usize {
 impl ModernApp {
     /// Full keybind helper overlay (`?`): all actions grouped per screen,
     /// config-aware labels (US-TUI-09).
+    fn render_users_panel(&self, f: &mut Frame) {
+        let Some(panel) = &self.users_panel else {
+            return;
+        };
+        let area = self.centered_rect(52, 60, f);
+        f.render_widget(Clear, area);
+        let rows: usize = panel.users.len().min(8).max(3);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(rows as u16),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.secondary))
+            .title(format!(
+                " \u{1f465} Users ({}) \u{2014} admin \u{1f451} ",
+                panel.users.len()
+            ))
+            .style(Style::default().bg(self.ui.theme.bg));
+        f.render_widget(block, area);
+        let items: Vec<Line> = panel
+            .users
+            .iter()
+            .enumerate()
+            .map(|(i, u)| {
+                let marker = if i == panel.selected { "\u{25b6}" } else { " " };
+                let admin = if u.is_admin { " \u{1f451}" } else { "" };
+                let confirm = if panel.confirm_delete && i == panel.selected {
+                    " \u{26a0} really delete?"
+                } else {
+                    ""
+                };
+                let style = if i == panel.selected {
+                    Style::default().fg(self.ui.theme.accent)
+                } else {
+                    Style::default().fg(self.ui.theme.fg)
+                };
+                Line::from(format!("{} {}{}{}", marker, u.username, admin, confirm)).style(style)
+            })
+            .collect();
+        f.render_widget(
+            Paragraph::new(items).style(Style::default().bg(self.ui.theme.bg)),
+            chunks[0],
+        );
+        let hint = panel.message.clone().unwrap_or_else(|| {
+            "\u{2191}\u{2193} select \u{b7} d delete \u{b7} Enter reset pw \u{b7} Esc close"
+                .to_string()
+        });
+        f.render_widget(
+            Paragraph::new(hint).style(Style::default().fg(self.ui.theme.warning)),
+            chunks[1],
+        );
+    }
+
+    fn render_ssh_panel(&self, f: &mut Frame) {
+        let Some(panel) = &self.ssh_panel else { return };
+        let area = self.centered_rect(60, 66, f);
+        f.render_widget(Clear, area);
+        if let Some(form) = &panel.form {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(self.ui.theme.warning))
+                .title(if panel.editing_id.is_some() {
+                    " \u{1f517} Edit SSH host "
+                } else {
+                    " \u{2795} New SSH host "
+                })
+                .style(Style::default().bg(self.ui.theme.bg));
+            f.render_widget(block, area);
+            let rows: Vec<Line> = SshForm::FIELDS
+                .iter()
+                .enumerate()
+                .map(|(i, label)| {
+                    let value = match i {
+                        0 => &form.name,
+                        1 => &form.hostname,
+                        2 => &form.port,
+                        3 => &form.username,
+                        _ => &form.key_path,
+                    };
+                    let focused = i == form.field;
+                    let text = if focused {
+                        format!("\u{25b6} {}: {}│", label, value)
+                    } else {
+                        format!("  {}: {}", label, value)
+                    };
+                    let style = if focused {
+                        Style::default().fg(self.ui.theme.accent)
+                    } else {
+                        Style::default().fg(self.ui.theme.fg)
+                    };
+                    Line::from(text).style(style)
+                })
+                .collect();
+            let inner = area.inner(Margin::new(1, 1));
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(6), Constraint::Length(1)])
+                .split(inner);
+            f.render_widget(
+                Paragraph::new(rows).style(Style::default().bg(self.ui.theme.bg)),
+                chunks[0],
+            );
+            f.render_widget(
+                Paragraph::new("Tab field \u{b7} Ctrl+S save \u{b7} Esc cancel")
+                    .style(Style::default().fg(self.ui.theme.border)),
+                chunks[1],
+            );
+            return;
+        }
+        let rows: usize = panel.hosts.len().min(8).max(3);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(rows as u16),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.secondary))
+            .title(format!(" \u{1f517} SSH hosts ({}) ", panel.hosts.len()))
+            .style(Style::default().bg(self.ui.theme.bg));
+        f.render_widget(block, area);
+        let items: Vec<Line> = panel
+            .hosts
+            .iter()
+            .enumerate()
+            .map(|(i, h)| {
+                let marker = if i == panel.selected { "\u{25b6}" } else { " " };
+                let confirm = if panel.confirm_delete && i == panel.selected {
+                    " \u{26a0} really delete?"
+                } else {
+                    ""
+                };
+                let user = h.username.clone().unwrap_or_default();
+                let target = if user.is_empty() {
+                    h.hostname.clone()
+                } else {
+                    format!("{}@{}", user, h.hostname)
+                };
+                let style = if i == panel.selected {
+                    Style::default().fg(self.ui.theme.accent)
+                } else {
+                    Style::default().fg(self.ui.theme.fg)
+                };
+                Line::from(format!(
+                    "{} {}  {}:{}{}",
+                    marker, h.name, target, h.port, confirm
+                ))
+                .style(style)
+            })
+            .collect();
+        f.render_widget(
+            Paragraph::new(items).style(Style::default().bg(self.ui.theme.bg)),
+            chunks[0],
+        );
+        let hint = panel.message.clone().unwrap_or_else(|| {
+            if panel.hosts.is_empty() {
+                "n new \u{b7} Esc close".to_string()
+            } else {
+                "\u{2191}\u{2193} select \u{b7} Enter/c connect \u{b7} n new \u{b7} e edit \u{b7} d delete \u{b7} Esc"
+                    .to_string()
+            }
+        });
+        f.render_widget(
+            Paragraph::new(hint).style(Style::default().fg(self.ui.theme.warning)),
+            chunks[1],
+        );
+    }
+
     fn render_keybinds_overlay(&self, f: &mut Frame) {
         let area = self.centered_rect(66, 34, f);
         f.render_widget(Clear, area);
@@ -6105,12 +6832,14 @@ impl ModernApp {
         lines.push(Line::from(""));
         lines.push(section("Workflows"));
         lines.push(row("v", "Visual builder (pick saved commands)"));
-        lines.push(row("r", "Execute workflow"));
+        lines.push(row("r", "Execute workflow (background)"));
+        lines.push(row("X", "Cancel the running workflow"));
 
         lines.push(Line::from(""));
         lines.push(section("Secrets"));
         lines.push(row("k", "Generate SSH / GPG key"));
         lines.push(row("c", "Copy (decrypts) secret value"));
+        lines.push(row("H", "SSH host manager (connect / CRUD)"));
 
         lines.push(Line::from(""));
         lines.push(section("Plugins"));
@@ -6120,6 +6849,7 @@ impl ModernApp {
         lines.push(Line::from(""));
         lines.push(section("Settings"));
         lines.push(row("a", "Advanced mode (visual theme editor)"));
+        lines.push(row("u", "Admin: manage users (delete / reset password)"));
         lines.push(row("Ctrl+S", "Save settings to config.conf"));
 
         if crate::auth::dev_mode_enabled() {
@@ -7259,5 +7989,160 @@ mod tests {
         app.handle_key(key(KeyCode::Esc)).await;
         assert!(app.sudo_password.is_none());
         assert!(app.sudo_pending_command.is_none());
+    }
+}
+
+#[cfg(test)]
+mod panel_tests {
+    use super::*;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    fn ctrl_s() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
+    }
+
+    async fn test_app() -> ModernApp {
+        let pool = std::sync::Arc::new(
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        crate::db::run_migrations(&pool).await.unwrap();
+        ModernApp::new(pool, crate::config::AppConfig::default())
+    }
+
+    // ── US-WF-09: workflow run cancel ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cancel_key_without_running_workflow_sets_status() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Workflows;
+        app.handle_key(key(KeyCode::Char('X'))).await;
+        assert!(app.running_workflow.is_none());
+        assert!(app
+            .status_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("No workflow"));
+    }
+
+    // ── US-SEC: admin user panel ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn users_panel_requires_admin() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Settings;
+        // The default profile in a fresh test DB is NOT an admin.
+        app.handle_key(key(KeyCode::Char('u'))).await;
+        assert!(app.users_panel.is_none());
+        assert!(app
+            .status_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("admin"));
+    }
+
+    #[tokio::test]
+    async fn users_panel_admin_can_delete_user() {
+        let mut app = test_app().await;
+        // Make the current user an admin, add a second user
+        let me = app.current_user_profile_id().await;
+        repository::set_admin(&*app.pool, &me, true).await.unwrap();
+        let other = repository::get_or_create_user(&*app.pool, "bob")
+            .await
+            .unwrap();
+
+        app.ui.state = AppState::Settings;
+        app.handle_key(key(KeyCode::Char('u'))).await;
+        assert!(app.users_panel.is_some(), "admin should open the panel");
+
+        // bob sorts before 'default' by username — already selected
+        app.handle_key(key(KeyCode::Char('d'))).await; // arm delete
+        app.handle_key(key(KeyCode::Enter)).await; // confirm
+        assert!(!repository::list_user_profiles(&*app.pool)
+            .await
+            .unwrap()
+            .iter()
+            .any(|u| u.id == other.id));
+    }
+
+    // ── US-SSH-01..05: SSH host manager panel ────────────────────────────────
+
+    #[tokio::test]
+    async fn ssh_panel_create_connect_and_delete() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Secrets;
+        app.handle_key(key(KeyCode::Char('H'))).await;
+        assert!(app.ssh_panel.is_some());
+
+        // Create a host through the form (n → type → Ctrl+S)
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        for (field, text) in [
+            (0usize, "prod"),
+            (1, "10.1.1.9"),
+            (2, "2222"),
+            (3, "gerard"),
+            (4, "~/.ssh/id_ed25519"),
+        ] {
+            if field == 2 {
+                // Port starts pre-filled with 22 — clear it first
+                app.handle_key(key(KeyCode::Backspace)).await;
+                app.handle_key(key(KeyCode::Backspace)).await;
+            }
+            for ch in text.chars() {
+                app.handle_key(key(KeyCode::Char(ch))).await;
+            }
+            if field < 4 {
+                app.handle_key(key(KeyCode::Tab)).await;
+            }
+        }
+        app.handle_key(ctrl_s()).await;
+
+        let hosts = repository::list_ssh_hosts(&*app.pool).await.unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].name, "prod");
+        assert_eq!(hosts[0].port, 2222);
+        assert_eq!(hosts[0].username.as_deref(), Some("gerard"));
+
+        // Connect: sets the new-terminal command and closes the panel
+        app.handle_key(key(KeyCode::Enter)).await;
+        let (cmd, _cwd) = app
+            .wants_terminal_cmd
+            .take()
+            .expect("connect should arm ssh");
+        assert!(cmd.starts_with("ssh -p 2222"), "unexpected: {}", cmd);
+        assert!(cmd.ends_with("gerard@10.1.1.9"));
+        assert!(cmd.contains("-i ~/.ssh/id_ed25519"));
+        assert!(app.ssh_panel.is_none());
+
+        // Delete the host
+        app.ui.state = AppState::Secrets;
+        app.handle_key(key(KeyCode::Char('H'))).await;
+        app.handle_key(key(KeyCode::Char('d'))).await;
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert!(repository::list_ssh_hosts(&*app.pool)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn ssh_form_connect_command_shapes() {
+        let mut f = SshForm::new();
+        assert!(f.connect_command().is_none(), "no hostname → no command");
+        f.hostname = "host.example.com".into();
+        assert_eq!(f.connect_command().unwrap(), "ssh -p 22 host.example.com");
+        f.username = "root".into();
+        f.port = "2200".into();
+        f.key_path = "/keys/k".into();
+        assert_eq!(
+            f.connect_command().unwrap(),
+            "ssh -i /keys/k -p 2200 root@host.example.com"
+        );
     }
 }

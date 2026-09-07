@@ -7,7 +7,8 @@ use mlua::Lua;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
@@ -25,6 +26,9 @@ pub struct WorkflowContext {
     /// exposed to the script as `secrets.<name>` / `get_secret(name)`
     /// (reauth-protected secrets are excluded; US-SEC, US-WF-04).
     pub user_id: Option<String>,
+    /// Cooperative cancellation flag (US-WF-09): checked before every step.
+    /// Set through [`cancel_run`] or by sharing this token directly.
+    pub cancel: Arc<AtomicBool>,
 }
 
 /// Workflow execution result.
@@ -170,6 +174,9 @@ impl WorkflowEngine {
         let mut output = String::new();
         let mut steps_completed = 0;
 
+        // Make this run cancellable via `cancel_run(run_id)` (US-WF-09)
+        register_run(&context.run_id, context.cancel.clone());
+
         tracing::info!(
             workflow = %definition.name,
             run_id = %context.run_id,
@@ -203,8 +210,23 @@ impl WorkflowEngine {
             }
         }
 
-        // Execute steps in dependency order (simple linear execution for now)
+        // Execute steps in dependency order (simple linear execution for now).
+        // Before every step the cooperative cancel flag is checked (US-WF-09).
         for step in &definition.steps {
+            if context.cancel.load(Ordering::Relaxed) {
+                let msg = format!("✗ Run cancelled by user after {} step(s)", steps_completed);
+                tracing::info!(run_id = %context.run_id, "workflow cancelled by user");
+                unregister_run(&context.run_id);
+                return Ok(WorkflowResult {
+                    run_id: context.run_id,
+                    success: false,
+                    output,
+                    error: Some(msg),
+                    duration_ms: start_time.elapsed().as_millis() as u64,
+                    steps_completed,
+                });
+            }
+
             tracing::info!(step = %step.name, "executing workflow step");
 
             match self.lua.load(&step.script).exec() {
@@ -216,6 +238,7 @@ impl WorkflowEngine {
                     let error_msg = format!("✗ Step '{}' failed: {}", step.name, e);
                     tracing::error!(step = %step.name, error = %e, "workflow step failed");
 
+                    unregister_run(&context.run_id);
                     return Ok(WorkflowResult {
                         run_id: context.run_id,
                         success: false,
@@ -236,6 +259,7 @@ impl WorkflowEngine {
             "workflow execution completed successfully"
         );
 
+        unregister_run(&context.run_id);
         Ok(WorkflowResult {
             run_id: context.run_id,
             success: true,
@@ -279,6 +303,7 @@ pub fn create_workflow_context(
         variables: variables.unwrap_or_default(),
         pool,
         user_id: None,
+        cancel: Arc::new(AtomicBool::new(false)),
     }
 }
 
@@ -463,6 +488,83 @@ pub async fn execute_workflow_by_id_for_user(
     let engine = WorkflowEngine::new(pool)?;
 
     engine.execute_workflow(&definition, context).await
+}
+
+// ---------------------------------------------------------------------------
+// Run registry + cooperative cancellation (US-WF-09)
+// ---------------------------------------------------------------------------
+
+/// Registry of in-flight runs: `run_id -> cancel token`. Shared between the
+/// TUI and the REST API so either can stop a running workflow.
+static ACTIVE_RUNS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+
+fn active_runs() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    ACTIVE_RUNS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Register a run so it can be cancelled later (shares the context token).
+fn register_run(run_id: &str, token: Arc<AtomicBool>) {
+    if let Ok(mut runs) = active_runs().lock() {
+        runs.insert(run_id.to_string(), token);
+    }
+}
+
+/// Remove a finished run from the registry.
+fn unregister_run(run_id: &str) {
+    if let Ok(mut runs) = active_runs().lock() {
+        runs.remove(run_id);
+    }
+}
+
+/// Request cooperative cancellation of a running workflow (US-WF-09).
+/// Returns `true` when the run was found and the flag was set; the engine
+/// stops before the next step and records the run as failed with
+/// "cancelled by user".
+pub fn cancel_run(run_id: &str) -> bool {
+    if let Ok(runs) = active_runs().lock() {
+        if let Some(token) = runs.get(run_id) {
+            token.store(true, Ordering::Relaxed);
+            return true;
+        }
+    }
+    false
+}
+
+/// IDs of currently registered (in-flight or pollable) runs.
+pub fn active_run_ids() -> Vec<String> {
+    active_runs()
+        .lock()
+        .map(|runs| runs.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// Spawn a workflow run in the background so the TUI/API stays responsive and
+/// the run can be cancelled via [`cancel_run`] (US-WF-09). Returns the
+/// assigned `run_id` plus the task handle producing the final result.
+pub async fn spawn_workflow_run(
+    pool: Arc<SqlitePool>,
+    entity_id: &str,
+    variables: Option<HashMap<String, String>>,
+    user_id: Option<String>,
+) -> AppResult<(String, tokio::task::JoinHandle<AppResult<WorkflowResult>>)> {
+    let entity = repository::get_entity(&pool, entity_id).await?;
+    if entity.type_id != "wf" {
+        return Err(AppError::Validation(format!(
+            "Entity {} is not a workflow (type: {})",
+            entity.id, entity.type_id
+        )));
+    }
+    let definition = resolve_workflow_definition(&entity)?;
+    let context =
+        create_workflow_context_for_user(entity.id.clone(), pool.clone(), variables, user_id);
+    let run_id = context.run_id.clone();
+    // Register before spawning so the run is cancellable immediately,
+    // even before the task starts executing (execute_workflow re-registers
+    // the same token — idempotent).
+    register_run(&run_id, context.cancel.clone());
+    let engine = WorkflowEngine::new(pool)?;
+    let handle = tokio::spawn(async move { engine.execute_workflow(&definition, context).await });
+    Ok((run_id, handle))
 }
 
 /// Resolve the workflow definition: file-backed workflows (metadata
@@ -789,5 +891,50 @@ mod tests {
         let engine = WorkflowEngine::new(pool).unwrap();
         let result = engine.execute_script(script, context).await.unwrap();
         assert!(result.success, "workflow failed: {:?}", result.error);
+    }
+}
+
+#[cfg(test)]
+mod cancel_tests {
+    use super::*;
+
+    fn test_pool() -> Arc<SqlitePool> {
+        // Not used for the pure-flag tests below.
+        Arc::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap())
+    }
+
+    #[test]
+    fn cancel_run_unknown_id_returns_false() {
+        assert!(!cancel_run("no-such-run-id"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_context_stops_before_first_step() {
+        let pool = test_pool();
+        let engine = WorkflowEngine::new(pool.clone()).unwrap();
+        let mut context = create_workflow_context("wf".into(), pool, None);
+        // Cancel before execution begins
+        context.cancel.store(true, Ordering::Relaxed);
+        let definition = WorkflowDefinition {
+            name: "cancel-me".into(),
+            description: None,
+            variables: HashMap::new(),
+            steps: vec![
+                WorkflowStep {
+                    name: "never-runs".into(),
+                    script: "log('side effect')".into(),
+                    depends_on: Vec::new(),
+                },
+                WorkflowStep {
+                    name: "never-runs-2".into(),
+                    script: "log('side effect 2')".into(),
+                    depends_on: Vec::new(),
+                },
+            ],
+        };
+        let result = engine.execute_workflow(&definition, context).await.unwrap();
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("cancelled"));
+        assert_eq!(result.steps_completed, 0);
     }
 }

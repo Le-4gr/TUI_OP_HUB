@@ -5,6 +5,75 @@
 
 ---
 
+## 📋 Story Backlog — priority order (say "continue stories" to work the next item)
+
+1. **🟡 P1 — Navigation restructure (US-TUI-11/12)**: Knowledge Base parent page with
+   Commands/Apps/Scripts as subpages; Settings becomes the LAST tab; configurable tab order
+   in `config.conf`. Touches `AppState`, digit mapping, hints, many tests.
+2. **🟡 P1 — Config management page (US-CFG-09..12)**: register existing files/folders or
+   create new; deploy via symlink / hard link / copy to multiple targets; drift check +
+   re-deploy; per-config git (init/commit/log, optional remote). Backend `config_manager.rs`
+   exists as a starting point. New tab/panel + repository functions.
+3. **🟡 P2 — Plugin project templates (US-PLG-14/15, US-PROJ-08)**: plugins ship scaffold
+   templates (files/folders/git/commands); optional (never default) template picker in the
+   project creation flow; preview + edit before apply.
+4. **🟡 P2 — Plugin UI actions (US-PLG-13)**: plugins register on-screen buttons
+   (label/target defined in plugin code), capability-gated; e.g. "Create starting files"
+   button on a project view.
+5. **🟡 P2 — Visual-scripting logic gates (US-FUT-07)**: AND/OR/NOT/XOR/comparison/if-else
+   nodes with typed boolean ports in the visual workflow builder.
+6. **🟢 P3 — Parked future areas** (backend exists, UI not planned yet): US-PROC
+   (process manager — use btop/htop, don't rebuild), US-PKG, US-ENV, US-BAK, US-DB.
+7. **🟡 leftovers**: US-SSH-04 host grouping/tags; US-SSH-05 connection *test* (currently
+   quick-connect only); plugin approval workflow for headless service runs.
+
+---
+## 🎯 Session 17: story batch — workflow cancel, admin users panel, SSH host manager (completed)
+
+**Prioritised the full remaining-story list** (see the Story Backlog at the top of this file):
+implemented the three most valuable/ready items this session; the rest are queued in order.
+
+### 1. US-WF-09 — Workflow stop/cancel ✅
+- `WorkflowContext.cancel: Arc<AtomicBool>` checked before every step; cancelled runs are
+  recorded as failed with "cancelled by user" and partial `steps_completed`.
+- Run registry (`ACTIVE_RUNS`) shared by TUI + API: `cancel_run(run_id)`, `active_run_ids()`,
+  `unregister_run` on all three engine exit paths. Runs are registered *before* the spawned
+  task starts, so cancellation works immediately after spawn (race fixed).
+- `workflow::spawn_workflow_run()` — TUI no longer awaits workflows inline; runs execute in
+  the background and are polled in `handle_key` + the `run()` loop; result popup + history
+  still recorded (US-WF-08). Second concurrent run is blocked with a status hint.
+- **`X` on Workflows cancels**; API `GET /runs` + `POST /runs/{run_id}/cancel`.
+
+### 2. Admin user management panel ✅ (backend existed, UI was missing)
+- **Settings → `u`** (admin only; non-admins get a status message): lists all users with
+  admin badges, `d` + Enter deletes a user (secrets cascade), Enter on a user resets their
+  password to `reset-me` (old key undecryptable — documented). Esc closes.
+- Wired inside `handle_settings_key` (after text-edit/capture modes) so it does not swallow
+  typing; the global `u` arm in `handle_key` is unreachable for Settings and left for other
+  screens.
+
+### 3. US-SSH-01..03/06 — SSH host manager ✅
+- New `repository::update_ssh_host` (NotFound on unknown id) alongside existing CRUD.
+- **Secrets → `H`** opens the host panel: list with user@host:port, `n` create / `e` edit
+  (5-field form: name, hostname, port, username, key path — Tab cycles, Ctrl+S saves),
+  `d`+Enter delete with confirm, **Enter/c quick-connects** via
+  `ssh -i key -p port user@host` in a NEW terminal window (US-SSH-05).
+
+### Tests: 202 total (155 lib + 47 BDD), 0 failures
+- workflow cancel_tests (pre-cancelled context, unknown-id), repository ssh round-trip,
+- TUI panel_tests: cancel-without-run status, non-admin blocked, admin delete flow,
+  SSH create→connect-command shape→delete, SshForm::connect_command unit test,
+- BDD: background run cancelled cooperatively (sleep steps, run unregistered),
+  SSH host CRUD round trip.
+
+### Gotchas for next agents
+- `SshForm.port` is pre-filled "22" — tests must Backspace before typing a port.
+- Users list is sorted by username: "bob" < "default" (test selection order).
+- `X` (cancel) vs `x` (export): deliberate case distinction on Workflows.
+
+---
+
+
 ## 🎯 Session 16 — COMPLETE SESSION SUMMARY (all work in this chat)
 
 > **Update 16 (same session):** Requirements captured — 11 new user stories (USER_STORIES.md

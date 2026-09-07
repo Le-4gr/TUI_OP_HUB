@@ -62,8 +62,8 @@
 **Remaining Phase 2 work**:
 - ✅ `US-PLG-05`, `US-PLG-06`: Plugin manifest + capability approval (Plugins tab, DB-enforced)
 - ✅ `US-PLG-07`, `US-PLG-10`: Lua mod loading, event hooks, Plugins tab (list/approve/enable)
-- 🔄 `US-SSH-01` through `US-SSH-06`: SSH host manager TUI and quick-connect
-- 🔄 `US-WF-09`: Workflow stop/cancel for running workflows
+- ✅ `US-SSH-01`..`03`, `06`: SSH host manager panel (Secrets → `H`) — CRUD + quick-connect; host grouping/tags still open
+- ✅ `US-WF-09`: background workflow runs with `X` cancel (TUI) + `POST /runs/{id}/cancel` (API)
 - ✅ `US-DEP-04`: Systemd integration (user service, `--install-service`, `--headless` daemon mode)
 - 🔄 Admin user management TUI panel (backend + API done)
 
@@ -138,7 +138,7 @@
 | `US-WF-06` | As a **User**, I want to **run a workflow** on demand, so that I can execute an automation when needed. | 🟡 | 3 |
 | `US-WF-07` | As a **User**, I want to **schedule** workflows (internal scheduler or systemd), so that they run automatically at set times. | ✅ | 8 |
 | `US-WF-08` | As a **User**, I want to view **run history and status** of each workflow execution, so that I can verify success or debug failures. | 🟡 | 5 |
-| `US-WF-09` | As a **User**, I want to **stop** a running workflow, so that I can cancel long or mistaken runs. | 🟡 | 3 |
+| `US-WF-09` | As a **User**, I want to **stop** a running workflow, so that I can cancel long or mistaken runs. | ✅ | 3 |
 | `US-WF-10` | As a **Power User**, I want **reusable workflow pipelines**, so that I can compose automations from smaller pieces. | 🟢 | 5 |
 | `US-WF-11` | As a **Power User**, I want a **visual workflow editor** (future), so that I can build DAGs without writing YAML. | 🟢 | 13 |
 
@@ -216,12 +216,12 @@
 
 | ID | Story | Priority | Points |
 |:---|:---|:---:|:---:|
-| `US-SSH-01` | As a **User**, I want to manage **SSH host configurations**, so that I can keep connection details organized. | 🟡 | 3 |
-| `US-SSH-02` | As a **User**, I want to store **key-based authentication** per host, so that connections are secure and automatic. | 🟡 | 3 |
-| `US-SSH-03` | As a **User**, I want a **quick-connect interface**, so that I can open an SSH session with a single action. | 🟡 | 3 |
+| `US-SSH-01` | As a **User**, I want to manage **SSH host configurations**, so that I can keep connection details organized. | ✅ | 3 |
+| `US-SSH-02` | As a **User**, I want to store **key-based authentication** per host, so that connections are secure and automatic. | ✅ | 3 |
+| `US-SSH-03` | As a **User**, I want a **quick-connect interface**, so that I can open an SSH session with a single action. | ✅ | 3 |
 | `US-SSH-04` | As a **User**, I want to **group hosts** by tags or projects, so that I can find the right server quickly. | 🟡 | 2 |
 | `US-SSH-05` | As a **User**, I want to **test** an SSH connection, so that I can verify reachability before relying on it. | 🟢 | 2 |
-| `US-SSH-06` | As a **User**, I want to **edit host details** (address, port, user, key), so that connection info stays current. | 🟡 | 2 |
+| `US-SSH-06` | As a **User**, I want to **edit host details** (address, port, user, key), so that connection info stays current. | ✅ | 2 |
 
 ---
 
