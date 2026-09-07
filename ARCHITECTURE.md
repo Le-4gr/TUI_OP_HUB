@@ -59,7 +59,7 @@ TUI-OP-HUB is a terminal-based operations hub built with Rust, designed to provi
 
 ## Core Modules
 
-### 1. Config Module (`src/config/mod.rs`)
+### 1. Config Module (`src/config.rs`)
 
 **Responsibility**: Load and manage application configuration
 
@@ -97,7 +97,7 @@ TUI-OP-HUB is a terminal-based operations hub built with Rust, designed to provi
 - **ssh_hosts**: SSH host configurations
 - **scheduled_tasks**: Cron-based task scheduling
 
-### 3. Models Module (`src/models/mod.rs`)
+### 3. Models Module (`src/models.rs`)
 
 **Responsibility**: Data structure definitions with serialization
 
@@ -113,7 +113,7 @@ TUI-OP-HUB is a terminal-based operations hub built with Rust, designed to provi
 - `SshHost`: SSH connection configuration
 - `ScheduledTask`: Cron task definition
 
-### 4. Repository Module (`src/repository/mod.rs`)
+### 4. Repository Module (`src/repository.rs`)
 
 **Responsibility**: Data access layer with async CRUD operations
 
@@ -139,7 +139,7 @@ pub async fn create_entity(pool: &SqlitePool, req: &CreateEntity) -> AppResult<E
 }
 ```
 
-### 5. API Module (`src/api/mod.rs`)
+### 5. API Module (`src/api.rs`)
 
 **Responsibility**: HTTP endpoints and request/response handling
 
@@ -163,7 +163,7 @@ async fn handler(State(state): State<AppState>, Json(req): Json<Req>) -> Result<
 }
 ```
 
-### 6. TUI Module (`src/tui/mod.rs`)
+### 6. TUI Module (`src/tui/`)
 
 **Responsibility**: Terminal user interface with interactive navigation
 
@@ -232,7 +232,7 @@ pub async fn decrypt_for_user(pool: &SqlitePool, user_id: &str, value_enc_b64: &
 }
 ```
 
-### 8. Workflow Module (`src/workflow/mod.rs`)
+### 8. Workflow Module (`src/workflow.rs`)
 
 **Responsibility**: Lua-based workflow engine with Host functions
 
@@ -270,7 +270,7 @@ pub struct WorkflowResult {
 }
 ```
 
-### 9. Service Module (`src/service/mod.rs`) — US-DEP-04
+### 9. Service Module (`src/service.rs`) — US-DEP-04
 
 **Responsibility**: init-system integration without external dependencies.
 
@@ -286,7 +286,7 @@ pub struct WorkflowResult {
 **CLI flags** (parsed in `main.rs`, no clap): `--help`, `--headless`,
 `--print-unit`, `--install-service`, `--uninstall-service`.
 
-### 10. Scheduler (`src/scheduler/mod.rs`) — US-WF-07
+### 10. Scheduler (`src/scheduler.rs`) — US-WF-07
 
 **Responsibility**: execute cron-scheduled workflows.
 

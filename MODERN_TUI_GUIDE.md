@@ -2,7 +2,7 @@
 
 ## Overview
 
-TUI-OP-HUB now features a **modern, polished terminal user interface** with:
+TUI-OP-HUB features a **modern, polished terminal user interface** with:
 
 - ✨ **Beautiful Login Screen** - Centered, professional authentication
 - 🎯 **Modern Dashboard** - Card-based layout with statistics
@@ -376,15 +376,15 @@ Style::default().fg(theme.success)  // For success
 
 ## 🚀 Future Enhancements
 
-Planned improvements:
+Status (updated):
 
+- [x] **Themes** - 6 presets + custom themes + visual color editor (Settings > a)
+- [x] **Modal Dialogs** - delete confirm, sudo password, cron input, import/export path, project detail, run result, keybind overlay
+- [x] **Tabs** - 9 tabs (Dashboard, Commands, Apps, Scripts, Projects, Workflows, Secrets, Settings, Plugins), keys 1-9 from any screen
+- [x] **Charts** - Dashboard mini-btop: CPU per-core bars, RAM/swap gauges, network rates, temperatures, GPU stats (auto-refresh 2s)
+- [x] **Search** - per-tab fuzzy search with a visible search bar (`/`)
 - [ ] **Animations** - Smooth transitions between states
-- [ ] **Themes** - Multiple color schemes (dark, light, high contrast)
-- [ ] **Notifications** - Toast-style messages
-- [ ] **Modal Dialogs** - Confirmation prompts
-- [ ] **Tabs** - Multi-tab navigation in dashboard
-- [ ] **Charts** - Visual statistics and graphs
-- [ ] **Search** - Global search with fuzzy matching
+- [ ] **Notifications** - Toast-style messages (status bar used instead)
 - [ ] **Command Palette** - Quick action launcher
 
 ---

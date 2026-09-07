@@ -7,6 +7,21 @@
 
 ## 🎯 Session 16 — COMPLETE SESSION SUMMARY (all work in this chat)
 
+> **Update 16 (same session):** Requirements captured — 11 new user stories (USER_STORIES.md
+> §22 + dashboard updated to 141 total). Five features from user feedback: (1) navigation
+> restructure — Commands/Apps/Scripts become subpages of a Knowledge Base parent page,
+> Settings last, tab order configurable (US-TUI-11/12); (2) Config Management page completion
+> — register existing files/folders or create new, deploy via symlink/hardlink/copy with
+> update + drift, per-config git (US-CFG-09..12); (3) plugin UI actions — mods register
+> buttons with labels from plugin code, e.g. Create starting files on a project (US-PLG-13);
+> (4) plugin-driven project scaffold templates — opt-in only, never by default, preview +
+> customize before apply (US-PLG-14/15, US-PROJ-08); (5) logic gates for visual scripting —
+> AND/OR/NOT/XOR/comparison/if-else nodes with typed boolean ports (US-FUT-07). Docs
+> refreshed: README rewritten (449 -> ~340 lines; merged duplicate structure/license/tech
+> sections, fixed port 3000->3001 refs and corrupted table row, full keybinding + API +
+> layout tables matching the 9-tab UI), docs/INDEX.md table repaired, ARCHITECTURE.md
+> module paths updated to the flat layout, MODERN_TUI_GUIDE.md future-checklist synced.
+
 > **Update 15 (same session):** Full file-tree normalisation pass (continued restructure).
 > Rule now enforced uniformly: a folder exists ONLY when the module has real submodules;
 > every single-file module is a flat <name>.rs. Flattened: auth, keygen, plugin, api,

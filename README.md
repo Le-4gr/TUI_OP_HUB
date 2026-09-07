@@ -1,6 +1,7 @@
 # TUI-OP-HUB
 
-A terminal-based operations hub for command management, workflow automation, and secure secret storage with multi-user encryption support.
+A terminal-based operations hub for command management, workflow automation, and
+secure secret storage — local-first, single binary, keyboard-driven.
 
 ## Features
 
@@ -8,19 +9,19 @@ A terminal-based operations hub for command management, workflow automation, and
 
 - **Entity Management**: Create, read, update, delete typed entities (commands, scripts, apps, workflows, environment variables, configs, secrets)
 - **Project Organization**: Group entities by project with filtering and search
-- **Tag System**: Organize entities with flexible tagging  
+- **Tag System**: Organize entities with flexible tagging
 - **Full-Text Search**: Fast FTS5-powered search across all entities
 - **Workflow Automation**: Lua-based workflow engine with Host functions (run_command, query_entity, emit_event, log)
 - **Workflow Execution**: Execute workflows from TUI with run history tracking
 - **Encrypted Secrets**: XChaCha20Poly1305 AEAD cipher with per-user key management
 - **User Profiles**: Multi-user support with individual encryption keys
 - **REST API**: Axum-based HTTP API for full CRUD and workflow execution
-- **TUI Dashboard**: Interactive terminal UI with 8 tabs (Dashboard, Commands, Apps, Scripts, Projects, Workflows, Secrets, Settings) — number keys 1-8, Enter on a project opens its detail view
+- **TUI Dashboard**: Interactive terminal UI with 9 tabs (Dashboard, Commands, Apps, Scripts, Projects, Workflows, Secrets, Settings, Plugins) — number keys 1-9, Enter on a project opens its detail view
 - ✅ Knowledge **import/export**: portable JSON bundles (see [`docs/IMPORT_EXPORT.md`](docs/IMPORT_EXPORT.md)) — AI-generatable
 - ✅ **Cron scheduling** (US-WF-07): run workflows on cron expressions via the built-in scheduler daemon
 - ✅ **systemd / cron compatibility** (US-DEP-04): `tui-op-hub --install-service` runs the hub headless — `./install.sh` sets everything up; see [`docs/INSTALL.md`](docs/INSTALL.md)
 
-### Phase 2 🔄 In progress
+### Phase 2 ✅ Complete
 
 - **Scheduler daemon** (US-WF-07): cron-scheduled workflows execute automatically
 - **Secrets as workflow variables**: `secrets.<name>` / `get_secret("<name>")` in Lua workflows
@@ -38,74 +39,64 @@ A terminal-based operations hub for command management, workflow automation, and
   to a project, `E` opens a shell inside it
 - **Processes via known tools** (US-PROC): `p` launches btop/htop/top
 - **Sudo compat** (US-CMD-09): `R` on a command runs it with elevated privileges
-  via sudo/doas/su (auto-detected); password popup when needed, piped via `sudo -S`
-- **Embedded terminal**: `` ` `` on any screen drops into `$SHELL` and returns
-- **Sudo compat** (US-CMD-09): `R` on a command runs it with elevated privileges
-  via sudo/doas/su (auto-detected); password popup when needed, piped via `sudo -S`
-- **Embedded terminal**: `` ` `` on any screen drops into `$SHELL` and returns
-- **Keybinds helper** (US-TUI-09): `?` opens a full keybind cheat-sheet overlay
-  from **any** screen (Esc/`?` closes it); every screen's footer shows its
-  context-specific key hints (New/Edit/Delete/Run/Copy/Editor/Options/Man/
-  Visual/Shell/Keygen/Find/Sudo/…)
-- **Stolen-DB protection** (US-SEC): user encryption keys are bound to the
-  machine via `~/.config/tui-op-hub/machine.key` — a stolen `tuihub.db`
-  can't be decrypted elsewhere, even knowing the password; dev mode does
-  **not** bypass this (it deletes, never unlocks)
-- **Login-screen dev manager** (US-NF, cargo run only): press `u` on the login
-  screen to select users, **delete** them (secrets cascade) or **reset** a
-  forgotten password to `reset-me`
-- **Knowledge-base sharing** (`share` module): export commands/scripts/apps/
-  options/workflows to portable JSON with secrets **excluded**, **encrypted**
-  with an export passphrase (portable), or **plaintext** (opt-in); import
-  merges by name+type and never overwrites local edits
-- **Config file manager** (`config_manager`): store dotfiles centrally
-  (versioned), and **symlink** them into place (Hyprland-style "hyprlinks": the
-  DB holds the master copy, `$HOME` gets the link — point it where it should go)
-- **New project workspaces** (US-PROJ): `N` on the Projects tab creates a project
-  directory with git init, `.gitignore`, and environment scaffolding
-  (Python venv / Rust cargo / Node.js / Docker Compose / Kubernetes manifests) —
-  `O` opens the project in your chosen editor (nvim/vim/code/lazygit/yazi/…)
-- **Structured command families**: seeded commands have their options as
-  described child entities (`opt` type) — `i` shows them per family
-- **Stolen-DB protection** (US-SEC): user encryption keys are bound to the
-  machine via `~/.config/tui-op-hub/machine.key` — a stolen `tuihub.db`
-  can't be decrypted elsewhere, even knowing the password; dev mode does
-  **not** bypass this (it deletes, never unlocks)
-- **Login-screen dev manager** (US-NF, cargo run only): press `u` on the login
-  screen to select users, **delete** them (secrets cascade) or **reset** a
-  forgotten password to `reset-me`
-- **Knowledge-base sharing** (`share` module): export commands/scripts/apps/
-  options/workflows to portable JSON with secrets **excluded**, **encrypted**
-  with an export passphrase (portable), or **plaintext** (opt-in); import
-  merges by name+type and never overwrites local edits
-- **Config file manager** (`config_manager`): store dotfiles centrally
-  (versioned), and **symlink** them into place (Hyprland-style "hyprlinks": the
-  DB holds the master copy, `$HOME` gets the link — point it where it should go)
-- **Seeded knowledge base**: common command families (git, docker, systemctl,
-  **rc-service/rc-update for OpenRC**, ssh, curl, grep, find, tar, python3, cargo, …)
-  are prepopulated with their **options as structured child entities** (flag +
-  description); known tools (yazi/ranger/lf file browsers, fastfetch/neofetch,
-  nvim/vim, lazygit, fzf) are seeded as tagged `app` entries
-- **Man pages & structured help**: `m` opens the man page for a command,
-  `i` shows the family's options with descriptions
-- **Fuzzy search**: `/` now fuzzy-matches commands (subsequence scoring,
-  best match first) across name and description
-- **Fetch panel**: `f` on the dashboard shows system info (OS, kernel,
-  init system — systemd **and** OpenRC are detected — CPU/RAM/swap/uptime)
-- **Graceful tool handling**: missing external tools (ssh-keygen, gpg, man,
-  process viewers) produce friendly notifications instead of failures
-- Plugin architecture (models, schema, DB functions, approval workflow structure)
-- SSH host manager (models, schema, DB functions)
+
+### Phase 2 extras (this iteration)
+
+- **Dashboard mini-btop** (US-PROC-01): CPU (overall + per-core bars), RAM/swap, physical
+  network interfaces with live RX/TX (docker/veth/VPN filtered out), temperatures, GPU
+  stats via nvidia-smi — auto-refreshing every 2s
+- **Quick launches**: `g` lazygit / `d` lazydocker / `k` k9s / `n` lazynpm open in a new
+  terminal window when installed
+- **Plugin/mod system** (US-PLG): Lua mods with `plugin.toml` manifests, capability
+  approval, event hooks (`project_created` — e.g. automatic git init + first commit);
+  Plugins tab (`9`) to approve/enable; see [`docs/PLUGINS.md`](docs/PLUGINS.md)
+- **Project workspaces** (US-PROJ): `N` creates dir + git + env scaffold (path stored),
+  `n` registers an existing directory, `O` opens the workspace in your editor
+- **Secrets v2** (US-SEC): groups, username/URL/email fields, optional passphrase layer
+  (`[locked]`), ssh-agent loading (`S`, auto after login), SSH terminals (`t`)
+- **Lenient import + duplicate strategies**: full bundle, bare AI entity array, or
+  `entities`-only JSON; per-import skip / overwrite / rename; file-picker integration
+  (yazi → nnn → ranger → lf → zenity → kdialog)
+- **New terminal window**: `` ` `` spawns your terminal emulator running the shell
+  (`$TERMINAL` override, 11-emulator fallback)
+### Phase 3 🔄 Planned (requirements captured)
+
+- **Navigation restructure** (US-TUI-11/12): Commands, Apps and Scripts become
+  subpages of a "Knowledge Base" parent page that describes each of them;
+  Settings moves to the last tab; tab order configurable
+- **Config Management page** (US-CFG-09..12): register existing files/folders or
+  create new configs, deploy them as symlink / hard link / copy with update + drift
+  actions, and per-config git integration (init / commit / diff / push-pull)
+- **Plugin UI actions** (US-PLG-13): plugins register on-screen buttons (e.g. a
+  "Create starting files" button on a project) — label and target defined in plugin code
+- **Project scaffold templates** (US-PLG-14/15, US-PROJ-08): opt-in templates
+  (files, folders, repo, post-create commands) shipped by plugins — e.g. a Python
+  starter that creates a venv, README, pyproject and a git repo; preview +
+  customize before applying; never applied by default
+- **Logic gates for visual scripting** (US-FUT-07): AND / OR / NOT / XOR /
+  comparison / if-else nodes with typed boolean ports in the DAG builder
+- **Visible search bar**: `/` replaces the footer with the live query + hints
+- **Digits 1-9 switch tabs from any screen** (Settings included)
 
 ## Quick Start
 
-### Build
+### Install (recommended)
+
+```bash
+./install.sh          # build + install binary + enable background service
+```
+
+See [`INSTALL.md`](INSTALL.md) and [`docs/INSTALL.md`](docs/INSTALL.md).
+
+### Build manually
+
 ```bash
 cd TUI-OP-HUB
 cargo build --release
 ```
 
 ### Run
+
 ```bash
 # Set encryption key (generate with: openssl rand -base64 32)
 export TUI_OP_HUB_SECRETS_KEY="<base64-32-byte-key>"
@@ -114,13 +105,16 @@ export TUI_OP_HUB_USER="default"  # Optional
 ./target/release/tui-op-hub
 ```
 
+CLI flags: `--headless` (scheduler + API, no TUI), `--install-service`,
+`--uninstall-service`, `--print-unit`, `--help`.
+
 ## Configuration
 
 Configuration lives in a **Hyprland-style** config file — `section { key = value }`
 blocks, `#` comments, quoted or bare values — at
 `~/.config/tui-op-hub/config.conf`. Missing keys fall back to defaults and unknown
 keys are ignored, so a minimal file is fine. Everything is also editable live in the
-**Settings screen** (`6`), then `Ctrl+S` to persist:
+**Settings screen** (`8`), then `Ctrl+S` to persist:
 
 ```ini
 # ~/.config/tui-op-hub/config.conf
@@ -128,268 +122,127 @@ keys are ignored, so a minimal file is fine. Everything is also editable live in
 
 general {
     # External editor for the "open in editor" action (o on the Commands tab).
-    # Empty = use $EDITOR, falling back to "vi".
-    editor = ""
-    user = default
+    editor = nano
 }
 
-database {
-    path = tuihub.db
-    busy_timeout_ms = 5000
+tui {
+    page_size = 20
+}
+
+theme {
+    name = dark
+}
+
+keybindings {
+    copy = c
+    run = r
 }
 
 api {
     bind_addr = 127.0.0.1:3001
 }
 
-tui {
-    enabled = true
-    page_size = 15
-}
-
-theme {
-    # Preset: dark | light | nord | dracula | gruvbox
-    # Any other name = your own custom theme: set the colors below.
-    name = dark
-    fg = white
-    bg = black
-    accent = yellow
-    status_bg = blue
-}
-
-keybindings {
-    quit = q
-    help = ?
-    search = /
-    filter = f
-    create = n
-    edit = e
-    delete = d
-    copy = c
-    run = r
+database {
+    path = tuihub.db
+    busy_timeout_ms = 5000
 }
 ```
 
 ### Create your own theme
 
-Give `name` any value that is not a preset and set the colors you want (named colors
-or hex `#rrggbb`). Unset colors fall back to the default palette, and you can also
-override individual colors *on top of* a preset:
-
-```ini
-theme {
-    name = mynight   # custom — anything not in the preset list
-    fg = #e6edf3
-    bg = #0d1117
-    accent = #f78166
-    primary = #58a6ff      # optional overrides
-    success = #3fb950
-    warning = #d29922
-    error = #f85149
-    border = #30363d
-    highlight = #58a6ff
-}
-```
-
-You can even override a single color of a preset — keep `name = nord` and add
-`primary = #89dceb` to tint just the primary color.
-
-### Settings screen (key `6`)
-The **numpad works everywhere** here (NumLock on sends digits): `2`/`8` move,
-`4`/`6` cycle, `7`/`9` jump to the first row, `1`/`3` jump to the last row.
-
-| Key | Action |
-|:----|:-------|
-| ↑/↓ | Navigate setting rows |
-| Enter | Edit value (editor / page size) or start key rebind capture |
-| ←/→ | Cycle theme preset (applied live) |
-| a | **Advanced mode** — visual theme color editor + system options |
-| Ctrl+S | Save settings to `config.conf` |
-| Esc | Back to dashboard |
-
-### Advanced mode (press `a` in Settings)
-A visual config editor with live preview:
-
-| Section | Rows |
-|:---|:---|
-| Theme colors | `fg`, `bg`, `accent`, `status_bg`, `primary`, `secondary`, `success`, `warning`, `error`, `border`, `highlight` — each row shows a **live color swatch** |
-| System | Database path, API bind address, DB busy timeout |
-
-| Key | Action |
-|:----|:-------|
-| ←/→ | **Cycle the row's color** through the palette (applied live) |
-| Enter | Type an exact value (named color or hex `#rrggbb`, paths, numbers) |
-| Backspace | Reset: optional colors back to `(preset)`, others to defaults |
-| Ctrl+S | Save everything to `config.conf` |
-| Esc | Back to Settings |
-
-Numpad: `2`/`8` navigate, `4`/`6` cycle colors, `7`/`9` first row, `1`/`3` last row.
+Themes are plain color lists in the config. Copy a preset (`dark`, `light`, `gruvbox`,
+`nord`, `dracula`, `solarized`) under `themes.<name>`, tweak, then set `theme.name`.
+The Settings screen (`8`) previews live and `a` opens the visual color editor.
 
 ## Security
 
-**Encryption Model**:
-- Secrets encrypted with XChaCha20Poly1305 AEAD cipher
-- Per-user 32-byte keys stored in `user_keys` table
-- Random 24-byte nonce per message (semantic security)
-- Plaintext never stored in database
-
-**Key Management**:
-- Generate key: `openssl rand -base64 32` (outputs 44-char base64)
-- Set via: `TUI_OP_HUB_SECRETS_KEY` environment variable
-- Or store in database via `user_keys` table with `user_id`
+- Secrets are encrypted with **XChaCha20-Poly1305**; the key comes from the per-user
+  entry in `user_keys` (Argon2-derived from the login password) or the
+  `TUI_OP_HUB_SECRETS_KEY` env fallback (written by `--install-service` to
+  `~/.config/tui-op-hub/env`, mode 600)
+- Passphrase-protected secrets add a second Argon2+XChaCha layer; every use re-asks
+- SSH keys flagged for the agent are offered to ssh-agent on login (agent auto-spawned);
+  key files written for ssh/ssh-add are mode 600 and removed after use
+- The systemd unit never embeds the secrets key
 
 ## TUI Keybindings
 
 | Key | Action |
 |:----|:-------|
-| Tab/Left/Right | Switch tabs |
+| 1-9 | Switch tab (from any screen) |
+| Tab | Cycle tabs |
 | Up/Down | Navigate items |
-| Enter | Select/Detail view |
-| ? | Help |
-| q | Quit |
+| Enter | Select / open project detail |
 | n | Create new |
-| e | Edit (detail view) |
-| d | Delete |
-| / | Search |
-| f | Filter by tags |
+| N | Create project workspace (Projects tab) |
+| e | Edit selected |
+| d | Delete (with confirm) |
+| / | Search (visible bar) |
 | c | Copy content |
-| o | Open command content in the configured external editor (Commands tab) |
+| o | Open in external editor |
 | r | Run (commands/workflows) |
-| v | View secret (Secrets tab) |
-| Esc | Cancel |
+| R | Run with sudo/doas/su |
+| s | Schedule workflow (Workflows tab) |
+| v | Visual workflow builder |
+| S | Load SSH keys into ssh-agent (Secrets tab) |
+| t | Open SSH terminal (Secrets tab) |
+| k | Keygen (Secrets tab) |
+| x / I | Export / Import knowledge base |
+| a | Approve plugin (Plugins tab) |
+| g/d/k/n | Quick launch lazygit/lazydocker/k9s/lazynpm (Dashboard) |
+| ` | Open a new terminal window |
+| ? | Keybind helper |
+| q / Esc | Quit / cancel |
 
 ## API Endpoints
 
-### Secrets (User-Specific)
+Base: `http://127.0.0.1:3001` (configurable via `api.bind_addr`)
+
+### Entities
+- `GET /entities` - List entities
+- `POST /entities` - Create entity
+- `GET /entities/{id}` - Get entity
+- `PUT /entities/{id}` - Update entity
+- `DELETE /entities/{id}` - Delete entity
+- `GET /entities/search?q=…` - FTS5 search
+- `GET /entities/filter-by-tags?tags=a,b` - Tag filter
+- `POST /entities/{id}/run` - Run entity
+
+### Projects
+- `GET /projects` - List projects
+- `POST /projects` - Create project
+- `GET /projects/{id}` - Get project
+- `DELETE /projects/{id}` - Delete project
+- `GET /projects/{id}/entities` - Project entities
+- `GET /projects/{id}/dashboard` - Project dashboard
+
+### Workflows & schedules
+- `POST /workflows/{id}/execute` - Execute workflow
+- `POST /workflows/{id}/schedule` - Schedule on cron (`{"cron_expr": "30 2 * * *"}`)
+- `GET /schedules` - List schedules
+- `DELETE /schedules/{id}` - Remove schedule
+
+### Secrets (user-specific)
 - `GET /secrets` - List user secrets
 - `POST /secrets` - Create encrypted secret
 - `GET /secrets/{id}` - Get secret (decrypted)
 - `PUT /secrets/{id}` - Update secret
 - `DELETE /secrets/{id}` - Delete secret
 
-### Workflows
-- `GET /workflows` - List workflows
-- `POST /workflows/{id}/execute` - Execute workflow
-
-### Entities
-- `GET /entities` - List entities
-- `POST /entities` - Create entity  
-- `GET /entities/{id}` - Get entity
-- `PUT /entities/{id}` - Update entity
-- `DELETE /entities/{id}` - Delete entity
+### Knowledge base
+- `GET /export` - Export bundle (secrets excluded)
+- `POST /import?duplicates=skip|overwrite|rename` - Import (lenient JSON shapes)
 
 ### Other
-- `GET /projects` - List projects
-- `GET /tags` - List tags
-- `GET /types` - List entity types
-
-## Architecture
-
-**Core Modules**:
-- **config**: Configuration management (`config.conf`, Hyprland-style)
-- **db**: SQLite schema with migrations, WAL mode
-- **models**: Data structures with sqlx derives
-- **repository**: Data access layer with async operations
-- **api**: Axum HTTP routes and handlers
-- **tui**: Ratatui terminal UI with 7 tabs
-- **secrets**: XChaCha20Poly1305 encryption/decryption
-- **workflow**: Lua-based engine with Host functions
-
-**Database**:
-- SQLite with WAL mode for concurrent access
-- 12+ tables: entities, projects, tags, types, workflow_runs, secrets, user_profiles, user_keys, plugins, ssh_hosts, scheduled_tasks
-- Full-text search with FTS5 virtual table
-- Foreign key constraints with ON CASCADE DELETE
-
-## Development
-
-### Tests
-```bash
-cargo test
-```
-
-### Format
-```bash
-cargo fmt --all
-```
-
-### Clippy
-```bash
-cargo clippy --all-targets -- -D warnings
-```
-
-## Build Profile
-
-**Release Build** (recommended):
-```bash
-cargo build --release
-```
-
-Optimizations applied:
-- opt-level = 3 (maximum optimization)
-- lto = true (link-time optimization)
-- codegen-units = 1 (better optimization)
-- strip = true (reduce binary size)
-
-Result: ~6.1 MB single executable with full feature set
-
-## Project Structure
-
-```
-TUI-OP-HUB/
-├── src/
-│   ├── main.rs              # Entry point
-│   ├── lib.rs               # Library exports
-│   ├── error.rs             # Error types
-│   ├── config/              # Configuration
-│   ├── db/                  # Database
-│   ├── models/              # Data models  
-│   ├── repository/          # Data access
-│   ├── api/                 # HTTP API
-│   ├── tui/                 # Terminal UI
-│   ├── secrets/             # Encryption
-│   ├── workflow/            # Lua engine
-│   └── environment.rs       # Env vars
-├── target/                  # Build output
-└── Cargo.toml               # Dependencies
-```
-
-## Dependencies
-
-Key stack:
-- **Runtime**: tokio (async)
-- **Web**: axum, tower-http
-- **Database**: sqlx (SQLite)
-- **TUI**: ratatui, crossterm
-- **Scripting**: mlua (Lua 5.4)
-- **Crypto**: chacha20poly1305, getrandom
-- **Serialization**: serde, serde_json, serde_yaml
-
-## Status
-
-**Version**: 0.2.0  
-**Phase 1**: ✅ Complete (workflows, secrets, user profiles)  
-**Phase 2**: 🔄 Ready (plugins, SSH, scheduler foundation)
-
-## License
-
-See project documentation for license terms.
-
-# Search
-curl "http://127.0.0.1:3000/entities/search?q=list"
-
-# Run a command via API
-curl -X POST http://127.0.0.1:3000/entities/\{id\}/run
-
-# Get project dashboard
-curl http://127.0.0.1:3000/projects/\{id\}/dashboard
-```
+- `GET /health` - Health + version
+- `GET /tags`, `GET /types` - Tag/type lists
+- `GET /users`, `DELETE /users` - Dev mode only
 
 ## Testing
 
 ```bash
 cd TUI-OP-HUB
-cargo test
+cargo test          # unit + BDD scenarios (195 tests)
 ```
 
 **Developer mode** — active automatically in debug builds (`cargo run`, `cargo test`)
@@ -409,40 +262,74 @@ or with `TUI_OP_HUB_DEV=1`:
 ```
 TUI-OP-HUB/
 ├── README.md                  # This file
+├── INSTALL.md                 # Quick install instructions
+├── install.sh                 # Release installer
+├── AGENTS.md                  # AI agent guide
+├── WORK.md                    # AI agent work log
 ├── bp.md                      # Business plan
 ├── STACK_AND_TOOLS_GUIDE.md   # Tech stack reference
 ├── USER_STORIES.md            # User stories and requirements
+├── docs/                      # Deep-dive guides (see docs/INDEX.md)
 ├── DB/                        # Database design (draw.io)
 ├── SKETCHES/                  # UI/UX sketches
 └── TUI-OP-HUB/                # Rust application
     ├── Cargo.toml
-    ├── RUST_COMMANDS.md       # Cargo cheat sheet
+    ├── tests/bdd_scenarios.rs # BDD integration tests
     └── src/
-        ├── main.rs            # Entry point
+        ├── main.rs            # Entry point (CLI flags, wiring)
         ├── lib.rs             # Module declarations
-        ├── config/mod.rs      # Configuration (themes, keybindings)
-        ├── db/mod.rs          # SQLite pool + migrations
-        ├── db/migrations/     # SQL migrations
-        ├── models/mod.rs      # Data models
-        ├── repository/mod.rs  # Data access layer
-        ├── api/mod.rs         # REST API (axum)
-        ├── tui/mod.rs         # Terminal UI (ratatui)
-        └── error.rs           # Error types
+        ├── error.rs           # AppError / AppResult
+        ├── api.rs             # REST API (axum)
+        ├── auth.rs            # Argon2 auth, per-user keys
+        ├── config.rs          # Configuration (themes, keybindings)
+        ├── config_manager.rs  # Config file storage/versions (Phase 3 stub)
+        ├── db/                # SQLite pool + migrations/ (0001..0007)
+        ├── environment.rs     # Env var management (Phase 3 stub)
+        ├── filepicker.rs      # yazi/nnn/ranger/lf/zenity/kdialog chain
+        ├── fuzzy.rs           # Fuzzy matcher
+        ├── keygen.rs          # SSH/GPG key generation
+        ├── models.rs          # Data models
+        ├── monitor.rs         # Dashboard mini-btop snapshot
+        ├── plugin.rs          # Plugin/mod system (Lua sandbox, events)
+        ├── privilege.rs       # sudo/doas/su detection
+        ├── process.rs         # Process/resource monitoring (sysinfo)
+        ├── project_workspace.rs # Workspace creation + editors
+        ├── repository.rs      # Data access layer (all SQL)
+        ├── scheduler.rs       # Cron scheduler daemon
+        ├── seed.rs            # Idempotent seed data
+        ├── secrets/           # Encryption + ssh_agent
+        ├── service.rs         # systemd/init integration
+        ├── share/             # Import/export (+ crypto submodule)
+        └── tui/               # modern_app, modern_ui, list_state, helpers
 ```
+
+**Layout rule**: a folder exists only when a module has real submodules
+(`db`, `secrets`, `share`, `tui`); every other module is a flat `<name>.rs`.
 
 ## Tech Stack
 
 | Component | Technology |
 |:----------|:-----------|
 | Language | Rust (edition 2021) |
-| Async rsleep 3 && wc -l /mnt/data/Fabian/Development/Projects/TUI-OP-HUB/README.md && head -3 /mnt/data/Fabian/Development/Projects/TUI-OP-HUB/README.mduntime | Tokio |
+| Async runtime | Tokio |
 | Database | SQLite (via sqlx, WAL mode) |
 | API | Axum |
 | TUI | Ratatui + Crossterm |
+| Scripting | mlua (Lua 5.4) |
+| Crypto | chacha20poly1305, argon2, getrandom |
+| Serialization | serde, serde_json, serde_yaml, toml |
 | Clipboard | arboard |
 | Config | Hyprland-style `config.conf` (custom parser) |
 | Logging | tracing + tracing-subscriber |
 | Errors | thiserror + anyhow |
+
+## Status
+
+**Version**: 0.2.0
+**Phase 1 & 2**: ✅ Complete
+**Phase 3**: 🔄 Planned — process TUI, package management, environments, config
+management (link/copy + git), plugin UI actions & project templates, visual-scripting
+logic gates, navigation restructure; see [`USER_STORIES.md`](USER_STORIES.md) §22.
 
 ## License
 

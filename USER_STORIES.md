@@ -400,6 +400,64 @@
 
 ---
 
+## 22. 🆕 New Requirements — Navigation, Config Management, Templates & Logic Gates
+
+> Added from user feedback (this iteration). These stories reshape the TUI
+> navigation, complete the Config Management domain, make project scaffolding
+> plugin-driven and opt-in, and add logic nodes to the visual workflow builder.
+
+### 22.1 🧭 Navigation restructure: category pages (US-TUI)
+
+The Commands / Apps / Scripts tabs become **subpages of a parent page** that
+describes what each subpage is for, so the top level stays small and
+self-explanatory. Settings moves to the **last** position.
+
+| ID | Story | Priority | Points |
+|:---|:---|:---:|:---:|
+| `US-TUI-11` | As a **User**, I want a **"Knowledge Base" parent page** that briefly describes the Commands, Apps and Scripts subpages (with live item counts), so that the tab bar stays clean and I always know where things live. | 🟡 | 3 |
+| `US-TUI-12` | As a **User**, I want **Settings to be the last tab** and the tab order to be **configurable** in `config.conf`, so that the layout matches my workflow. | 🟡 | 2 |
+
+**Notes**:
+- The parent page lists its subpages (`Commands — shell command families`,
+  `Apps — GUI/TUI launchers`, `Scripts — multi-line scripts`); Enter or a
+  number key opens the subpage. Subpages keep all existing keys.
+- Proposed order: Dashboard · Knowledge Base (Commands/Apps/Scripts) · Projects ·
+  Workflows · Secrets · Configs · Plugins · **Settings (last)**.
+
+### 22.2 📝 Config Management completion (US-CFG)
+
+Builds on the existing `config_manager` module (US-CFG-01..08). The page manages
+real config files/folders on disk — dotfiles, app configs, project configs.
+
+| ID | Story | Priority | Points |
+|:---|:---|:---:|:---:|
+| `US-CFG-09` | As a **User**, I want to **register an existing file or folder** as a managed config, or **create a new one** from the Configs page, so that all my configs are tracked in one place. | 🟡 | 3 |
+| `US-CFG-10` | As a **User**, I want each managed config to support **link or copy deployment** — symlink, hard link, or plain copy to one or more target locations — so that one config can serve many consumers. | 🟡 | 5 |
+| `US-CFG-11` | As a **User**, I want an **"update" action** that re-deploys a config to its targets and shows drift between source and deployed copies, so that changes propagate predictably. | 🟡 | 3 |
+| `US-CFG-12` | As a **User**, I want **git integration per managed config** (init, commit, log/diff, optional remote push/pull), so that my dotfiles are versioned without leaving the hub. | 🟡 | 5 |
+
+### 22.3 🧩 Plugin-driven project templates & UI actions (US-PLG, US-PROJ)
+
+Project scaffolding is **never applied by default** — a project starts bare
+unless the user explicitly picks a template. Templates and their UI entry
+points come from plugins, so the community can ship Python/Rust/Node/etc.
+starter kits without touching core.
+
+| ID | Story | Priority | Points |
+|:---|:---|:---:|:---:|
+| `US-PLG-13` | As a **Plugin Developer**, I want to **register UI actions with labels** from plugin code (e.g. a "Create starting files" button on a project), so that my mod visibly extends the interface. | 🟡 | 5 |
+| `US-PLG-14` | As a **Plugin Developer**, I want to ship **project scaffold templates** (files, folders, git init, post-create commands) as plugin data — e.g. a Python template that creates a venv, README, pyproject and a repo — so that starters are maintained outside core. | 🟡 | 5 |
+| `US-PLG-15` | As a **User**, I want to **preview and customize a template** (file list and contents editable) before it is applied, so that scaffolding never surprises me. | 🟢 | 3 |
+| `US-PROJ-08` | As a **User**, I want an **optional template picker at project creation** — default is none — so that plain projects stay plain and templated ones are an explicit choice. | 🟡 | 3 |
+
+### 22.4 🔣 Logic gates for visual scripting (US-FUT)
+
+| ID | Story | Priority | Points |
+|:---|:---|:---:|:---:|
+| `US-FUT-07` | As a **User**, I want **logic nodes** (AND, OR, NOT, XOR, comparisons, if/else) with typed boolean ports in the visual DAG builder (extends `US-FUT-06`), so that I can express conditions and branching without writing Lua. | 🟢 | 8 |
+
+---
+
 ## 📊 Summary Dashboard
 
 ### Story counts by priority
@@ -407,9 +465,9 @@
 | Priority | Count | Description |
 |:---:|:---:|:---|
 | 🔴 P0 — MVP | 30 | Must-have for first usable release |
-| 🟡 P1 — Near-term | 58 | Core feature completeness |
-| 🟢 P2 — Future | 42 | Advanced / long-term vision |
-| **Total** | **130** | |
+| 🟡 P1 — Near-term | 67 | Core feature completeness |
+| 🟢 P2 — Future | 44 | Advanced / long-term vision |
+| **Total** | **141** | |
 
 ### Story counts by domain
 
@@ -420,21 +478,21 @@
 | 3 | ⚙️ Automation & Workflows | 11 |
 | 4 | 📦 System & Package Management | 9 |
 | 5 | 🌍 Environment Management | 8 |
-| 6 | 📝 Config Management | 8 |
+| 6 | 📝 Config Management | 12 |
 | 7 | 🔐 Secrets & Key Management | 10 |
 | 8 | 🖥️ SSH Integration | 6 |
-| 9 | 📁 Projects | 7 |
+| 9 | 📁 Projects | 8 |
 | 10 | 🗄️ Multi-Database / Multi-Context | 6 |
 | 11 | ⚙️ Configuration System | 6 |
-| 12 | 🖱️ TUI | 10 |
-| 13 | 🔌 Plugin System | 12 |
+| 12 | 🖱️ TUI | 12 |
+| 13 | 🔌 Plugin System | 15 |
 | 14 | 🚀 Deployment & Systemd | 6 |
 | 15 | 🔗 API & IPC | 5 |
 | 16 | 🔍 Search & Metadata | 4 |
 | 17 | 🔄 Sync & Sharing | 4 |
 | 18 | 🌐 Web Interface | 4 |
 | 19 | 💾 Backup & Export | 4 |
-| 20 | 🌟 Future / Advanced | 6 |
+| 20 | 🌟 Future / Advanced | 7 |
 | 21 | 📐 Non-Functional | 10 |
 
 ### MVP scope (P0) at a glance
