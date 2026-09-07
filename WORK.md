@@ -25,7 +25,23 @@
    quick-connect only); plugin approval workflow for headless service runs.
 
 ---
-## ## 🎯 Session 19: story #2 — Config management page (US-CFG-09..12) (completed)
+## ## ## 🎯 Session 19b: Configs tab keybind fix (completed)
+
+User report: none of the keybinds work on the Configs page. Root cause: `AppState::Configs`
+was missing from ALL the state-gated navigation matches — Up/Down/PageUp/PageDown/Home/End
+and the search filter. The `n/t/m/l/u/g` block worked, but everything else fell into `_ => {}
+silently. Fix: added Configs to all six navigation matches + `apply_search_filter`.
+
+Regression tests: arrows/Home/End move the configs selection; `/` search filters and Esc
+restores. **223 total (175 lib + 48 BDD), clippy 0, build ok.**
+
+LESSON for future agents: when adding a new list-tab AppState, grep for `AppState::Secrets => self.secrets_list`
+and add the new state to every one of those matches — there are 8 of them (Up/Down/PgUp/PgDn/Home/End/
+search/refresh) plus the dispatcher arm, hints arm, render_base arm and the action arms.
+
+---
+
+🎯 Session 19: story #2 — Config management page (US-CFG-09..12) (completed)
 
 **New Configs tab (key 6)** for managed config files (dotfiles etc.):
 

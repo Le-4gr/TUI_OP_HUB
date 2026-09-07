@@ -2786,6 +2786,7 @@ log:
                 AppState::Projects => self.projects_list.select_previous(),
                 AppState::Workflows => self.workflows_list.select_previous(),
                 AppState::Secrets => self.secrets_list.select_previous(),
+                AppState::Configs => self.configs_list.select_previous(),
                 AppState::Plugins => self.plugins_list.select_previous(),
                 _ => {}
             },
@@ -2794,6 +2795,7 @@ log:
                 AppState::Projects => self.projects_list.select_next(),
                 AppState::Workflows => self.workflows_list.select_next(),
                 AppState::Secrets => self.secrets_list.select_next(),
+                AppState::Configs => self.configs_list.select_next(),
                 AppState::Plugins => self.plugins_list.select_next(),
                 _ => {}
             },
@@ -2802,6 +2804,7 @@ log:
                 AppState::Projects => self.projects_list.previous_page(),
                 AppState::Workflows => self.workflows_list.previous_page(),
                 AppState::Secrets => self.secrets_list.previous_page(),
+                AppState::Configs => self.configs_list.previous_page(),
                 AppState::Plugins => self.plugins_list.previous_page(),
                 _ => {}
             },
@@ -2810,6 +2813,7 @@ log:
                 AppState::Projects => self.projects_list.next_page(),
                 AppState::Workflows => self.workflows_list.next_page(),
                 AppState::Secrets => self.secrets_list.next_page(),
+                AppState::Configs => self.configs_list.next_page(),
                 AppState::Plugins => self.plugins_list.next_page(),
                 _ => {}
             },
@@ -2818,6 +2822,7 @@ log:
                 AppState::Projects => self.projects_list.selected = 0,
                 AppState::Workflows => self.workflows_list.selected = 0,
                 AppState::Secrets => self.secrets_list.selected = 0,
+                AppState::Configs => self.configs_list.selected = 0,
                 AppState::Plugins => self.plugins_list.selected = 0,
                 _ => {}
             },
@@ -2840,6 +2845,11 @@ log:
                 AppState::Secrets => {
                     if !self.secrets_list.items.is_empty() {
                         self.secrets_list.selected = self.secrets_list.items.len() - 1;
+                    }
+                }
+                AppState::Configs => {
+                    if !self.configs_list.items.is_empty() {
+                        self.configs_list.selected = self.configs_list.items.len() - 1;
                     }
                 }
                 AppState::Plugins => {
@@ -3642,6 +3652,13 @@ log:
                     .items
                     .retain(|s| s.name.to_lowercase().contains(&q.to_lowercase()));
                 self.secrets_list.selected = 0;
+            }
+            AppState::Configs => {
+                let _ = self.fetch_configs().await;
+                self.configs_list.items = fuzzy_rank(&self.configs_list.items, &q, |c| {
+                    (c.name.as_str(), c.source_path.as_str())
+                });
+                self.configs_list.selected = 0;
             }
             _ => {}
         }
@@ -8859,6 +8876,76 @@ mod configs_tab_tests {
         app.handle_key(key(KeyCode::Char('d'))).await;
         app.handle_key(key(KeyCode::Enter)).await;
         assert!(app.configs_list.items.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn given_configs_tab_when_arrows_pressed_then_selection_moves() {
+        let mut app = test_app().await;
+        let dir = tmp("nav");
+        app.config_store_dir = dir.join("store");
+        for (i, name) in ["a.conf", "b.conf", "c.conf"].iter().enumerate() {
+            let src = dir.join(name);
+            std::fs::write(&src, format!("{}", i)).unwrap();
+            app.ui.state = AppState::Configs;
+            app.fetch_configs().await.unwrap();
+            app.handle_key(key(KeyCode::Char('n'))).await;
+            for c in src.to_string_lossy().chars() {
+                app.handle_key(key(KeyCode::Char(c))).await;
+            }
+            app.handle_key(key(KeyCode::Enter)).await;
+        }
+        app.ui.state = AppState::Configs;
+        app.fetch_configs().await.unwrap();
+        assert_eq!(app.configs_list.items.len(), 3);
+        assert_eq!(app.configs_list.selected, 0);
+
+        app.handle_key(key(KeyCode::Down)).await;
+        app.handle_key(key(KeyCode::Down)).await;
+        assert_eq!(app.configs_list.selected, 2);
+        app.handle_key(key(KeyCode::Up)).await;
+        assert_eq!(app.configs_list.selected, 1);
+        app.handle_key(key(KeyCode::Home)).await;
+        assert_eq!(app.configs_list.selected, 0);
+        app.handle_key(key(KeyCode::End)).await;
+        assert_eq!(app.configs_list.selected, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn given_configs_tab_when_search_applied_then_list_filtered() {
+        let mut app = test_app().await;
+        let dir = tmp("search");
+        app.config_store_dir = dir.join("store");
+        for name in ["alpha.conf", "beta.conf"] {
+            let src = dir.join(name);
+            std::fs::write(&src, "x").unwrap();
+            app.ui.state = AppState::Configs;
+            app.fetch_configs().await.unwrap();
+            app.handle_key(key(KeyCode::Char('n'))).await;
+            for c in src.to_string_lossy().chars() {
+                app.handle_key(key(KeyCode::Char(c))).await;
+            }
+            app.handle_key(key(KeyCode::Enter)).await;
+        }
+        app.ui.state = AppState::Configs;
+        app.fetch_configs().await.unwrap();
+        assert_eq!(app.configs_list.items.len(), 2);
+
+        // `/` search: type "alp", apply with Enter
+        app.handle_key(key(KeyCode::Char('/'))).await;
+        assert!(app.search_state.active);
+        for c in "alp".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert_eq!(app.configs_list.items.len(), 1);
+        assert_eq!(app.configs_list.items[0].name, "alpha.conf");
+
+        // Esc restores the full list
+        app.handle_key(key(KeyCode::Char('/'))).await;
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert_eq!(app.configs_list.items.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
