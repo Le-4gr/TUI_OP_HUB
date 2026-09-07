@@ -25,22 +25,24 @@
    quick-connect only); plugin approval workflow for headless service runs.
 
 ---
-## ## ## ## 🎯 Session 19c: Configs numpad + sticky-search hardening (completed)
 
+## 🎯 Session 19c: Configs numpad + sticky-search hardening (completed)
 
 User still saw dead keys on Configs. Two causes addressed:
 
-1. Numpad navigation added to Configs (NumLock on): 2/8 up+down, 4/6 cycle deploy mode,
-   7/9 home/end. Note: on Configs these digits are list navigation, NOT tab jumps — leave
-   the tab with 0 or arrows. Hints updated.
-2.  was NOT state-gated: pressing it on any non-list screen activated an INVISIBLE search
-   mode that silently ate every following keypress (exactly "all keys dead"). Now  only
-   starts search on the five list tabs.
-Tests: numpad nav/cycle test + real-flow test (6 -> n -> Esc -> digits). 225 total (177 lib +
+1. **Numpad navigation added to Configs** (NumLock on): `2`/`8` up+down, `4`/`6` cycle deploy
+   mode, `7`/`9` home/end. Note: on Configs these digits are list navigation, NOT tab jumps —
+   leave the tab with `0` or arrows. Hints updated.
+2. **`/` was NOT state-gated**: pressing it on any non-list screen activated an INVISIBLE search
+   mode that silently ate every following keypress (exactly "all keys dead"). Now `/` only
+   starts search on the five list tabs (Knowledge, Projects, Workflows, Secrets, Configs).
+
+Tests: numpad nav/cycle test + real-flow test (6 → n → Esc → digits). 225 total (177 lib +
 48 BDD), clippy 0, build ok.
 
 IF THE USER STILL SEES DEAD KEYS: have them press Esc first (a modal may be open — import
-popup, keybinds ?, options i, ssh panel H all swallow keys while open) and rebuild with cargo run.
+popup `I`, keybinds `?`, options `i`, ssh panel `H` all swallow keys while open) and make
+sure they rebuild with `cargo run` (a stale release binary predates the Configs tab).
 
 ---
 
