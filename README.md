@@ -16,7 +16,7 @@ secure secret storage — local-first, single binary, keyboard-driven.
 - **Encrypted Secrets**: XChaCha20Poly1305 AEAD cipher with per-user key management
 - **User Profiles**: Multi-user support with individual encryption keys
 - **REST API**: Axum-based HTTP API for full CRUD and workflow execution
-- **TUI Dashboard**: Interactive terminal UI with 9 tabs (Dashboard, Commands, Apps, Scripts, Projects, Workflows, Secrets, Settings, Plugins) — number keys 1-9, Enter on a project opens its detail view
+- **TUI Dashboard**: Interactive terminal UI with 10 screens (Dashboard, **Knowledge Base** parent page, Commands, Apps, Scripts, Projects, Workflows, Secrets, Plugins, Settings last) — keys 1-9 + 0, Enter on a project opens its detail view
 - ✅ Knowledge **import/export**: portable JSON bundles (see [`docs/IMPORT_EXPORT.md`](docs/IMPORT_EXPORT.md)) — AI-generatable
 - ✅ **Cron scheduling** (US-WF-07): run workflows on cron expressions via the built-in scheduler daemon
 - ✅ **systemd / cron compatibility** (US-DEP-04): `tui-op-hub --install-service` runs the hub headless — `./install.sh` sets everything up; see [`docs/INSTALL.md`](docs/INSTALL.md)
@@ -114,7 +114,7 @@ Configuration lives in a **Hyprland-style** config file — `section { key = val
 blocks, `#` comments, quoted or bare values — at
 `~/.config/tui-op-hub/config.conf`. Missing keys fall back to defaults and unknown
 keys are ignored, so a minimal file is fine. Everything is also editable live in the
-**Settings screen** (`8`), then `Ctrl+S` to persist:
+**Settings screen** (`0`), then `Ctrl+S` to persist:
 
 ```ini
 # ~/.config/tui-op-hub/config.conf
@@ -127,6 +127,9 @@ general {
 
 tui {
     page_size = 20
+    # Tab-cycle order for the Tab key (US-TUI-12). Valid ids:
+    # dash, kb, cmd, app, script, proj, wf, sec, plug, set
+    # tab_order = dash,kb,cmd,app,script,proj,wf,sec,plug,set
 }
 
 theme {
@@ -169,8 +172,8 @@ The Settings screen (`8`) previews live and `a` opens the visual color editor.
 
 | Key | Action |
 |:----|:-------|
-| 1-9 | Switch tab (from any screen) |
-| Tab | Cycle tabs |
+| 1-9, 0 | Switch tab (from any screen) — 2 Knowledge Base, 3 Commands, 4 Apps, 5 Scripts, 6 Projects, 7 Workflows, 8 Secrets, 9 Plugins, 0 Settings |
+| Tab | Cycle tabs (order from `[tui].tab_order` in config.conf; Settings last by default) |
 | Up/Down | Navigate items |
 | Enter | Select / open project detail |
 | n | Create new |

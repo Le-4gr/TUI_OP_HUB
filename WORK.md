@@ -7,9 +7,9 @@
 
 ## 📋 Story Backlog — priority order (say "continue stories" to work the next item)
 
-1. **🟡 P1 — Navigation restructure (US-TUI-11/12)**: Knowledge Base parent page with
-   Commands/Apps/Scripts as subpages; Settings becomes the LAST tab; configurable tab order
-   in `config.conf`. Touches `AppState`, digit mapping, hints, many tests.
+1. **✅ DONE (Session 18) — Navigation restructure (US-TUI-11/12)**: Knowledge Base parent
+   page (key 2) with live counts; digits now 1-9 + 0 (0 = Settings); Tab cycle configurable
+   via `[tui].tab_order` in config.conf, Settings last by default.
 2. **🟡 P1 — Config management page (US-CFG-09..12)**: register existing files/folders or
    create new; deploy via symlink / hard link / copy to multiple targets; drift check +
    re-deploy; per-config git (init/commit/log, optional remote). Backend `config_manager.rs`
@@ -28,6 +28,32 @@
    quick-connect only); plugin approval workflow for headless service runs.
 
 ---
+## 🎯 Session 18: story #1 — Knowledge Base parent page + configurable tab order (completed)
+
+Implemented backlog item 1 (US-TUI-11/12 ✅):
+
+- **`AppState::Knowledge`** — a parent page (key **2**) with a description and LIVE item
+  count for each of Commands / Apps / Scripts; ↑↓ select, Enter opens the subpage
+  (3/4/5 also jump directly). `fetch_knowledge_counts()` queries per-type counts.
+- **Digit remap (US-TUI-11/12)**: 1 Dashboard · 2 Knowledge · 3 Commands · 4 Apps ·
+  5 Scripts · 6 Projects · 7 Workflows · 8 Secrets · 9 Plugins · **0 Settings (last)**.
+  `handle_tab_digit` now accepts `0` too.
+- **Configurable Tab cycle (US-TUI-12)**: `TuiConfig.tab_order` (comma-separated ids:
+  dash,kb,cmd,app,script,proj,wf,sec,plug,set) read from `config.conf` (`tui.tab_order`),
+  saved back on Ctrl+S. Garbage/empty values fall back to the default order whose LAST
+  entry is Settings. Settings screen still consumes Tab for row navigation (documented).
+- Tests: 4 new (KB open→select→Enter opens Scripts, default cycle ends with Settings,
+  custom order honored, garbage order falls back); 2 digit tests + 2 BDD scenarios
+  updated for the new mapping. **206 total (159 lib + 47 BDD), clippy 0, build ok.**
+- Gotcha: `connect_lazy` in non-async tests still needs a tokio context for pool internals
+  — mark such tests `#[tokio::test]`.
+
+Docs: README (tab table, `[tui].tab_order` reference, Settings key = 0), AGENTS.md layout,
+USER_STORIES (US-TUI-11/12 ✅), backlog item 1 marked done — **next up: backlog item 2,
+the Config Management page (US-CFG-09..12)**.
+
+---
+
 ## 🎯 Session 17: story batch — workflow cancel, admin users panel, SSH host manager (completed)
 
 **Prioritised the full remaining-story list** (see the Story Backlog at the top of this file):

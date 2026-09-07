@@ -414,8 +414,8 @@ self-explanatory. Settings moves to the **last** position.
 
 | ID | Story | Priority | Points |
 |:---|:---|:---:|:---:|
-| `US-TUI-11` | As a **User**, I want a **"Knowledge Base" parent page** that briefly describes the Commands, Apps and Scripts subpages (with live item counts), so that the tab bar stays clean and I always know where things live. | 🟡 | 3 |
-| `US-TUI-12` | As a **User**, I want **Settings to be the last tab** and the tab order to be **configurable** in `config.conf`, so that the layout matches my workflow. | 🟡 | 2 |
+| `US-TUI-11` | As a **User**, I want a **"Knowledge Base" parent page** that briefly describes the Commands, Apps and Scripts subpages (with live item counts), so that the tab bar stays clean and I always know where things live. | ✅ | 3 |
+| `US-TUI-12` | As a **User**, I want **Settings to be the last tab** and the tab order to be **configurable** in `config.conf`, so that the layout matches my workflow. | ✅ | 2 |
 
 **Notes**:
 - The parent page lists its subpages (`Commands — shell command families`,

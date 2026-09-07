@@ -158,14 +158,17 @@ impl ModernTheme {
 pub enum AppState {
     Login,
     Dashboard,
+    /// "Knowledge Base" parent page (US-TUI-11): describes + links the
+    /// Commands / Apps / Scripts subpages.
+    Knowledge,
     Commands,
     Apps,
     Scripts,
     Projects,
     Workflows,
     Secrets,
-    Settings,
     Plugins,
+    Settings,
     Help,
 }
 

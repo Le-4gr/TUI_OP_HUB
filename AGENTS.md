@@ -22,7 +22,7 @@ developer's/power-user's daily tooling into one keyboard-driven app:
 - **Cron scheduling** — workflows run on cron expressions via the built-in scheduler daemon
 - **Background service** — systemd user service (or cron/any init) runs the hub headless
   (`--headless`: scheduler + API); the TUI runs on demand and coexists with the service
-- **Modern TUI** — ratatui + crossterm UI with login screen, dashboard, and 8 tabs
+- **Modern TUI** — ratatui + crossterm UI with login screen, a Knowledge Base parent page, 8 content tabs and Settings last (tab order configurable via `[tui].tab_order`)
   (Dashboard, Commands, Apps, Scripts, Projects, Workflows, Secrets, Settings);
   number keys 1-8, `Enter` on a project opens its detail view, `` ` `` opens a new
   terminal window, `/` search with a visible search bar, `I`/`x` import/export
@@ -222,7 +222,7 @@ Environment variables:
 
 ### ✅ Phase 1 — Complete (v0.2.0)
 Entity CRUD, projects, tags, FTS5 search, Lua workflows + run history, encrypted secrets,
-user profiles, REST API, modern TUI (login + 8 tabs), Argon2-based auth (migration 0002),
+user profiles, REST API, modern TUI (login + Knowledge Base parent page + 8 tabs + Settings last), Argon2-based auth (migration 0002),
 config/theming/keybindings.
 
 ### 🔄 Phase 2 — Foundation ready, integration pending (the active TODO list)

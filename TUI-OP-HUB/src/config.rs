@@ -107,12 +107,18 @@ pub struct TuiConfig {
     /// Page size for TUI lists (US-APP-01, changeable in Settings)
     #[serde(default = "default_page_size")]
     pub page_size: usize,
+    /// Comma-separated Tab-cycle order (US-TUI-12), e.g.
+    /// `tab_order = "dash,kb,cmd,app,script,proj,wf,sec,plug,set"`.
+    /// Unknown or missing ids fall back to the default order.
+    #[serde(default)]
+    pub tab_order: Option<String>,
 }
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
             enabled: default_tui_enabled(),
             page_size: default_page_size(),
+            tab_order: None,
         }
     }
 }
@@ -511,6 +517,13 @@ impl AppConfig {
         if let Some(v) = get("tui", "page_size").and_then(|v| v.parse().ok()) {
             cfg.tui.page_size = v;
         }
+        // Tab-cycle order (US-TUI-12): free-form, validated at use site
+        if let Some(v) = get("tui", "tab_order") {
+            let v = v.trim().trim_matches('"').to_string();
+            if !v.is_empty() {
+                cfg.tui.tab_order = Some(v);
+            }
+        }
         // theme
         if let Some(v) = get("theme", "name") {
             cfg.theme.name = v;
@@ -596,6 +609,9 @@ impl AppConfig {
         ));
         out.push_str("    # Items per page in the list tabs.\n");
         out.push_str(&format!("    page_size = {}\n", self.tui.page_size));
+        if let Some(order) = &self.tui.tab_order {
+            out.push_str(&format!("    tab_order = {}\n", order));
+        }
         out.push_str("}\n\n");
 
         out.push_str("theme {\n");

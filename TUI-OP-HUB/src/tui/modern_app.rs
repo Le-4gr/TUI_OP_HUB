@@ -265,6 +265,10 @@ pub struct ModernApp {
     running_workflow: Option<RunningWorkflow>,
     /// Admin user management panel (Settings → `u`)
     users_panel: Option<UsersPanel>,
+    /// Selected subpage on the Knowledge Base parent page (US-TUI-11)
+    kb_selected: usize,
+    /// Live item counts for the Knowledge page: [commands, apps, scripts]
+    knowledge_counts: [usize; 3],
     /// SSH host manager panel (Secrets → `H`)
     ssh_panel: Option<SshPanel>,
     // New project creation form (US-PROJ)
@@ -400,6 +404,8 @@ impl ModernApp {
             sudo_pending_command: None,
             running_workflow: None,
             users_panel: None,
+            kb_selected: 0,
+            knowledge_counts: [0, 0, 0],
             ssh_panel: None,
             dev_user_manager: false,
             dev_user_list: Vec::new(),
@@ -426,20 +432,73 @@ impl ModernApp {
     /// `KeyCode` bound to a keybinding action (US-APP-02).
     /// Switch to the tab for digit 1-9 (US-APP-02 tab keys). Works from ANY
     /// screen, including Settings/Advanced, so digits always mean tabs.
+    /// Default Tab-cycle order (US-TUI-12): Settings is intentionally LAST.
+    const DEFAULT_TAB_ORDER: [&'static str; 10] = [
+        "dash", "kb", "cmd", "app", "script", "proj", "wf", "sec", "plug", "set",
+    ];
+
+    /// Resolve the configured Tab-cycle order to AppState values (US-TUI-12).
+    /// Unknown ids are dropped; an empty result falls back to the default.
+    fn tab_cycle(&self) -> Vec<AppState> {
+        let parse = |id: &str| match id.trim().to_lowercase().as_str() {
+            "dash" => Some(AppState::Dashboard),
+            "kb" => Some(AppState::Knowledge),
+            "cmd" => Some(AppState::Commands),
+            "app" => Some(AppState::Apps),
+            "script" => Some(AppState::Scripts),
+            "proj" => Some(AppState::Projects),
+            "wf" => Some(AppState::Workflows),
+            "sec" => Some(AppState::Secrets),
+            "plug" => Some(AppState::Plugins),
+            "set" => Some(AppState::Settings),
+            _ => None,
+        };
+        let configured: Vec<AppState> = self
+            .config
+            .tui
+            .tab_order
+            .as_deref()
+            .map(|s| s.split(',').filter_map(parse).collect())
+            .unwrap_or_default();
+        if configured.is_empty() {
+            Self::DEFAULT_TAB_ORDER
+                .iter()
+                .filter_map(|id| parse(id))
+                .collect()
+        } else {
+            configured
+        }
+    }
+
+    /// Next tab in the configured cycle (Tab key, US-TUI-12).
+    fn next_tab(&self) -> AppState {
+        let cycle = self.tab_cycle();
+        let idx = cycle.iter().position(|s| *s == self.ui.state);
+        match idx {
+            Some(i) => cycle[(i + 1) % cycle.len()].clone(),
+            None => cycle.first().cloned().unwrap_or(AppState::Dashboard),
+        }
+    }
+
     async fn jump_to_tab_digit(&mut self, c: char) {
         self.ui.state = match c {
-            '2' => AppState::Commands,
-            '3' => AppState::Apps,
-            '4' => AppState::Scripts,
-            '5' => AppState::Projects,
-            '6' => AppState::Workflows,
-            '7' => AppState::Secrets,
+            '2' => AppState::Knowledge,
+            '3' => AppState::Commands,
+            '4' => AppState::Apps,
+            '5' => AppState::Scripts,
+            '6' => AppState::Projects,
+            '7' => AppState::Workflows,
+            '8' => AppState::Secrets,
             '9' => AppState::Plugins,
+            '0' => AppState::Settings,
             _ => AppState::Dashboard, // 1 and anything else
         };
         match self.ui.state {
             AppState::Dashboard => {
                 let _ = self.fetch_stats().await;
+            }
+            AppState::Knowledge => {
+                self.fetch_knowledge_counts().await;
             }
             AppState::Commands | AppState::Apps | AppState::Scripts => {
                 let _ = self.fetch_commands().await;
@@ -468,7 +527,8 @@ impl ModernApp {
             return false;
         }
         if let KeyCode::Char(c) = key.code {
-            if c.is_ascii_digit() && c != '0' {
+            // Digits 1-9 plus 0 (Settings last, US-TUI-12) switch tabs
+            if c.is_ascii_digit() {
                 self.jump_to_tab_digit(c).await;
                 return true;
             }
@@ -487,6 +547,27 @@ impl ModernApp {
             return configured;
         }
         std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string())
+    }
+
+    /// Count Commands / Apps / Scripts for the Knowledge Base page (US-TUI-11).
+    async fn fetch_knowledge_counts(&mut self) {
+        let mut counts = [0usize; 3];
+        for (i, ty) in ["cmd", "app", "script"].iter().enumerate() {
+            if let Ok(items) = repository::list_entities(&*self.pool, Some(ty), None).await {
+                counts[i] = items.len();
+            }
+        }
+        self.knowledge_counts = counts;
+    }
+
+    /// Open the selected Knowledge Base subpage (US-TUI-11).
+    async fn open_knowledge_subpage(&mut self) {
+        self.ui.state = match self.kb_selected {
+            0 => AppState::Commands,
+            1 => AppState::Apps,
+            _ => AppState::Scripts,
+        };
+        let _ = self.fetch_commands().await;
     }
 
     /// Fetch dashboard statistics from database
@@ -835,6 +916,10 @@ impl ModernApp {
                 // Render dashboard with real stats
                 self.render_dashboard_with_stats(f);
             }
+            AppState::Knowledge => {
+                // Knowledge Base parent page (US-TUI-11)
+                self.render_knowledge_page(f);
+            }
             AppState::Commands | AppState::Apps | AppState::Scripts => {
                 self.render_commands_list(f);
             }
@@ -863,6 +948,93 @@ impl ModernApp {
                 self.ui.render(f);
             }
         }
+    }
+
+    /// Knowledge Base parent page (US-TUI-11): describes the Commands, Apps
+    /// and Scripts subpages with live item counts.
+    fn render_knowledge_page(&self, f: &mut Frame) {
+        let area = f.area();
+        f.render_widget(
+            Block::default().style(Style::default().bg(self.ui.theme.bg)),
+            area,
+        );
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // header
+                Constraint::Min(6),    // subpage cards
+                Constraint::Length(1), // footer
+            ])
+            .split(area);
+
+        let header = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.accent))
+            .title(" \u{1f4da} Knowledge Base ")
+            .style(Style::default().bg(self.ui.theme.bg));
+        f.render_widget(
+            Paragraph::new("Everything you save lives here \u{2014} pick a section:")
+                .style(Style::default().fg(self.ui.theme.fg))
+                .block(header),
+            chunks[0],
+        );
+
+        let entries = [
+            (
+                "Commands",
+                "One-off shell commands with tagged, fuzzy-searchable option families",
+                '3',
+                self.knowledge_counts[0],
+            ),
+            (
+                "Apps",
+                "Desktop applications and TUI tools launched detached (GUI-safe)",
+                '4',
+                self.knowledge_counts[1],
+            ),
+            (
+                "Scripts",
+                "Multi-line scripts in any language — python, lua, node, ruby, perl",
+                '5',
+                self.knowledge_counts[2],
+            ),
+        ];
+        let items: Vec<Line> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, (name, desc, digit, count))| {
+                let selected = i == self.kb_selected;
+                let marker = if selected { "\u{25b6} " } else { "  " };
+                let style = if selected {
+                    Style::default()
+                        .fg(self.ui.theme.bg)
+                        .bg(self.ui.theme.accent)
+                } else {
+                    Style::default().fg(self.ui.theme.fg)
+                };
+                let desc_style = if selected {
+                    style
+                } else {
+                    Style::default().fg(self.ui.theme.border)
+                };
+                Line::from(vec![
+                    Span::styled(format!("{}[{}] ", marker, digit), style),
+                    Span::styled(format!("{} ", name), style.add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("({} items) ", count), style),
+                    Span::styled(format!("\u{2014} {}", desc), desc_style),
+                ])
+            })
+            .collect();
+        f.render_widget(
+            Paragraph::new(items).style(Style::default().bg(self.ui.theme.bg)),
+            chunks[1],
+        );
+        f.render_widget(
+            Paragraph::new("\u{2191}\u{2193} select \u{b7} Enter open \u{b7} 3/4/5 quick jump \u{b7} Tab next tab \u{b7} ? help")
+                .style(Style::default().fg(self.ui.theme.warning)),
+            chunks[2],
+        );
     }
 
     fn render_dashboard_with_stats(&self, f: &mut Frame) {
@@ -1816,7 +1988,8 @@ impl ModernApp {
             | AppState::Scripts
             | AppState::Projects
             | AppState::Workflows
-            | AppState::Secrets => {
+            | AppState::Secrets
+            | AppState::Knowledge => {
                 // Handle dashboard and other app state keys
                 self.handle_dashboard_key(key).await;
             }
@@ -1910,6 +2083,26 @@ impl ModernApp {
     }
 
     async fn handle_dashboard_key(&mut self, key: KeyEvent) {
+        // Knowledge Base parent page has its own small key set (US-TUI-11)
+        if self.ui.state == AppState::Knowledge {
+            match key.code {
+                KeyCode::Up => {
+                    if self.kb_selected > 0 {
+                        self.kb_selected -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if self.kb_selected + 1 < 3 {
+                        self.kb_selected += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    self.open_knowledge_subpage().await;
+                }
+                _ => {}
+            }
+            return;
+        }
         // Action keys come from the config (US-APP-02) and can be rebound in Settings
         let kb_quit = self.action_keycode("quit");
         let kb_search = self.action_keycode("search");
@@ -1931,57 +2124,51 @@ impl ModernApp {
                     self.open_project_detail().await;
                 }
             }
-            // Navigation - Number keys
+            // Navigation - Number keys (US-TUI-11/12: 0 = Settings last)
             KeyCode::Char('1') => {
                 self.ui.state = AppState::Dashboard;
                 let _ = self.fetch_stats().await;
                 self.fetch_monitor().await;
             }
             KeyCode::Char('2') => {
+                self.ui.state = AppState::Knowledge;
+                self.fetch_knowledge_counts().await;
+            }
+            KeyCode::Char('3') => {
                 self.ui.state = AppState::Commands;
                 let _ = self.fetch_commands().await;
             }
-            KeyCode::Char('3') => {
+            KeyCode::Char('4') => {
                 self.ui.state = AppState::Apps;
                 let _ = self.fetch_commands().await;
             }
-            KeyCode::Char('4') => {
+            KeyCode::Char('5') => {
                 self.ui.state = AppState::Scripts;
                 let _ = self.fetch_commands().await;
             }
-            KeyCode::Char('5') => {
+            KeyCode::Char('6') => {
                 self.ui.state = AppState::Projects;
                 let _ = self.fetch_projects().await;
             }
-            KeyCode::Char('6') => {
+            KeyCode::Char('7') => {
                 self.ui.state = AppState::Workflows;
                 let _ = self.fetch_workflows().await;
             }
-            KeyCode::Char('7') => {
+            KeyCode::Char('8') => {
                 self.ui.state = AppState::Secrets;
                 let _ = self.fetch_secrets().await;
             }
-            KeyCode::Char('8') => {
+            KeyCode::Char('0') => {
                 self.ui.state = AppState::Settings;
             }
             KeyCode::Char('9') => {
                 self.ui.state = AppState::Plugins;
                 self.fetch_plugins().await;
             }
-            // Tab - Cycle through states
+            // Tab - Cycle through the configured order (US-TUI-12)
             KeyCode::Tab => {
-                self.ui.state = match self.ui.state {
-                    AppState::Dashboard => AppState::Commands,
-                    AppState::Commands => AppState::Apps,
-                    AppState::Apps => AppState::Scripts,
-                    AppState::Scripts => AppState::Projects,
-                    AppState::Projects => AppState::Workflows,
-                    AppState::Workflows => AppState::Secrets,
-                    AppState::Secrets => AppState::Settings,
-                    AppState::Settings => AppState::Plugins,
-                    AppState::Plugins => AppState::Dashboard,
-                    _ => AppState::Dashboard,
-                };
+                let next = self.next_tab();
+                self.ui.state = next;
             }
             // Action keybindings
             k if Some(k) == kb_create => {
@@ -3113,6 +3300,13 @@ impl ModernApp {
                 ("c", "Copy"),
                 ("v", "Visual"),
                 ("/", "Find"),
+                ("?", "Keybinds"),
+                ("q", "Quit"),
+            ],
+            AppState::Knowledge => vec![
+                ("\u{2191}\u{2193}", "Select"),
+                ("Enter", "Open"),
+                ("3/4/5", "Quick jump"),
                 ("?", "Keybinds"),
                 ("q", "Quit"),
             ],
@@ -6792,10 +6986,13 @@ impl ModernApp {
 
         let mut lines: Vec<Line> = Vec::new();
         lines.push(section("Global"));
-        lines.push(row("Tab", "Switch tabs"));
         lines.push(row(
-            "1-9",
-            "Dashboard / Commands / Apps / Scripts / Projects / Workflows / Secrets / Settings / Plugins",
+            "Tab",
+            "Switch tabs (configurable order, Settings last)",
+        ));
+        lines.push(row(
+            "1-9,0",
+            "1 Dashboard · 2 Knowledge Base · 3 Commands · 4 Apps · 5 Scripts · 6 Projects · 7 Workflows · 8 Secrets · 9 Plugins · 0 Settings",
         ));
         lines.push(row("`", "Open a new terminal window"));
         lines.push(row("/", "Fuzzy search in the current list"));
@@ -7735,22 +7932,28 @@ mod tests {
         seed_typed_entities(&mut app).await;
         app.ui.state = AppState::Dashboard; // leave the Login screen
 
+        // New mapping (US-TUI-11/12): 2 KB, 3 cmd, 4 app, 5 script, 6 proj,
+        // 7 wf, 8 sec, 9 plugins, 0 settings
         app.handle_key(key(KeyCode::Char('3'))).await;
-        assert_eq!(app.ui.state, AppState::Apps);
+        assert_eq!(app.ui.state, AppState::Commands);
         assert_eq!(app.commands_list.items.len(), 1);
-        assert_eq!(app.commands_list.items[0].type_id, "app");
+        assert_eq!(app.commands_list.items[0].type_id, "cmd");
 
         app.handle_key(key(KeyCode::Char('4'))).await;
+        assert_eq!(app.ui.state, AppState::Apps);
+        assert_eq!(app.commands_list.items[0].type_id, "app");
+
+        app.handle_key(key(KeyCode::Char('5'))).await;
         assert_eq!(app.ui.state, AppState::Scripts);
         assert_eq!(app.commands_list.items[0].type_id, "script");
 
-        app.handle_key(key(KeyCode::Char('5'))).await;
-        assert_eq!(app.ui.state, AppState::Projects);
         app.handle_key(key(KeyCode::Char('6'))).await;
-        assert_eq!(app.ui.state, AppState::Workflows);
+        assert_eq!(app.ui.state, AppState::Projects);
         app.handle_key(key(KeyCode::Char('7'))).await;
-        assert_eq!(app.ui.state, AppState::Secrets);
+        assert_eq!(app.ui.state, AppState::Workflows);
         app.handle_key(key(KeyCode::Char('8'))).await;
+        assert_eq!(app.ui.state, AppState::Secrets);
+        app.handle_key(key(KeyCode::Char('0'))).await;
         assert_eq!(app.ui.state, AppState::Settings);
     }
 
@@ -7951,20 +8154,20 @@ mod tests {
         let mut app = test_app_db().await;
         app.ui.state = AppState::Dashboard;
 
-        app.handle_key(key(KeyCode::Char('8'))).await;
+        app.handle_key(key(KeyCode::Char('0'))).await;
         assert_eq!(app.ui.state, AppState::Settings);
 
         // Digits must switch tabs from inside Settings (previously eaten by
         // the numpad-style navigation).
-        app.handle_key(key(KeyCode::Char('2'))).await;
+        app.handle_key(key(KeyCode::Char('3'))).await;
         assert_eq!(app.ui.state, AppState::Commands);
 
         app.handle_key(key(KeyCode::Char('9'))).await;
         assert_eq!(app.ui.state, AppState::Plugins);
 
         // Back to Settings, then to Workflows
-        app.handle_key(key(KeyCode::Char('8'))).await;
-        app.handle_key(key(KeyCode::Char('6'))).await;
+        app.handle_key(key(KeyCode::Char('0'))).await;
+        app.handle_key(key(KeyCode::Char('7'))).await;
         assert_eq!(app.ui.state, AppState::Workflows);
     }
 
@@ -8144,5 +8347,86 @@ mod panel_tests {
             f.connect_command().unwrap(),
             "ssh -i /keys/k -p 2200 root@host.example.com"
         );
+    }
+}
+
+#[cfg(test)]
+mod knowledge_nav_tests {
+    use super::*;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    async fn test_app() -> ModernApp {
+        let pool = std::sync::Arc::new(
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        crate::db::run_migrations(&pool).await.unwrap();
+        ModernApp::new(pool, crate::config::AppConfig::default())
+    }
+
+    #[tokio::test]
+    async fn given_knowledge_page_when_enter_pressed_then_opens_selected_subpage() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Dashboard;
+
+        // 2 opens the Knowledge Base parent page with live counts
+        app.handle_key(key(KeyCode::Char('2'))).await;
+        assert_eq!(app.ui.state, AppState::Knowledge);
+        assert_eq!(app.knowledge_counts, [0, 0, 0]);
+
+        // Select Scripts and open it
+        app.handle_key(key(KeyCode::Down)).await;
+        app.handle_key(key(KeyCode::Down)).await;
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert_eq!(app.ui.state, AppState::Scripts);
+    }
+
+    #[tokio::test]
+    async fn default_tab_cycle_ends_with_settings() {
+        let app = ModernApp::new(
+            std::sync::Arc::new(
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("sqlite::memory:")
+                    .unwrap(),
+            ),
+            crate::config::AppConfig::default(),
+        );
+        let cycle = app.tab_cycle();
+        assert_eq!(cycle.len(), 10);
+        assert_eq!(cycle[0], AppState::Dashboard);
+        assert_eq!(cycle[1], AppState::Knowledge);
+        assert_eq!(cycle[cycle.len() - 1], AppState::Settings, "last tab");
+    }
+
+    #[tokio::test]
+    async fn given_custom_tab_order_when_tab_pressed_then_follows_config() {
+        let mut app = test_app().await;
+        app.config.tui.tab_order = Some("dash,sec,set".to_string());
+
+        app.ui.state = AppState::Dashboard;
+        app.handle_key(key(KeyCode::Tab)).await;
+        assert_eq!(app.ui.state, AppState::Secrets);
+        app.handle_key(key(KeyCode::Tab)).await;
+        assert_eq!(app.ui.state, AppState::Settings);
+        // Inside Settings, Tab moves the settings row cursor (screen-local);
+        // digits still jump tabs, so go back via a digit and verify wrap there
+        app.handle_key(key(KeyCode::Char('1'))).await;
+        assert_eq!(app.ui.state, AppState::Dashboard);
+    }
+
+    #[tokio::test]
+    async fn given_garbage_tab_order_then_falls_back_to_default() {
+        let mut app = test_app().await;
+        app.config.tui.tab_order = Some("bogus,,nope".to_string());
+        let cycle = app.tab_cycle();
+        assert_eq!(cycle.len(), 10, "falls back to the default order");
+        assert_eq!(cycle[cycle.len() - 1], AppState::Settings);
     }
 }
