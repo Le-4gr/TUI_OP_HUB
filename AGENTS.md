@@ -22,7 +22,7 @@ developer's/power-user's daily tooling into one keyboard-driven app:
 - **Cron scheduling** — workflows run on cron expressions via the built-in scheduler daemon
 - **Background service** — systemd user service (or cron/any init) runs the hub headless
   (`--headless`: scheduler + API); the TUI runs on demand and coexists with the service
-- **Modern TUI** — ratatui + crossterm UI with login screen, a Knowledge Base parent page, 8 content tabs and Settings last (tab order configurable via `[tui].tab_order`)
+- **Modern TUI** — ratatui + crossterm UI with login screen and 7 tabs (Dashboard, Knowledge Base — the ONE tab for commands/apps/scripts with a type filter — Projects, Workflows, Secrets, Plugins, Settings last; tab order configurable via `[tui].tab_order`)
   (Dashboard, Commands, Apps, Scripts, Projects, Workflows, Secrets, Settings);
   number keys 1-8, `Enter` on a project opens its detail view, `` ` `` opens a new
   terminal window, `/` search with a visible search bar, `I`/`x` import/export
