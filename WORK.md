@@ -24,6 +24,30 @@
 5. **🟡 P2 — Visual-scripting logic gates (US-FUT-07)**: AND/OR/NOT/XOR/comparison/if-else
    nodes with typed boolean ports in the visual workflow builder.
 6. **🟢 P3 — Parked future areas** (backend exists, UI not planned yet): US-PROC
+## 🎯 Session 21: delete-folder option + merge-into-existing-folder (completed)
+
+User: "when i delete a project it doesn't delete the folder — add an option for that;
+also overwrite if folder already exists".
+
+- **Delete with folder option (US-PROJ)**: the confirm dialog for projects with a
+  workspace path now shows `[ ] f: also delete the folder on disk` (plus the path).
+  Default OFF — deleting the DB row never touches the disk unless explicitly toggled
+  with `f`. On confirm, the folder is removed off-thread (`spawn_blocking`) and the
+  status reports the removal (or the failure) alongside the row deletion.
+- **Merge into existing folder (US-PROJ)**: `create_project_directory` gained an
+  `overwrite` flag. When the target folder already exists, Ctrl+S fails with an error
+  pointing at the option ("… — Ctrl+O: use existing folder"); Ctrl+O re-creates with
+  overwrite=true so kind scaffolding + templates run in merge mode (both skip
+  existing files — user content always survives). Success status says
+  "(merged into existing folder)". The form's parent dir is now injectable
+  (`new_project_parent`) so tests never write to $HOME.
+
+Tests: project_workspace overwrite test (existing dir reused, user file survives),
+TUI delete test (toggle off keeps folder + row deleted; toggle on removes folder and
+reports it), TUI merge test (Ctrl+S conflict error mentions Ctrl+O; Ctrl+O merges and
+keeps user content; DB row saved). 243 total (195 lib + 48 BDD), clippy 0, build ok.
+
+
 ## 🎯 Session 20: Plugin project templates — US-PLG-14/15 + US-PROJ-08 (completed)
 
 Continued the story backlog (item 3). Plugins can now ship project starters as DATA.
