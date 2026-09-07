@@ -765,10 +765,10 @@ async fn given_settings_open_when_digit_pressed_then_switches_tab() {
     app.bdd_press(crossterm::event::KeyCode::Up).await;
     assert_eq!(app.bdd_settings_selected(), 0);
 
-    // Digits switch tabs
-    app.bdd_press(crossterm::event::KeyCode::Char('2')).await;
+    // Digits switch tabs (US-TUI-11/12 mapping: 3 cmd, 0 settings, 9 plugins)
+    app.bdd_press(crossterm::event::KeyCode::Char('3')).await;
     assert_eq!(app.bdd_state(), AppState::Commands);
-    app.bdd_press(crossterm::event::KeyCode::Char('8')).await;
+    app.bdd_press(crossterm::event::KeyCode::Char('0')).await;
     assert_eq!(app.bdd_state(), AppState::Settings);
     app.bdd_press(crossterm::event::KeyCode::Char('9')).await;
     assert_eq!(app.bdd_state(), AppState::Plugins);
@@ -808,8 +808,8 @@ async fn given_advanced_open_when_arrows_pressed_then_nav_and_colors_work() {
     app.bdd_press(crossterm::event::KeyCode::Left).await;
     assert_eq!(app.bdd_theme_bg(), "black");
 
-    // Digits switch tabs out of Advanced
-    app.bdd_press(crossterm::event::KeyCode::Char('6')).await;
+    // Digits switch tabs out of Advanced (US-TUI-11/12: 7 = Workflows)
+    app.bdd_press(crossterm::event::KeyCode::Char('7')).await;
     assert_eq!(app.bdd_state(), AppState::Workflows);
 }
 

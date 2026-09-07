@@ -912,7 +912,7 @@ mod cancel_tests {
     async fn cancelled_context_stops_before_first_step() {
         let pool = test_pool();
         let engine = WorkflowEngine::new(pool.clone()).unwrap();
-        let mut context = create_workflow_context("wf".into(), pool, None);
+        let context = create_workflow_context("wf".into(), pool, None);
         // Cancel before execution begins
         context.cancel.store(true, Ordering::Relaxed);
         let definition = WorkflowDefinition {
