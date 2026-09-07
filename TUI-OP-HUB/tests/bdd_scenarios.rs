@@ -265,16 +265,16 @@ async fn given_saved_commands_when_visual_workflow_executed_then_steps_run_and_h
 
     // When: the visual builder composes them into a workflow
     let steps = vec![
-        VisualStep {
-            entity_id: backup.id.clone(),
-            name: backup.name.clone(),
-            script: backup.content.clone().unwrap(),
-        },
-        VisualStep {
-            entity_id: cleanup.id.clone(),
-            name: cleanup.name.clone(),
-            script: cleanup.content.clone().unwrap(),
-        },
+        VisualStep::command(
+            &backup.id.clone(),
+            &backup.name.clone(),
+            &backup.content.clone().unwrap(),
+        ),
+        VisualStep::command(
+            &cleanup.id.clone(),
+            &cleanup.name.clone(),
+            &cleanup.content.clone().unwrap(),
+        ),
     ];
     let definition =
         build_workflow_definition("nightly-job", "backup then cleanup", &steps).unwrap();
@@ -338,16 +338,8 @@ async fn given_visual_workflow_when_steps_swapped_then_execution_order_follows()
 
     let mut builder = VisualWorkflowState::default();
     builder.steps = vec![
-        VisualStep {
-            entity_id: "a".into(),
-            name: "first".into(),
-            script: "print('FIRST RAN')".into(),
-        },
-        VisualStep {
-            entity_id: "b".into(),
-            name: "second".into(),
-            script: "print('SECOND RAN')".into(),
-        },
+        VisualStep::command("a", "first", "print('FIRST RAN')"),
+        VisualStep::command("b", "second", "print('SECOND RAN')"),
     ];
     builder.selected_step = 1;
     builder.move_step_up(); // swap: second now runs first
@@ -378,6 +370,7 @@ async fn given_failing_workflow_step_when_executed_then_failure_reported() {
             name: "explode".to_string(),
             script: "error('intentional failure')".to_string(),
             depends_on: vec![],
+            run_when: None,
         }],
         variables: Default::default(),
     };
@@ -411,11 +404,7 @@ fn given_tags_text_when_parsed_then_trimmed_and_deduped_of_empties() {
 /// then an error is returned instead of saving garbage.
 #[test]
 fn given_builder_without_name_when_saved_then_error() {
-    let steps = vec![VisualStep {
-        entity_id: "a".into(),
-        name: "x".into(),
-        script: "print(1)".into(),
-    }];
+    let steps = vec![VisualStep::command("a", "x", "print(1)")];
     assert!(build_workflow_definition("   ", "", &steps).is_err());
     assert!(build_workflow_definition("ok", "", &[]).is_err());
 }
@@ -1724,6 +1713,7 @@ async fn given_running_workflow_when_cancel_requested_then_result_reports_cancel
             name: format!("step-{}", i),
             script: "run_command('sleep 0.05')".to_string(),
             depends_on: Vec::new(),
+            run_when: None,
         })
         .collect();
     let wf = repository::create_entity(

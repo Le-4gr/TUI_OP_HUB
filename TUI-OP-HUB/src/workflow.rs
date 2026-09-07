@@ -48,6 +48,10 @@ pub struct WorkflowStep {
     pub name: String,
     pub script: String,
     pub depends_on: Vec<String>,
+    /// Skip this step unless the Lua expression is truthy (US-FUT-07).
+    /// The expression may read `results["<step>"]` and `ctx`.
+    #[serde(default)]
+    pub run_when: Option<String>,
 }
 
 /// Workflow definition.
@@ -79,6 +83,7 @@ impl WorkflowDefinition {
                     name: "main".to_string(),
                     script: content.clone(),
                     depends_on: vec![],
+                    run_when: None,
                 }],
                 variables: HashMap::new(),
             })
@@ -212,6 +217,12 @@ impl WorkflowEngine {
 
         // Execute steps in dependency order (simple linear execution for now).
         // Before every step the cooperative cancel flag is checked (US-WF-09).
+        // Each step's return value is captured into the global `results`
+        // table so logic nodes can reference prior outputs (US-FUT-07):
+        //   results["<step name>"]
+        let results_table = self.lua.create_table()?;
+        globals.set("results", results_table.clone())?;
+
         for step in &definition.steps {
             if context.cancel.load(Ordering::Relaxed) {
                 let msg = format!("✗ Run cancelled by user after {} step(s)", steps_completed);
@@ -227,11 +238,52 @@ impl WorkflowEngine {
                 });
             }
 
+            // `run_when` gate (US-FUT-07): skip the step unless the Lua
+            // expression is truthy. A broken condition fails the run.
+            if let Some(cond) = &step.run_when {
+                match self.lua.load(cond.clone()).eval::<mlua::Value>() {
+                    Ok(v) => {
+                        let truthy = !matches!(v, mlua::Value::Nil | mlua::Value::Boolean(false));
+                        if !truthy {
+                            output.push_str(&format!(
+                                "◌ Step '{}' skipped (run_when is false)\n",
+                                step.name
+                            ));
+                            results_table.set(step.name.as_str(), false)?;
+                            continue;
+                        }
+                    }
+                    Err(e) => {
+                        let error_msg =
+                            format!("✗ Step '{}' run_when condition failed: {}", step.name, e);
+                        tracing::error!(step = %step.name, error = %e, "run_when failed");
+                        unregister_run(&context.run_id);
+                        return Ok(WorkflowResult {
+                            run_id: context.run_id,
+                            success: false,
+                            output,
+                            error: Some(error_msg),
+                            duration_ms: start_time.elapsed().as_millis() as u64,
+                            steps_completed,
+                        });
+                    }
+                }
+            }
+
             tracing::info!(step = %step.name, "executing workflow step");
 
-            match self.lua.load(&step.script).exec() {
-                Ok(_) => {
+            match self.lua.load(&step.script).eval::<mlua::Value>() {
+                Ok(value) => {
                     steps_completed += 1;
+                    // Capture the step result (nil/false → false) so later
+                    // logic nodes / run_when gates can reference it.
+                    let stored: mlua::Value = match &value {
+                        mlua::Value::Nil => mlua::Value::Boolean(false),
+                        other => other.clone(),
+                    };
+                    if let Err(e) = results_table.set(step.name.as_str(), stored) {
+                        tracing::warn!(step = %step.name, error = %e, "could not store result");
+                    }
                     output.push_str(&format!("✓ Step '{}' completed\n", step.name));
                 }
                 Err(e) => {
@@ -283,6 +335,7 @@ impl WorkflowEngine {
                 name: "main".to_string(),
                 script: script.to_string(),
                 depends_on: vec![],
+                run_when: None,
             }],
             variables: HashMap::new(),
         };
@@ -587,6 +640,7 @@ fn resolve_workflow_definition(entity: &Entity) -> AppResult<WorkflowDefinition>
                 name: "main".to_string(),
                 script: file_content,
                 depends_on: vec![],
+                run_when: None,
             }],
             variables: HashMap::new(),
         });
@@ -686,11 +740,13 @@ mod tests {
                     name: "first".to_string(),
                     script: "print('one')".to_string(),
                     depends_on: vec![],
+                    run_when: None,
                 },
                 WorkflowStep {
                     name: "second".to_string(),
                     script: "log('two')".to_string(),
                     depends_on: vec![],
+                    run_when: None,
                 },
             ],
             variables: HashMap::new(),
@@ -702,6 +758,62 @@ mod tests {
         assert_eq!(result.steps_completed, 2);
         assert!(result.output.contains("first"));
         assert!(result.output.contains("second"));
+    }
+
+    /// Scenario: logic nodes — results flow between steps, gates skip steps.
+    /// (US-FUT-07)
+    #[tokio::test]
+    async fn given_logic_workflow_when_executed_then_results_and_gates_apply() {
+        let pool = Arc::new(sqlx::SqlitePool::connect(":memory:").await.unwrap());
+        let engine = WorkflowEngine::new(pool.clone()).unwrap();
+
+        let definition = WorkflowDefinition {
+            name: "logic".to_string(),
+            description: None,
+            steps: vec![
+                // Produces a boolean result: results["check"] == true
+                WorkflowStep {
+                    name: "check".to_string(),
+                    script: "return 5 > 3".to_string(),
+                    depends_on: vec![],
+                    run_when: None,
+                },
+                // AND-style gate over the captured result
+                WorkflowStep {
+                    name: "gate".to_string(),
+                    script: "return results[\"check\"] == true".to_string(),
+                    depends_on: vec!["check".to_string()],
+                    run_when: None,
+                },
+                // Runs because gate is true
+                WorkflowStep {
+                    name: "notify".to_string(),
+                    script: "return 'notified'".to_string(),
+                    depends_on: vec!["gate".to_string()],
+                    run_when: Some("results[\"gate\"] == true".to_string()),
+                },
+                // Skipped because gate is not false
+                WorkflowStep {
+                    name: "cleanup".to_string(),
+                    script: "return 'cleaned'".to_string(),
+                    depends_on: vec!["gate".to_string()],
+                    run_when: Some("results[\"gate\"] == false".to_string()),
+                },
+            ],
+            variables: HashMap::new(),
+        };
+        let context = create_workflow_context("wf-logic".to_string(), pool, None);
+
+        let result = engine.execute_workflow(&definition, context).await.unwrap();
+        assert!(result.success);
+        // check, gate and notify executed; cleanup skipped
+        assert_eq!(result.steps_completed, 3);
+        assert!(result.output.contains("notify"));
+        assert!(
+            result.output.contains("cleanup' skipped"),
+            "gated step must be skipped: {}",
+            result.output
+        );
     }
 
     /// Scenario: a failing step stops the workflow with an error result
@@ -717,6 +829,7 @@ mod tests {
                 name: "bad".to_string(),
                 script: "error('boom')".to_string(),
                 depends_on: vec![],
+                run_when: None,
             }],
             variables: HashMap::new(),
         };
@@ -924,11 +1037,13 @@ mod cancel_tests {
                     name: "never-runs".into(),
                     script: "log('side effect')".into(),
                     depends_on: Vec::new(),
+                    run_when: None,
                 },
                 WorkflowStep {
                     name: "never-runs-2".into(),
                     script: "log('side effect 2')".into(),
                     depends_on: Vec::new(),
+                    run_when: None,
                 },
             ],
         };

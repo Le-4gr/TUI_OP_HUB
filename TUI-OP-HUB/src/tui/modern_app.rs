@@ -1608,6 +1608,14 @@ log:
         if self.visual_form.is_some() {
             self.render_visual(f);
         }
+        // Logic-node editor renders on top of the builder (US-FUT-07)
+        if self
+            .visual_form
+            .as_ref()
+            .map_or(false, |v| v.node_editor.is_some())
+        {
+            self.render_node_editor(f);
+        }
         if self.command_form.mode.is_some() {
             self.render_command_form(f);
         }
@@ -5101,11 +5109,7 @@ log:
                     visual.steps = def
                         .steps
                         .iter()
-                        .map(|s| VisualStep {
-                            entity_id: String::new(),
-                            name: s.name.clone(),
-                            script: s.script.clone(),
-                        })
+                        .map(|s| VisualStep::command("", &s.name, &s.script))
                         .collect();
                 }
             }
@@ -5115,6 +5119,15 @@ log:
 
     /// Visual workflow builder input (US-WF-03, US-WF-10).
     async fn handle_visual_key(&mut self, key: KeyEvent) {
+        // Logic-node editor popup is topmost when open (US-FUT-07)
+        let has_node_editor = self
+            .visual_form
+            .as_ref()
+            .map_or(false, |v| v.node_editor.is_some());
+        if has_node_editor {
+            self.handle_node_editor_key(key);
+            return;
+        }
         // Command picker overlay is on top when open
         let has_picker = self
             .visual_form
@@ -5148,11 +5161,11 @@ log:
                         .and_then(|v| v.picker.as_ref())
                         .and_then(|p| p.get_selected().cloned());
                     if let (Some(v), Some(entity)) = (self.visual_form.as_mut(), picked) {
-                        v.steps.push(VisualStep {
-                            entity_id: entity.id.clone(),
-                            name: entity.name.clone(),
-                            script: entity.content.clone().unwrap_or_default(),
-                        });
+                        v.steps.push(VisualStep::command(
+                            &entity.id.clone(),
+                            &entity.name.clone(),
+                            &entity.content.clone().unwrap_or_default(),
+                        ));
                         v.selected_step = v.steps.len() - 1;
                         v.picker = None;
                     }
@@ -5162,6 +5175,191 @@ log:
             return;
         }
         self.handle_visual_builder_key(key).await;
+    }
+
+    /// Keys for the logic-node editor popup (US-FUT-07): Tab/arrows cycle
+    /// fields, ←/→ cycles the Kind (field 0) or compare operator, Enter
+    /// applies, Esc discards.
+    fn handle_node_editor_key(&mut self, key: KeyEvent) {
+        let Some(editor) = self
+            .visual_form
+            .as_mut()
+            .and_then(|v| v.node_editor.as_mut())
+        else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(v) = self.visual_form.as_mut() {
+                    v.node_editor = None;
+                }
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                let count = editor.field_count();
+                editor.focused = (editor.focused + 1) % count;
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                let count = editor.field_count();
+                editor.focused = (editor.focused + count.saturating_sub(1)) % count;
+            }
+            KeyCode::Left if editor.focused == 0 => {
+                // Kind selector: cycle backwards through node kinds
+                let all = VisualNodeKind::all();
+                let i = all.iter().position(|k| *k == editor.kind).unwrap_or(0);
+                editor.kind = all[(i + all.len() - 1) % all.len()];
+            }
+            KeyCode::Right if editor.focused == 0 => {
+                editor.kind = editor.kind.next();
+            }
+            KeyCode::Left | KeyCode::Right
+                if editor.kind == VisualNodeKind::Compare && editor.focused == 1 =>
+            {
+                if key.code == KeyCode::Right {
+                    editor.op = editor.op.next();
+                } else {
+                    let all = CompareOp::all();
+                    let i = all.iter().position(|o| *o == editor.op).unwrap_or(0);
+                    editor.op = all[(i + all.len() - 1) % all.len()];
+                }
+            }
+            KeyCode::Enter => {
+                // Apply the editor onto the step; close on success
+                let editor = self
+                    .visual_form
+                    .as_ref()
+                    .and_then(|v| v.node_editor.clone());
+                let result = if let Some(editor) = editor {
+                    match self
+                        .visual_form
+                        .as_mut()
+                        .unwrap()
+                        .steps
+                        .get_mut(editor.step_idx)
+                    {
+                        Some(step) => editor.apply_to_step(step),
+                        None => Ok(()),
+                    }
+                } else {
+                    Ok(())
+                };
+                if let Some(v) = self.visual_form.as_mut() {
+                    match result {
+                        Ok(()) => v.node_editor = None,
+                        Err(msg) => {
+                            if let Some(editor) = v.node_editor.as_mut() {
+                                editor.error = Some(msg);
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Backspace => editor.pop_char(editor.focused),
+            KeyCode::Char(c) => editor.push_char(editor.focused, c),
+            _ => {}
+        }
+    }
+
+    /// Render the logic-node editor popup (US-FUT-07).
+    fn render_node_editor(&self, f: &mut Frame) {
+        let Some(v) = self.visual_form.as_ref() else {
+            return;
+        };
+        let Some(editor) = v.node_editor.as_ref() else {
+            return;
+        };
+        let area = self.centered_rect(70, 16, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .title(format!(
+                " \u{2699} Node '{}' (step {}) ",
+                v.steps
+                    .get(editor.step_idx)
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default(),
+                editor.step_idx + 1
+            ))
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.accent))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        // Row 0 = Kind selector (←/→), then the kind-specific fields
+        let mut rows: Vec<(String, String, bool)> = Vec::new();
+        rows.push((
+            "Kind".to_string(),
+            format!(
+                "\u{25c4} {} \u{25ba}",
+                VisualNodeKind::all()
+                    .iter()
+                    .map(|k| k.label())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            editor.focused == 0,
+        ));
+        for field in 0..editor.field_count() {
+            rows.push((
+                editor.field_label(field).to_string(),
+                editor.field_value(field),
+                editor.focused == field + 1,
+            ));
+        }
+
+        let constraints: Vec<Constraint> = rows
+            .iter()
+            .map(|_| Constraint::Length(1))
+            .chain(std::iter::once(Constraint::Length(1)))
+            .chain(std::iter::once(Constraint::Length(1)))
+            .collect();
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(inner);
+
+        for (i, (label, value, focused)) in rows.iter().enumerate() {
+            let (marker, style) = if *focused {
+                (
+                    "\u{25b6} ",
+                    Style::default()
+                        .fg(self.ui.theme.secondary)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                ("  ", Style::default().fg(self.ui.theme.border))
+            };
+            let cursor = if *focused { "\u{2588}" } else { "" };
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(format!("{}{}: ", marker, label), style),
+                    Span::styled(
+                        format!("{}{}", value, cursor),
+                        Style::default().fg(self.ui.theme.fg),
+                    ),
+                ])),
+                chunks[i],
+            );
+        }
+
+        // Help / error line
+        let help = match &editor.error {
+            Some(err) => Span::styled(
+                err.clone(),
+                Style::default()
+                    .fg(self.ui.theme.error)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            None => Span::styled(
+                "Tab/arrows: field \u{b7} \u{2190}/\u{2192}: cycle kind/op \u{b7} Enter: apply \u{b7} Esc: discard \u{b7} inputs read results[\"step\"]",
+                Style::default().fg(self.ui.theme.border),
+            ),
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(help)).alignment(Alignment::Center),
+            chunks[rows.len()],
+        );
     }
 
     /// Builder keys (picker closed): edit name/description, manage steps.
@@ -5198,6 +5396,24 @@ log:
             }
             KeyCode::Char('d') if focused == Some(VisualField::Steps) => {
                 self.visual_form.as_mut().unwrap().remove_selected_step();
+            }
+            KeyCode::Char('l') if focused == Some(VisualField::Steps) => {
+                // Add a logic node (US-FUT-07) and open its editor
+                let v = self.visual_form.as_mut().unwrap();
+                let n = v.steps.len() + 1;
+                let name = format!("gate{}", n);
+                v.steps.push(VisualStep::logic(VisualNodeKind::And, &name));
+                v.selected_step = v.steps.len() - 1;
+                let step = v.steps.last().unwrap();
+                v.node_editor = Some(LogicNodeEditor::load(v.selected_step, step));
+            }
+            KeyCode::Char('o') if focused == Some(VisualField::Steps) => {
+                // Edit the selected step's node config / run_when gate
+                let v = self.visual_form.as_mut().unwrap();
+                if let Some(step) = v.steps.get(v.selected_step) {
+                    let idx = v.selected_step;
+                    v.node_editor = Some(LogicNodeEditor::load(idx, step));
+                }
             }
             KeyCode::Enter | KeyCode::Char('a') if focused == Some(VisualField::Steps) => {
                 // Open the saved-command picker (commands + scripts)
@@ -6549,9 +6765,10 @@ log:
         f.render_widget(steps_block, chunks[2]);
 
         if v.steps.is_empty() {
-            let empty = Paragraph::new("No steps yet — press Enter or 'a' to pick a saved command")
-                .style(Style::default().fg(self.ui.theme.border))
-                .alignment(Alignment::Center);
+            let empty =
+                Paragraph::new("No steps yet — Enter/'a': pick command · l: add logic node")
+                    .style(Style::default().fg(self.ui.theme.border))
+                    .alignment(Alignment::Center);
             f.render_widget(empty, steps_inner);
         } else {
             let lines: Vec<Line> = v
@@ -6559,13 +6776,22 @@ log:
                 .iter()
                 .enumerate()
                 .map(|(i, step)| {
-                    let first_line = step.script.lines().next().unwrap_or("").to_string();
-                    let content = format!("{}. {}  →  {}", i + 1, step.name, first_line);
+                    // Logic nodes show their expression summary (US-FUT-07)
+                    let first_line = step.summary().lines().next().unwrap_or("").to_string();
+                    let content = format!(
+                        "{}. [{}] {}  →  {}",
+                        i + 1,
+                        step.kind.label(),
+                        step.name,
+                        first_line
+                    );
                     let style = if v.focused_field == VisualField::Steps && i == v.selected_step {
                         Style::default()
                             .fg(self.ui.theme.accent)
                             .add_modifier(Modifier::BOLD)
                             .bg(self.ui.theme.highlight)
+                    } else if step.kind != VisualNodeKind::Command {
+                        Style::default().fg(self.ui.theme.warning)
                     } else {
                         Style::default().fg(self.ui.theme.fg)
                     };
@@ -6577,7 +6803,7 @@ log:
 
         let help = self.form_help_line(
             v.error_message.as_ref(),
-            "Tab: Name/Desc/Steps · Enter/a: pick command · d: remove step · ←/→: move step · Ctrl+S: save · Esc: cancel",
+            "Tab: Name/Desc/Steps · Enter/a: pick command · l: logic node · o: edit node · d: remove step · ←/→: move · Ctrl+S: save · Esc: cancel",
         );
         f.render_widget(Paragraph::new(help).alignment(Alignment::Center), chunks[3]);
 
@@ -9372,11 +9598,7 @@ mod tests {
     async fn given_visual_without_name_when_ctrl_s_then_error_shown() {
         let mut app = test_app().await;
         app.visual_form = Some(VisualWorkflowState {
-            steps: vec![VisualStep {
-                entity_id: "e1".into(),
-                name: "step".into(),
-                script: "print('hi')".into(),
-            }],
+            steps: vec![VisualStep::command("e1", "step", "print('hi')")],
             ..Default::default()
         });
 

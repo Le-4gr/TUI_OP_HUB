@@ -454,7 +454,7 @@ starter kits without touching core.
 
 | ID | Story | Priority | Points |
 |:---|:---|:---:|:---:|
-| `US-FUT-07` | As a **User**, I want **logic nodes** (AND, OR, NOT, XOR, comparisons, if/else) with typed boolean ports in the visual DAG builder (extends `US-FUT-06`), so that I can express conditions and branching without writing Lua. | 🟢 | 8 |
+| `US-FUT-07` | As a **User**, I want **logic nodes** (AND, OR, NOT, XOR, comparisons, if/else) with typed boolean ports in the visual DAG builder (extends `US-FUT-06`), so that I can express conditions and branching without writing Lua. | ✅ | 8 |
 
 ---
 

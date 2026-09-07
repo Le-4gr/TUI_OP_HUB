@@ -183,12 +183,165 @@ pub struct SecretFormState {
 /// Fields: Name, Value, Group, Username, URL, Email, Passphrase, SSH-agent
 pub const SECRET_FORM_FIELDS: usize = 8;
 
+/// Boolean/comparison operator for Compare nodes (US-FUT-07).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompareOp {
+    #[default]
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl CompareOp {
+    pub fn all() -> &'static [CompareOp] {
+        &[
+            CompareOp::Eq,
+            CompareOp::Ne,
+            CompareOp::Lt,
+            CompareOp::Le,
+            CompareOp::Gt,
+            CompareOp::Ge,
+        ]
+    }
+
+    /// Lua operator symbol.
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            CompareOp::Eq => "==",
+            CompareOp::Ne => "~=",
+            CompareOp::Lt => "<",
+            CompareOp::Le => "<=",
+            CompareOp::Gt => ">",
+            CompareOp::Ge => ">=",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        let all = Self::all();
+        let i = all.iter().position(|o| o == self).unwrap_or(0);
+        all[(i + 1) % all.len()]
+    }
+}
+
+/// Node kind in the visual builder (US-FUT-07). `Command` is the classic
+/// saved-command step; the rest are logic nodes with typed boolean ports:
+/// their inputs read previous step results (`results["<step>"]`) and their
+/// output is a boolean stored under the node's own name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VisualNodeKind {
+    #[default]
+    Command,
+    And,
+    Or,
+    Not,
+    Xor,
+    Compare,
+    IfElse,
+}
+
+impl VisualNodeKind {
+    pub fn all() -> &'static [VisualNodeKind] {
+        &[
+            VisualNodeKind::Command,
+            VisualNodeKind::And,
+            VisualNodeKind::Or,
+            VisualNodeKind::Not,
+            VisualNodeKind::Xor,
+            VisualNodeKind::Compare,
+            VisualNodeKind::IfElse,
+        ]
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            VisualNodeKind::Command => "CMD",
+            VisualNodeKind::And => "AND",
+            VisualNodeKind::Or => "OR",
+            VisualNodeKind::Not => "NOT",
+            VisualNodeKind::Xor => "XOR",
+            VisualNodeKind::Compare => "CMP",
+            VisualNodeKind::IfElse => "IF/ELSE",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        let all = Self::all();
+        let i = all.iter().position(|k| k == self).unwrap_or(0);
+        all[(i + 1) % all.len()]
+    }
+}
+
 /// A single step in the visual workflow builder, backed by a saved command/script entity.
 #[derive(Debug, Clone)]
 pub struct VisualStep {
     pub entity_id: String,
     pub name: String,
     pub script: String,
+    /// Node kind (US-FUT-07); Command = plain saved step.
+    pub kind: VisualNodeKind,
+    /// Compare operator (Compare nodes).
+    pub op: CompareOp,
+    /// Gate inputs: names of earlier steps feeding AND/OR/NOT/XOR.
+    pub inputs: Vec<String>,
+    /// Compare/IfElse operands (left = then-branch for IfElse).
+    pub left: String,
+    pub right: String,
+    /// IfElse condition (Lua expression over `results` / `ctx`).
+    pub cond: String,
+    /// Skip this step unless the Lua expression is truthy (US-FUT-07).
+    pub run_when: Option<String>,
+}
+
+impl VisualStep {
+    /// A plain command step backed by a saved entity.
+    pub fn command(entity_id: &str, name: &str, script: &str) -> Self {
+        Self {
+            entity_id: entity_id.to_string(),
+            name: name.to_string(),
+            script: script.to_string(),
+            kind: VisualNodeKind::Command,
+            op: CompareOp::default(),
+            inputs: Vec::new(),
+            left: String::new(),
+            right: String::new(),
+            cond: String::new(),
+            run_when: None,
+        }
+    }
+
+    /// A fresh logic node (US-FUT-07).
+    pub fn logic(kind: VisualNodeKind, name: &str) -> Self {
+        Self {
+            entity_id: String::new(),
+            name: name.to_string(),
+            script: String::new(),
+            kind,
+            op: CompareOp::default(),
+            inputs: Vec::new(),
+            left: String::new(),
+            right: String::new(),
+            cond: String::new(),
+            run_when: None,
+        }
+    }
+
+    /// One-line summary for the steps list.
+    pub fn summary(&self) -> String {
+        match self.kind {
+            VisualNodeKind::Command => self.script.clone(),
+            VisualNodeKind::And | VisualNodeKind::Or | VisualNodeKind::Xor => {
+                format!("{}({})", self.kind.label(), self.inputs.join(", "))
+            }
+            VisualNodeKind::Not => format!("NOT({})", self.inputs.join(", ")),
+            VisualNodeKind::Compare => format!("{} {} {}", self.left, self.op.symbol(), self.right),
+            VisualNodeKind::IfElse => {
+                format!("if {} then {} else {}", self.cond, self.left, self.right)
+            }
+        }
+    }
 }
 
 /// Focused area of the visual workflow builder.
@@ -225,6 +378,216 @@ impl CommandPickerState {
     }
 }
 
+/// Inline editor for a logic node / step gate (US-FUT-07). One text row per
+/// field depending on the node kind; ←/→ cycles Kind and the compare op.
+#[derive(Debug, Clone)]
+pub struct LogicNodeEditor {
+    pub step_idx: usize,
+    pub kind: VisualNodeKind,
+    pub inputs: String,
+    pub left: String,
+    pub right: String,
+    pub op: CompareOp,
+    pub cond: String,
+    pub run_when: String,
+    pub focused: usize,
+    pub error: Option<String>,
+}
+
+impl LogicNodeEditor {
+    pub fn load(step_idx: usize, step: &VisualStep) -> Self {
+        Self {
+            step_idx,
+            kind: step.kind,
+            inputs: step.inputs.join(", "),
+            left: step.left.clone(),
+            right: step.right.clone(),
+            op: step.op,
+            cond: step.cond.clone(),
+            run_when: step.run_when.clone().unwrap_or_default(),
+            focused: 0,
+            error: None,
+        }
+    }
+
+    /// Field count after the Kind selector, by kind.
+    pub fn field_count(&self) -> usize {
+        match self.kind {
+            VisualNodeKind::Command => 1,
+            VisualNodeKind::And
+            | VisualNodeKind::Or
+            | VisualNodeKind::Not
+            | VisualNodeKind::Xor => 2,
+            VisualNodeKind::Compare | VisualNodeKind::IfElse => 4,
+        }
+    }
+
+    pub fn field_label(&self, field: usize) -> &'static str {
+        match self.kind {
+            VisualNodeKind::Command => "Run when (Lua expr)",
+            VisualNodeKind::And | VisualNodeKind::Or | VisualNodeKind::Xor => match field {
+                0 => "Inputs (step names, comma-sep)",
+                _ => "Run when (Lua expr)",
+            },
+            VisualNodeKind::Not => match field {
+                0 => "Input (step name)",
+                _ => "Run when (Lua expr)",
+            },
+            VisualNodeKind::Compare => match field {
+                0 => "Left",
+                1 => "Operator (←/→)",
+                2 => "Right",
+                _ => "Run when (Lua expr)",
+            },
+            VisualNodeKind::IfElse => match field {
+                0 => "Condition (Lua expr)",
+                1 => "Then (step name)",
+                2 => "Else (step name)",
+                _ => "Run when (Lua expr)",
+            },
+        }
+    }
+
+    pub fn field_value(&self, field: usize) -> String {
+        match self.kind {
+            VisualNodeKind::Command => self.run_when.clone(),
+            VisualNodeKind::And | VisualNodeKind::Or | VisualNodeKind::Xor => match field {
+                0 => self.inputs.clone(),
+                _ => self.run_when.clone(),
+            },
+            VisualNodeKind::Not => match field {
+                0 => self.inputs.clone(),
+                _ => self.run_when.clone(),
+            },
+            VisualNodeKind::Compare => match field {
+                0 => self.left.clone(),
+                1 => self.op.symbol().to_string(),
+                2 => self.right.clone(),
+                _ => self.run_when.clone(),
+            },
+            VisualNodeKind::IfElse => match field {
+                0 => self.cond.clone(),
+                1 => self.left.clone(),
+                2 => self.right.clone(),
+                _ => self.run_when.clone(),
+            },
+        }
+    }
+
+    pub fn push_char(&mut self, field: usize, c: char) {
+        match self.kind {
+            VisualNodeKind::Command => self.run_when.push(c),
+            VisualNodeKind::And | VisualNodeKind::Or | VisualNodeKind::Xor => match field {
+                0 => self.inputs.push(c),
+                _ => self.run_when.push(c),
+            },
+            VisualNodeKind::Not => match field {
+                0 => self.inputs.push(c),
+                _ => self.run_when.push(c),
+            },
+            VisualNodeKind::Compare => match field {
+                0 => self.left.push(c),
+                2 => self.right.push(c),
+                _ => self.run_when.push(c),
+            },
+            VisualNodeKind::IfElse => match field {
+                0 => self.cond.push(c),
+                1 => self.left.push(c),
+                2 => self.right.push(c),
+                _ => self.run_when.push(c),
+            },
+        }
+    }
+
+    pub fn pop_char(&mut self, field: usize) {
+        match self.kind {
+            VisualNodeKind::Command => {
+                self.run_when.pop();
+            }
+            VisualNodeKind::And | VisualNodeKind::Or | VisualNodeKind::Xor => match field {
+                0 => {
+                    self.inputs.pop();
+                }
+                _ => {
+                    self.run_when.pop();
+                }
+            },
+            VisualNodeKind::Not => match field {
+                0 => {
+                    self.inputs.pop();
+                }
+                _ => {
+                    self.run_when.pop();
+                }
+            },
+            VisualNodeKind::Compare => match field {
+                0 => {
+                    self.left.pop();
+                }
+                2 => {
+                    self.right.pop();
+                }
+                _ => {
+                    self.run_when.pop();
+                }
+            },
+            VisualNodeKind::IfElse => match field {
+                0 => {
+                    self.cond.pop();
+                }
+                1 => {
+                    self.left.pop();
+                }
+                2 => {
+                    self.right.pop();
+                }
+                _ => {
+                    self.run_when.pop();
+                }
+            },
+        }
+    }
+
+    /// Write the editor state back onto the step (US-FUT-07) with arity checks.
+    pub fn apply_to_step(&self, step: &mut VisualStep) -> Result<(), String> {
+        step.kind = self.kind;
+        step.op = self.op;
+        step.inputs = self
+            .inputs
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        step.left = self.left.trim().to_string();
+        step.right = self.right.trim().to_string();
+        step.cond = self.cond.trim().to_string();
+        step.run_when = if self.run_when.trim().is_empty() {
+            None
+        } else {
+            Some(self.run_when.trim().to_string())
+        };
+        match self.kind {
+            VisualNodeKind::Xor if step.inputs.len() != 2 => {
+                return Err("XOR needs exactly 2 inputs".to_string());
+            }
+            VisualNodeKind::Not if step.inputs.len() != 1 => {
+                return Err("NOT needs exactly 1 input".to_string());
+            }
+            VisualNodeKind::And | VisualNodeKind::Or if step.inputs.is_empty() => {
+                return Err(format!("{} needs at least 1 input", self.kind.label()));
+            }
+            VisualNodeKind::Compare if step.left.is_empty() || step.right.is_empty() => {
+                return Err("Comparison needs left and right operands".to_string());
+            }
+            VisualNodeKind::IfElse if step.left.is_empty() || step.right.is_empty() => {
+                return Err("If/Else needs then and else step names".to_string());
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
 /// Visual workflow builder state (US-WF-03, US-WF-10): compose workflows
 /// from saved commands instead of writing Lua by hand.
 #[derive(Debug, Clone, Default)]
@@ -237,6 +600,8 @@ pub struct VisualWorkflowState {
     pub picker: Option<CommandPickerState>,
     pub editing_id: Option<String>,
     pub error_message: Option<String>,
+    /// Logic-node editor popup (US-FUT-07).
+    pub node_editor: Option<LogicNodeEditor>,
 }
 
 impl VisualWorkflowState {
@@ -462,11 +827,7 @@ mod tests {
     use super::*;
 
     fn step(id: &str, name: &str) -> VisualStep {
-        VisualStep {
-            entity_id: id.to_string(),
-            name: name.to_string(),
-            script: format!("echo {}", name),
-        }
+        VisualStep::command(id, name, &format!("echo {}", name))
     }
 
     // ── Generic ListState (pagination, selection) ───────────────────────────
@@ -672,6 +1033,104 @@ mod tests {
         assert_eq!(parsed.steps[1].name, "cleanup");
     }
 
+    // ── Logic nodes (US-FUT-07) ─────────────────────────────────────────────
+
+    #[test]
+    fn given_logic_nodes_when_definition_built_then_lua_compiled_with_ports() {
+        let mut steps = vec![step("e1", "build"), step("e2", "lint")];
+        let mut and_node = VisualStep::logic(VisualNodeKind::And, "gate1");
+        and_node.inputs = vec!["build".into(), "lint".into()];
+        steps.push(and_node);
+        let mut not_node = VisualStep::logic(VisualNodeKind::Not, "invert");
+        not_node.inputs = vec!["gate1".into()];
+        steps.push(not_node);
+
+        let def = build_workflow_definition("wf", "", &steps).unwrap();
+        assert!(def.steps[2].script.contains("__t(results[\"build\"])"));
+        assert!(def.steps[2].script.contains(" and "));
+        assert!(def.steps[2].script.contains("__t(results[\"lint\"])"));
+        assert_eq!(
+            def.steps[2].depends_on,
+            vec!["build".to_string(), "lint".to_string()]
+        );
+        assert!(
+            def.steps[3].script.contains("not __t(results[\"gate1\"])"),
+            "NOT compiles over its input port: {}",
+            def.steps[3].script
+        );
+    }
+
+    #[test]
+    fn given_logic_node_referencing_later_step_when_built_then_error() {
+        let mut not_node = VisualStep::logic(VisualNodeKind::Not, "gate");
+        not_node.inputs = vec!["later".into()];
+        let later = step("e2", "later");
+        let steps = vec![not_node, later];
+        let err = build_workflow_definition("wf", "", &steps).unwrap_err();
+        assert!(err.contains("not an earlier step"), "{}", err);
+    }
+
+    #[test]
+    fn given_compare_and_ifelse_nodes_when_built_then_scripts_compile() {
+        let mut cmp = VisualStep::logic(VisualNodeKind::Compare, "cmp");
+        cmp.left = "5".into();
+        cmp.op = CompareOp::Ge;
+        cmp.right = "3".into();
+        let notify = step("e1", "notify");
+        let noop = step("e2", "noop");
+        let mut pick = VisualStep::logic(VisualNodeKind::IfElse, "pick");
+        pick.cond = "results[\"cmp\"]".into();
+        pick.left = "notify".into();
+        pick.right = "noop".into();
+        let steps = vec![cmp, notify, noop, pick];
+
+        let def = build_workflow_definition("wf", "", &steps).unwrap();
+        assert!(
+            def.steps[0].script.contains("return 5 >= 3"),
+            "numeric operands compile as literals: {}",
+            def.steps[0].script
+        );
+        assert!(
+            def.steps[3]
+                .script
+                .contains("if results[\"cmp\"] then return results[\"notify\"] else return results[\"noop\"] end"),
+            "if/else compiles to a branch over results: {}",
+            def.steps[3].script
+        );
+    }
+
+    #[test]
+    fn given_step_with_run_when_when_built_then_gate_preserved() {
+        let mut s = step("e1", "build");
+        s.run_when = Some("results[\"prev\"] == true".into());
+        let def = build_workflow_definition("wf", "", &[s]).unwrap();
+        assert_eq!(
+            def.steps[0].run_when.as_deref(),
+            Some("results[\"prev\"] == true")
+        );
+    }
+
+    #[test]
+    fn given_xor_node_with_wrong_arity_when_applied_then_error() {
+        let mut editor = LogicNodeEditor {
+            step_idx: 0,
+            kind: VisualNodeKind::Xor,
+            inputs: "a".into(),
+            left: String::new(),
+            right: String::new(),
+            op: CompareOp::default(),
+            cond: String::new(),
+            run_when: String::new(),
+            focused: 0,
+            error: None,
+        };
+        let mut step = VisualStep::logic(VisualNodeKind::Xor, "gate");
+        let err = editor.apply_to_step(&mut step).unwrap_err();
+        assert!(err.contains("exactly 2"), "{}", err);
+        editor.inputs = "a, b".into();
+        assert!(editor.apply_to_step(&mut step).is_ok());
+    }
+
     #[test]
     fn build_workflow_definition_rejects_empty_name_and_steps() {
         let err = build_workflow_definition("  ", "d", &[step("a", "x")]).unwrap_err();
@@ -743,10 +1202,105 @@ pub fn parse_tags_text(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Build a `WorkflowDefinition` from visual builder state (US-WF-03, US-WF-10).
+/// Lua truthiness helper emitted with every logic node (empty string and
+/// nil/false count as false so gate ports are "typed" booleans).
+const LUA_TRUTHY_HELPER: &str =
+    "local function __t(v) return not (v == nil or v == false or v == '') end ";
+
+/// Compile a Compare/IfElse operand: numbers and quoted strings become Lua
+/// literals, everything else is treated as a Lua expression typed by the
+/// user (e.g. `results["build"]` or `ctx.vars.limit`).
+fn compile_operand(operand: &str) -> String {
+    let trimmed = operand.trim();
+    if trimmed.parse::<f64>().is_ok()
+        || (trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2)
+    {
+        trimmed.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Compile a logic node into its Lua script (US-FUT-07). Inputs are step
+/// names of earlier steps; their results arrive via the engine's `results`
+/// table. Returns Err for malformed nodes.
+fn compile_logic_node(step: &VisualStep) -> Result<(String, Vec<String>), String> {
+    let helper = LUA_TRUTHY_HELPER.to_string();
+    match step.kind {
+        VisualNodeKind::And | VisualNodeKind::Or | VisualNodeKind::Xor => {
+            if step.inputs.is_empty() {
+                return Err(format!(
+                    "{} node '{}' needs inputs",
+                    step.kind.label(),
+                    step.name
+                ));
+            }
+            if step.kind == VisualNodeKind::Xor && step.inputs.len() != 2 {
+                return Err(format!("XOR node '{}' needs exactly 2 inputs", step.name));
+            }
+            let terms: Vec<String> = step
+                .inputs
+                .iter()
+                .map(|i| format!("__t(results[\"{}\"])", i))
+                .collect();
+            let joiner = match step.kind {
+                VisualNodeKind::And => " and ",
+                VisualNodeKind::Or => " or ",
+                _ => " ~= ",
+            };
+            Ok((
+                format!("{}return {}", helper, terms.join(joiner)),
+                step.inputs.clone(),
+            ))
+        }
+        VisualNodeKind::Not => {
+            if step.inputs.len() != 1 {
+                return Err(format!("NOT node '{}' needs exactly 1 input", step.name));
+            }
+            Ok((
+                format!("{}return not __t(results[\"{}\"])", helper, step.inputs[0]),
+                step.inputs.clone(),
+            ))
+        }
+        VisualNodeKind::Compare => Ok((
+            format!(
+                "return {} {} {}",
+                compile_operand(&step.left),
+                step.op.symbol(),
+                compile_operand(&step.right)
+            ),
+            vec![],
+        )),
+        VisualNodeKind::IfElse => {
+            if step.cond.trim().is_empty()
+                || step.left.trim().is_empty()
+                || step.right.trim().is_empty()
+            {
+                return Err(format!(
+                    "If/Else node '{}' needs a condition and two branch step names",
+                    step.name
+                ));
+            }
+            Ok((
+                format!(
+                    "if {} then return results[\"{}\"] else return results[\"{}\"] end",
+                    step.cond.trim(),
+                    step.left.trim(),
+                    step.right.trim()
+                ),
+                vec![step.left.trim().to_string(), step.right.trim().to_string()],
+            ))
+        }
+        VisualNodeKind::Command => Ok((step.script.clone(), vec![])),
+    }
+}
+
+/// Build a `WorkflowDefinition` from visual builder state (US-WF-03, US-WF-10,
+/// US-FUT-07).
 ///
 /// The definition serializes to JSON which is stored as the workflow entity
-/// content; the Lua engine executes the steps in definition order.
+/// content; the Lua engine executes the steps in definition order, captures
+/// each step's return into `results["<name>"]` and honors `run_when` gates.
 pub fn build_workflow_definition(
     name: &str,
     description: &str,
@@ -759,6 +1313,31 @@ pub fn build_workflow_definition(
     if steps.is_empty() {
         return Err("Add at least one step (pick a saved command)".to_string());
     }
+    let mut compiled: Vec<WorkflowStep> = Vec::new();
+    for (idx, s) in steps.iter().enumerate() {
+        let (script, depends_on) = if s.kind == VisualNodeKind::Command {
+            (s.script.clone(), vec![])
+        } else {
+            // Logic nodes may only reference EARLIER steps (linear DAG order)
+            let earlier: Vec<&str> = steps[..idx].iter().map(|p| p.name.as_str()).collect();
+            let (script, deps) = compile_logic_node(s)?;
+            for dep in &deps {
+                if !earlier.contains(&dep.as_str()) {
+                    return Err(format!(
+                        "Node '{}' references '{}', which is not an earlier step",
+                        s.name, dep
+                    ));
+                }
+            }
+            (script, deps)
+        };
+        compiled.push(WorkflowStep {
+            name: s.name.clone(),
+            script,
+            depends_on,
+            run_when: s.run_when.clone(),
+        });
+    }
     Ok(WorkflowDefinition {
         name: name.to_string(),
         description: if description.trim().is_empty() {
@@ -766,14 +1345,7 @@ pub fn build_workflow_definition(
         } else {
             Some(description.trim().to_string())
         },
-        steps: steps
-            .iter()
-            .map(|s| WorkflowStep {
-                name: s.name.clone(),
-                script: s.script.clone(),
-                depends_on: vec![],
-            })
-            .collect(),
+        steps: compiled,
         variables: HashMap::new(),
     })
 }

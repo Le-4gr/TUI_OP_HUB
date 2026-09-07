@@ -3,6 +3,36 @@
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
 
+## 🎯 Session 23: Visual-scripting logic gates — US-FUT-07 (completed)
+
+Continued the story backlog (item 5). The visual builder can now express conditions
+and branching without writing Lua.
+
+- **Node kinds** (`list_state.rs`): `VisualNodeKind` — Command (classic step), AND, OR,
+  NOT, XOR, Compare (==,~=,<,<=,>,>=) and IfElse. Each logic node has typed boolean
+  ports: inputs are names of EARLIER steps and outputs are stored under the node name.
+- **Engine (`workflow.rs`)**: every step's Lua return value is captured into a global
+  `results` table (`results["<step>"]`, nil/false → false); `WorkflowStep.run_when`
+  (serde-default, backward compatible) gates a step on any Lua expression — skipped
+  steps are reported as "◌ skipped" and don't count as completed; a broken condition
+  fails the run with a clear error.
+- **Builder UI**: `l` in the Steps area adds a logic node; `o` opens the node editor
+  popup (Kind cycled with ←/→, per-kind fields — inputs comma-sep, compare operands +
+  operator cycler, if/else condition + branch steps, and a run_when gate on ANY step).
+  Steps list shows `[KIND] name → expression`; logic nodes render in warning color.
+- **Compilation**: logic nodes compile to Lua over `results[...]` with an emitted
+  truthiness helper (`__t`: nil/false/"" are false). Validation: input arity (XOR=2,
+  NOT=1), compare operands non-empty, and inputs must reference earlier steps only
+  (linear DAG order) — errors surface in the builder, never half-saved.
+
+Tests: compile tests (AND/NOT ports + depends_on, forward-reference rejection,
+Compare literal operands, IfElse branch script, run_when passthrough, XOR arity via
+the editor), engine test (results flow + run_when skip), BDD tests updated for the
+new VisualStep constructor. 252 total (204 lib + 48 BDD), clippy 0, build ok.
+USER_STORIES.md updated (US-FUT-07 ✅). Backlog: all P2 items done; remaining are
+P3 parked areas + leftovers.
+
+
 ---
 
 ## 📋 Story Backlog — priority order (say "continue stories" to work the next item)
@@ -24,8 +54,11 @@
    loaded/approved plugins, `requires` capability subset enforced at discovery AND at
    run time); Enter runs the action's Lua fn with [project_name, project_path]; result
    shown in the popup + status bar.
-5. **🟡 P2 — Visual-scripting logic gates (US-FUT-07)**: AND/OR/NOT/XOR/comparison/if-else
-   nodes with typed boolean ports in the visual workflow builder.
+5. **✅ DONE (Session 23) — Visual-scripting logic gates (US-FUT-07)**: logic nodes
+   (AND/OR/NOT/XOR/Compare/IfElse) in the visual builder with a node editor popup;
+   engine captures each step's return into `results["<step>"]`, `run_when` gates skip
+   steps; logic nodes compile to Lua over typed boolean ports (inputs must reference
+   earlier steps; arity enforced).
 6. **🟢 P3 — Parked future areas** (backend exists, UI not planned yet): US-PROC
    (process manager — use btop/htop, don't rebuild), US-PKG, US-ENV, US-BAK, US-DB.
 7. **🟡 leftovers**: US-SSH-04 host grouping/tags; US-SSH-05 connection *test* (currently
