@@ -1080,13 +1080,16 @@ log:
             self.render_options_popup(f);
         }
         if let Some(path) = &self.register_input {
-            if let Some(path) = &self.config_input {
-                self.render_path_input(f, " Register existing config file ", path);
-            }
-            if let Some(path) = &self.config_target_input {
-                self.render_path_input(f, " Deploy target path ", path);
-            }
             self.render_register_input(f, path);
+        }
+        // Configs path popups render independently — they were once nested
+        // inside the register_input block, so pressing `n`/`t` on Configs set
+        // the state but drew nothing (US-CFG-09)
+        if let Some(path) = &self.config_input {
+            self.render_path_input(f, " Register existing config file ", path);
+        }
+        if let Some(path) = &self.config_target_input {
+            self.render_path_input(f, " Deploy target path ", path);
         }
         if let Some(path) = &self.import_input {
             self.render_import_input(f, path);
@@ -8987,6 +8990,65 @@ mod configs_tab_tests {
         assert_eq!(
             app.configs_list.items[0].deploy_mode,
             crate::config_manager::DeployMode::HardLink
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn given_configs_tab_when_n_pressed_then_register_popup_is_actually_visible() {
+        // Regression: the config popups were nested inside the unrelated
+        // register_input render block, so `n` set the state but drew nothing.
+        // This test renders into a TestBackend and asserts the popup text
+        // appears in the framebuffer (US-CFG-09).
+        let mut app = test_app().await;
+        let dir = tmp("vis");
+        app.config_store_dir = dir.join("store");
+        let src = dir.join("kitty.conf");
+        std::fs::write(&src, "font_size 12").unwrap();
+        app.ui.state = AppState::Configs;
+        app.fetch_configs().await.unwrap();
+        // Register one config so the list has a selection for the `t` case
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        for c in src.to_string_lossy().chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Enter)).await;
+        app.ui.state = AppState::Configs;
+        app.fetch_configs().await.unwrap();
+
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        assert!(app.config_input.is_some(), "state must open");
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            text.contains("Register existing config file"),
+            "register popup must be drawn after `n`"
+        );
+
+        // Same for the deploy-target popup (t with a selection)
+        app.handle_key(key(KeyCode::Esc)).await;
+        app.config_input = None;
+        app.handle_key(key(KeyCode::Char('t'))).await;
+        terminal.draw(|f| app.render(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            text.contains("Deploy target path"),
+            "target popup must be drawn after `t`"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
