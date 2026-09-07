@@ -142,9 +142,10 @@ pub fn create_project_directory(
     parent_dir: &Path,
     name: &str,
     kind: &ProjectKind,
+    overwrite: bool,
 ) -> AppResult<CreatedProject> {
     let dir = parent_dir.join(name);
-    if dir.exists() {
+    if dir.exists() && !overwrite {
         return Err(AppError::Other(format!(
             "directory '{}' already exists",
             dir.display()
@@ -278,7 +279,7 @@ mod tests {
         }
         let base = std::env::temp_dir().join(format!("tui-proj-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&base).unwrap();
-        let result = create_project_directory(&base, "myapp", &ProjectKind::Python).unwrap();
+        let result = create_project_directory(&base, "myapp", &ProjectKind::Python, false).unwrap();
         assert!(result.path.join(".git").exists(), "git repo created");
         assert!(result.path.join("README.md").exists());
         assert!(result.path.join(".gitignore").exists());
@@ -297,7 +298,7 @@ mod tests {
         }
         let base = std::env::temp_dir().join(format!("tui-proj-d-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&base).unwrap();
-        let result = create_project_directory(&base, "dock", &ProjectKind::Docker).unwrap();
+        let result = create_project_directory(&base, "dock", &ProjectKind::Docker, false).unwrap();
         assert!(result.path.join("docker-compose.yml").exists());
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -309,7 +310,8 @@ mod tests {
         }
         let base = std::env::temp_dir().join(format!("tui-proj-k-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&base).unwrap();
-        let result = create_project_directory(&base, "k8s", &ProjectKind::Kubernetes).unwrap();
+        let result =
+            create_project_directory(&base, "k8s", &ProjectKind::Kubernetes, false).unwrap();
         assert!(result.path.join("manifests/deployment.yaml").exists());
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -318,8 +320,20 @@ mod tests {
     fn rejects_existing_directory() {
         let base = std::env::temp_dir().join(format!("tui-proj-r-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(base.join("exists")).unwrap();
-        let r = create_project_directory(&base, "exists", &ProjectKind::Generic);
-        assert!(r.is_err(), "existing dir must be rejected");
+        let r = create_project_directory(&base, "exists", &ProjectKind::Generic, false);
+        assert!(
+            r.is_err(),
+            "existing dir must be rejected without overwrite"
+        );
+        // With the overwrite option the existing folder is reused (US-PROJ)
+        std::fs::write(base.join("exists").join("keep.txt"), "user data").unwrap();
+        let ok = create_project_directory(&base, "exists", &ProjectKind::Generic, true);
+        assert!(ok.is_ok(), "overwrite=true must reuse the existing dir");
+        assert_eq!(
+            std::fs::read_to_string(base.join("exists").join("keep.txt")).unwrap(),
+            "user data",
+            "existing files must survive the merge"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -1494,6 +1494,7 @@ async fn given_created_workspace_when_listed_then_path_is_stored() {
         &parent,
         "bddproj",
         &tui_op_hub::project_workspace::ProjectKind::Generic,
+        false,
     )
     .unwrap();
 

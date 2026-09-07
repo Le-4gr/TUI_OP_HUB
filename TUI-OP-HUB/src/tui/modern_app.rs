@@ -120,6 +120,12 @@ struct ConfirmDelete {
     id: String,
     label: String,
     kind: DeleteKind,
+    /// Project workspace path (projects only): enables the "also delete the
+    /// folder on disk" option (US-PROJ).
+    path: Option<String>,
+    /// Toggle for the folder-removal option; default OFF — deleting the DB
+    /// row never touches the disk unless explicitly chosen.
+    delete_folder: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -502,6 +508,9 @@ pub struct ModernApp {
     new_project_editor: usize,
     new_project_error: Option<String>,
     new_project_field_idx: usize,
+    /// Injectable parent dir for the workspace form (tests); None = default
+    /// `$HOME/projects` (US-PROJ).
+    new_project_parent: Option<std::path::PathBuf>,
     /// Templates discovered from plugins (US-PLG-14), loaded when the
     /// workspace form opens. Selection None = plain project (US-PROJ-08).
     templates: Vec<crate::plugin::ProjectTemplate>,
@@ -695,6 +704,7 @@ impl ModernApp {
             new_project_editor: 0,
             new_project_error: None,
             new_project_field_idx: 0,
+            new_project_parent: None,
             templates: Vec::new(),
             new_project_template: None,
             template_preview: None,
@@ -3179,6 +3189,8 @@ log:
                                 id: entity.id.clone(),
                                 label: entity.name.clone(),
                                 kind: DeleteKind::Entity,
+                                path: None,
+                                delete_folder: false,
                             });
                         }
                     }
@@ -3188,6 +3200,8 @@ log:
                                 id: project.id.clone(),
                                 label: project.name.clone(),
                                 kind: DeleteKind::Project,
+                                path: project.path.clone(),
+                                delete_folder: false,
                             });
                         }
                     }
@@ -3197,6 +3211,8 @@ log:
                                 id: entity.id.clone(),
                                 label: entity.name.clone(),
                                 kind: DeleteKind::Entity,
+                                path: None,
+                                delete_folder: false,
                             });
                         }
                     }
@@ -3206,6 +3222,8 @@ log:
                                 id: secret.id.clone(),
                                 label: secret.name.clone(),
                                 kind: DeleteKind::Secret,
+                                path: None,
+                                delete_folder: false,
                             });
                         }
                     }
@@ -3215,6 +3233,8 @@ log:
                                 id: config.id.clone(),
                                 label: config.name.clone(),
                                 kind: DeleteKind::Config,
+                                path: None,
+                                delete_folder: false,
                             });
                         }
                     }
@@ -4526,8 +4546,18 @@ log:
         }
     }
 
-    /// Delete confirmation popup: Enter confirms, Esc cancels.
+    /// Delete confirmation popup: Enter confirms, Esc cancels. For projects
+    /// with a workspace path, `f` toggles also deleting the folder on disk
+    /// (default OFF — the DB row never touches the disk unless chosen).
     async fn handle_confirm_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('f') {
+            if let Some(confirm) = self.confirm_delete.as_mut() {
+                if confirm.kind == DeleteKind::Project && confirm.path.is_some() {
+                    confirm.delete_folder = !confirm.delete_folder;
+                }
+            }
+            return;
+        }
         match key.code {
             KeyCode::Enter => {
                 if let Some(confirm) = self.confirm_delete.take() {
@@ -4543,9 +4573,34 @@ log:
                         }
                         DeleteKind::Config => self.config_manager().remove_entry(&confirm.id),
                     };
+                    let mut note = String::new();
+                    if result.is_ok() && confirm.kind == DeleteKind::Project {
+                        // Optionally remove the workspace folder (US-PROJ)
+                        if confirm.delete_folder {
+                            if let Some(path) = &confirm.path {
+                                let p = std::path::PathBuf::from(path);
+                                let removed = tokio::task::spawn_blocking(move || {
+                                    std::fs::remove_dir_all(&p)
+                                })
+                                .await;
+                                match removed {
+                                    Ok(Ok(())) => {
+                                        note = format!(" \u{2014} folder '{}' removed", path);
+                                    }
+                                    Ok(Err(e)) => {
+                                        note = format!(" \u{2014} folder delete failed: {}", e);
+                                    }
+                                    Err(e) => {
+                                        note = format!(" \u{2014} folder task failed: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     match result {
                         Ok(()) => {
-                            self.status_message = Some(format!("✓ Deleted '{}'", confirm.label));
+                            self.status_message =
+                                Some(format!("✓ Deleted '{}'{}", confirm.label, note));
                         }
                         Err(e) => {
                             self.status_message = Some(format!("✗ Delete failed: {}", e));
@@ -6275,19 +6330,19 @@ log:
     }
 
     fn render_confirm_delete(&self, f: &mut Frame, confirm: &ConfirmDelete) {
-        let area = self.centered_rect(56, 9, f);
+        let with_folder = confirm.kind == DeleteKind::Project && confirm.path.is_some();
+        let area = self.centered_rect(60, if with_folder { 12 } else { 9 }, f);
         f.render_widget(Clear, area);
         let block = Block::default()
-            .title(" ⚠ Confirm Delete ")
+            .title(" \u{26a0} Confirm Delete ")
             .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(self.ui.theme.error))
             .style(Style::default().bg(self.ui.theme.bg));
         let inner = block.inner(area);
-        f.render_widget(block, area);
 
-        let text = vec![
+        let mut text = vec![
             Line::from(Span::raw("Delete permanently?")),
             Line::from(Span::styled(
                 confirm.label.clone(),
@@ -6295,24 +6350,42 @@ log:
                     .fg(self.ui.theme.warning)
                     .add_modifier(Modifier::BOLD),
             )),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled(
-                    "Enter",
-                    Style::default()
-                        .fg(self.ui.theme.success)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" Confirm   "),
-                Span::styled(
-                    "Esc",
-                    Style::default()
-                        .fg(self.ui.theme.error)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" Cancel"),
-            ]),
         ];
+        if with_folder {
+            // Folder-removal option (US-PROJ): default OFF
+            let state = if confirm.delete_folder { "[x]" } else { "[ ]" };
+            let color = if confirm.delete_folder {
+                self.ui.theme.error
+            } else {
+                self.ui.theme.border
+            };
+            text.push(Line::from(""));
+            text.push(Line::from(Span::styled(
+                format!("f: {} also delete the folder on disk", state),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )));
+            text.push(Line::from(Span::styled(
+                format!("  {}", confirm.path.as_deref().unwrap_or("")),
+                Style::default().fg(self.ui.theme.border),
+            )));
+        }
+        text.push(Line::from(""));
+        text.push(Line::from(vec![
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(self.ui.theme.success)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Confirm   "),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(self.ui.theme.error)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Cancel"),
+        ]));
         f.render_widget(Paragraph::new(text).alignment(Alignment::Center), inner);
     }
 
@@ -6792,6 +6865,16 @@ log:
             self.create_new_project().await;
             return;
         }
+        // Ctrl+O: merge into an existing folder (US-PROJ) — offered when
+        // creation failed with "already exists"
+        if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            let parent = self
+                .new_project_parent
+                .clone()
+                .unwrap_or_else(|| dirs_home().join("projects"));
+            self.create_new_project_in_opts(&parent, true).await;
+            return;
+        }
         let field = self.new_project_field();
         match key.code {
             KeyCode::Esc => self.new_project_open = false,
@@ -7093,12 +7176,23 @@ log:
 
     /// Create the project directory + git repo + env, save to DB.
     async fn create_new_project(&mut self) {
-        let parent = dirs_home().join("projects");
-        self.create_new_project_in(&parent).await;
+        let parent = self
+            .new_project_parent
+            .clone()
+            .unwrap_or_else(|| dirs_home().join("projects"));
+        self.create_new_project_in_opts(&parent, false).await;
     }
 
     /// `create_new_project` with an injectable parent directory (tests).
     async fn create_new_project_in(&mut self, parent: &std::path::Path) {
+        self.create_new_project_in_opts(parent, false).await;
+    }
+
+    /// Create with the "merge into existing folder" option (US-PROJ): when
+    /// the target directory already exists, `overwrite = true` reuses it
+    /// instead of failing (kind scaffolding and templates never overwrite
+    /// existing files).
+    async fn create_new_project_in_opts(&mut self, parent: &std::path::Path, overwrite: bool) {
         let name = self.new_project_name.trim().to_string();
         if name.is_empty() {
             self.new_project_error = Some("Name is required".to_string());
@@ -7106,7 +7200,8 @@ log:
         }
         let kinds = project_workspace::ProjectKind::all();
         let kind = kinds[self.new_project_kind.min(kinds.len() - 1)];
-        match project_workspace::create_project_directory(parent, &name, &kind) {
+        let existed_before = parent.join(&name).exists();
+        match project_workspace::create_project_directory(parent, &name, &kind, overwrite) {
             Ok(created) => {
                 // Save to DB, including where the workspace lives (US-PROJ)
                 let req = CreateProject {
@@ -7169,16 +7264,28 @@ log:
                 }
 
                 self.fire_project_created(&name, &created.path).await;
+                let merged = if overwrite && existed_before {
+                    " (merged into existing folder)"
+                } else {
+                    ""
+                };
                 self.status_message = Some(format!(
-                    "\u{2713} Project '{}' created at {} \u{2014} press O to open it{}",
+                    "\u{2713} Project '{}' created at {} \u{2014} press O to open it{}{}",
                     name,
                     created.path.display(),
+                    merged,
                     template_note
                 ));
                 let _ = self.fetch_projects().await;
             }
             Err(e) => {
-                self.new_project_error = Some(format!("{}", e));
+                // Point users at the merge option when the folder exists
+                if format!("{}", e).contains("already exists") {
+                    self.new_project_error =
+                        Some(format!("{} \u{2014} Ctrl+O: use existing folder", e));
+                } else {
+                    self.new_project_error = Some(format!("{}", e));
+                }
             }
         }
     }
@@ -7284,7 +7391,7 @@ log:
 
         let help = self.form_help_line(
             self.new_project_error.as_ref(),
-            "Tab: fields \u{b7} \u{2190}/\u{2192}: cycle kind/editor/template \u{b7} Ctrl+S: create \u{b7} Esc: cancel",
+            "Tab: fields \u{b7} \u{2190}/\u{2192}: cycle kind/editor/template \u{b7} Ctrl+S: create \u{b7} Ctrl+O: merge into existing folder \u{b7} Esc: cancel",
         );
         f.render_widget(Paragraph::new(help).alignment(Alignment::Center), chunks[4]);
     }
@@ -9067,6 +9174,8 @@ mod tests {
             id: "no-such-id".into(),
             label: "ghost".into(),
             kind: DeleteKind::Entity,
+            path: None,
+            delete_folder: false,
         });
 
         app.handle_key(key(KeyCode::Enter)).await;
@@ -9711,6 +9820,131 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&parent);
         let _ = std::fs::remove_dir_all(&plugin_root);
+    }
+
+    #[tokio::test]
+    async fn given_project_delete_when_folder_toggled_then_workspace_removed() {
+        // US-PROJ: DB row deletion never touches the disk unless the user
+        // explicitly toggles the folder option with `f` in the confirm popup.
+        let mut app = test_app_db().await;
+        app.ui.state = AppState::Projects;
+        let parent = std::env::temp_dir().join(format!("tuihub-del-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        let ws = parent.join("delproj");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("f.txt"), "x").unwrap();
+
+        let project = repository::create_project(
+            &*app.pool,
+            &CreateProject {
+                name: "delproj".into(),
+                description: None,
+            },
+        )
+        .await
+        .unwrap();
+        repository::set_project_path(&*app.pool, &project.id, Some(&ws.to_string_lossy()))
+            .await
+            .unwrap();
+
+        app.confirm_delete = Some(ConfirmDelete {
+            id: project.id.clone(),
+            label: "delproj".into(),
+            kind: DeleteKind::Project,
+            path: Some(ws.to_string_lossy().to_string()),
+            delete_folder: false,
+        });
+
+        // Default OFF: plain Enter keeps the folder
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert!(ws.exists(), "folder must survive without the toggle");
+        let projects = repository::list_projects(&*app.pool).await.unwrap();
+        assert!(projects.iter().all(|p| p.id != project.id), "row deleted");
+
+        // Second round with the toggle: `f` then Enter removes the folder
+        let project2 = repository::create_project(
+            &*app.pool,
+            &CreateProject {
+                name: "delproj2".into(),
+                description: None,
+            },
+        )
+        .await
+        .unwrap();
+        let ws2 = parent.join("delproj2");
+        std::fs::create_dir_all(&ws2).unwrap();
+        app.confirm_delete = Some(ConfirmDelete {
+            id: project2.id.clone(),
+            label: "delproj2".into(),
+            kind: DeleteKind::Project,
+            path: Some(ws2.to_string_lossy().to_string()),
+            delete_folder: false,
+        });
+        app.handle_key(key(KeyCode::Char('f'))).await;
+        assert!(app.confirm_delete.as_ref().unwrap().delete_folder);
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert!(!ws2.exists(), "toggled delete must remove the folder");
+        assert!(
+            app.status_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("folder"),
+            "status reports the folder removal"
+        );
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[tokio::test]
+    async fn given_existing_folder_when_ctrl_o_then_project_merges_into_it() {
+        let mut app = test_app_db().await;
+        app.ui.state = AppState::Projects;
+        app.handle_key(key(KeyCode::Char('N'))).await;
+        for c in "mergeproj".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.new_project_kind = project_workspace::ProjectKind::all()
+            .iter()
+            .position(|k| k.name() == "generic")
+            .unwrap();
+
+        let parent = std::env::temp_dir().join(format!("tuihub-mrg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        // Inject the temp parent so Ctrl+S/Ctrl+O stay out of $HOME
+        app.new_project_parent = Some(parent.clone());
+        // The target folder already exists with user content
+        std::fs::create_dir_all(parent.join("mergeproj")).unwrap();
+        std::fs::write(parent.join("mergeproj").join("keep.txt"), "user data").unwrap();
+
+        // Ctrl+S: fails with a pointer at the merge option
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL))
+            .await;
+        assert!(app.new_project_open, "form stays open on conflict");
+        assert!(
+            app.new_project_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Ctrl+O"),
+            "error must offer the merge option"
+        );
+
+        // Ctrl+O: merges into the existing folder, user content survives
+        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL))
+            .await;
+        assert!(!app.new_project_open, "form closed on success");
+        assert!(parent.join("mergeproj").join("keep.txt").exists());
+        assert!(
+            app.status_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("merged into existing folder"),
+            "status reports the merge"
+        );
+        let projects = repository::list_projects(&*app.pool).await.unwrap();
+        assert!(
+            projects.iter().any(|p| p.name == "mergeproj"),
+            "project row saved"
+        );
+        let _ = std::fs::remove_dir_all(&parent);
     }
 
     #[tokio::test]
