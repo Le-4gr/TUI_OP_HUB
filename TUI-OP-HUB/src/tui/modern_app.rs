@@ -215,6 +215,126 @@ impl ConfigRegisterForm {
     }
 }
 
+/// One row of the in-TUI file browser.
+#[derive(Debug, Clone)]
+struct FileRow {
+    name: String,
+    is_dir: bool,
+    /// The `..` pseudo-entry for the parent directory.
+    is_parent: bool,
+}
+
+/// In-TUI file browser modal (US-CFG-09): pick an existing file/folder or
+/// create new files/folders without leaving the app. Opens over the config
+/// register/target forms with Ctrl+O; the external system picker remains
+/// available on Ctrl+P.
+#[derive(Debug, Clone)]
+struct FileBrowser {
+    /// true = picking a directory (deploy target), false = picking a file.
+    pick_dir: bool,
+    cwd: std::path::PathBuf,
+    entries: Vec<FileRow>,
+    selected: usize,
+    show_hidden: bool,
+    /// Some((is_dir, name)) while a new-entry name is being typed.
+    new_entry: Option<(bool, String)>,
+    /// One-shot status/error line inside the browser.
+    status: Option<String>,
+}
+
+impl FileBrowser {
+    fn new(pick_dir: bool, start: std::path::PathBuf) -> Self {
+        let mut fb = Self {
+            pick_dir,
+            cwd: start,
+            entries: Vec::new(),
+            selected: 0,
+            show_hidden: false,
+            new_entry: None,
+            status: None,
+        };
+        fb.reload();
+        fb
+    }
+
+    /// Re-read the current directory: `..` first, then folders, then files.
+    fn reload(&mut self) {
+        let mut rows: Vec<FileRow> = Vec::new();
+        if let Some(parent) = self.cwd.parent() {
+            if parent != self.cwd {
+                rows.push(FileRow {
+                    name: "..".to_string(),
+                    is_dir: true,
+                    is_parent: true,
+                });
+            }
+        }
+        let mut dirs: Vec<FileRow> = Vec::new();
+        let mut files: Vec<FileRow> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&self.cwd) {
+            for entry in rd.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !self.show_hidden && name.starts_with('.') {
+                    continue;
+                }
+                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                let row = FileRow {
+                    name,
+                    is_dir,
+                    is_parent: false,
+                };
+                if is_dir {
+                    dirs.push(row);
+                } else {
+                    files.push(row);
+                }
+            }
+        }
+        let sort_key = |r: &FileRow| r.name.to_lowercase();
+        dirs.sort_by_key(sort_key);
+        files.sort_by_key(sort_key);
+        rows.extend(dirs);
+        rows.extend(files);
+        self.entries = rows;
+        if self.selected >= self.entries.len() {
+            self.selected = 0;
+        }
+    }
+
+    fn current(&self) -> Option<&FileRow> {
+        self.entries.get(self.selected)
+    }
+
+    fn goto_parent(&mut self) {
+        if let Some(parent) = self.cwd.parent() {
+            let name = self
+                .cwd
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            self.cwd = parent.to_path_buf();
+            self.reload();
+            self.select(&name);
+        }
+    }
+
+    fn enter_dir(&mut self, row: &FileRow) {
+        if !row.is_dir || row.is_parent {
+            return;
+        }
+        self.cwd = self.cwd.join(&row.name);
+        self.selected = 0;
+        self.reload();
+    }
+
+    /// Jump the cursor to an entry by name (used after creating one).
+    fn select(&mut self, name: &str) {
+        if let Some(i) = self.entries.iter().position(|r| r.name == name) {
+            self.selected = i;
+        }
+    }
+}
+
 impl SshForm {
     const FIELDS: [&'static str; 5] = ["Name", "Hostname", "Port", "Username", "Key path"];
     fn new() -> Self {
@@ -310,6 +430,8 @@ pub struct ModernApp {
     configs_list: ListState<crate::config_manager::ConfigEntry>,
     /// Register-config form popup (path + metadata, US-CFG-09)
     config_input: Option<ConfigRegisterForm>,
+    /// In-TUI file browser opened over the config forms (Ctrl+O, US-CFG-09)
+    file_browser: Option<FileBrowser>,
     /// Target-path popup for deploying the selected config
     config_target_input: Option<String>,
     /// Where managed configs are stored (temp dir in tests)
@@ -497,6 +619,7 @@ impl ModernApp {
             kb_filter: KbFilter::default(),
             configs_list: ListState::default(),
             config_input: None,
+            file_browser: None,
             config_target_input: None,
             config_store_dir: dirs_home().join(".config/tui-op-hub/configs"),
             ssh_panel: None,
@@ -873,6 +996,235 @@ impl ModernApp {
         }
     }
 
+    /// Open the in-TUI file browser over the current config popup (US-CFG-09).
+    /// Starts in the parent directory of the typed path when it exists,
+    /// otherwise in $HOME.
+    fn open_file_browser(&mut self, pick_dir: bool, from_path: &str) {
+        let expanded = expand_tilde(from_path.trim());
+        let start = std::path::Path::new(&expanded);
+        let start = if start.is_file() {
+            start.parent().map(|p| p.to_path_buf())
+        } else if start.is_dir() {
+            Some(start.to_path_buf())
+        } else {
+            None
+        };
+        let start = start.unwrap_or_else(|| {
+            std::env::var("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
+        self.file_browser = Some(FileBrowser::new(pick_dir, start));
+    }
+
+    /// Keys for the in-TUI file browser (US-CFG-09).
+    fn handle_file_browser_key(&mut self, key: KeyEvent) {
+        // Name-entry mode while creating a new file/folder
+        if self
+            .file_browser
+            .as_ref()
+            .is_some_and(|fb| fb.new_entry.is_some())
+        {
+            match key.code {
+                KeyCode::Esc => {
+                    if let Some(fb) = self.file_browser.as_mut() {
+                        fb.new_entry = None;
+                        fb.status = None;
+                    }
+                }
+                KeyCode::Enter => {
+                    let pending = self
+                        .file_browser
+                        .as_mut()
+                        .and_then(|fb| fb.new_entry.take());
+                    if let Some((is_dir, name)) = pending {
+                        self.create_browser_entry(is_dir, &name);
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Some(fb) = self.file_browser.as_mut() {
+                        if let Some((_, name)) = fb.new_entry.as_mut() {
+                            name.pop();
+                        }
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Some(fb) = self.file_browser.as_mut() {
+                        if let Some((_, name)) = fb.new_entry.as_mut() {
+                            name.push(c);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        match key.code {
+            KeyCode::Esc => self.file_browser = None,
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(fb) = self.file_browser.as_mut() {
+                    fb.selected = fb.selected.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(fb) = self.file_browser.as_mut() {
+                    if fb.selected + 1 < fb.entries.len() {
+                        fb.selected += 1;
+                    }
+                }
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                if let Some(fb) = self.file_browser.as_mut() {
+                    fb.goto_parent();
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                if let Some(fb) = self.file_browser.as_mut() {
+                    if let Some(row) = fb.current().cloned() {
+                        fb.enter_dir(&row);
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                // Enter: descend into folders; pick files in file mode
+                let (is_parent, is_dir) = self
+                    .file_browser
+                    .as_ref()
+                    .and_then(|fb| fb.current())
+                    .map(|r| (r.is_parent, r.is_dir))
+                    .unwrap_or((false, false));
+                if is_parent {
+                    if let Some(fb) = self.file_browser.as_mut() {
+                        fb.goto_parent();
+                    }
+                } else if is_dir {
+                    if let Some(fb) = self.file_browser.as_mut() {
+                        if let Some(row) = fb.current().cloned() {
+                            fb.enter_dir(&row);
+                        }
+                    }
+                } else if !self.file_browser.as_ref().is_some_and(|fb| fb.pick_dir) {
+                    // File mode: pick the file under the cursor
+                    let path = self.file_browser.as_ref().and_then(|fb| {
+                        let name = fb.current()?.name.clone();
+                        Some(fb.cwd.join(name))
+                    });
+                    if let Some(p) = path {
+                        self.accept_file_browser(&p);
+                    }
+                } else if let Some(fb) = self.file_browser.as_mut() {
+                    fb.status = Some("Press Space to pick the current folder".to_string());
+                }
+            }
+            KeyCode::Char(' ') => {
+                // Space: pick the current selection
+                let (is_parent, is_dir, name) = self
+                    .file_browser
+                    .as_ref()
+                    .and_then(|fb| fb.current())
+                    .map(|r| (r.is_parent, r.is_dir, r.name.clone()))
+                    .unwrap_or((false, false, String::new()));
+                let pick_dir = self.file_browser.as_ref().is_some_and(|fb| fb.pick_dir);
+                if pick_dir {
+                    // Directory mode: pick the folder under the cursor (or
+                    // the parent for `..`)
+                    let path = if is_parent {
+                        self.file_browser
+                            .as_ref()
+                            .and_then(|fb| fb.cwd.parent().map(|p| p.to_path_buf()))
+                    } else if is_dir {
+                        self.file_browser.as_ref().map(|fb| fb.cwd.join(&name))
+                    } else {
+                        None
+                    };
+                    if let Some(p) = path {
+                        self.accept_file_browser(&p);
+                    } else if let Some(fb) = self.file_browser.as_mut() {
+                        fb.status = Some("Pick a folder".to_string());
+                    }
+                } else if !is_dir && !is_parent {
+                    let path = self.file_browser.as_ref().map(|fb| fb.cwd.join(&name));
+                    if let Some(p) = path {
+                        self.accept_file_browser(&p);
+                    }
+                } else if let Some(fb) = self.file_browser.as_mut() {
+                    fb.status = Some("Not a file".to_string());
+                }
+            }
+            KeyCode::Char('a') => {
+                if let Some(fb) = self.file_browser.as_mut() {
+                    fb.new_entry = Some((false, String::new()));
+                    fb.status = None;
+                }
+            }
+            KeyCode::Char('A') => {
+                if let Some(fb) = self.file_browser.as_mut() {
+                    fb.new_entry = Some((true, String::new()));
+                    fb.status = None;
+                }
+            }
+            KeyCode::Char('.') => {
+                if let Some(fb) = self.file_browser.as_mut() {
+                    fb.show_hidden = !fb.show_hidden;
+                    fb.reload();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Create a new file or folder inside the browser's current directory
+    /// (US-CFG-09) and move the cursor onto it.
+    fn create_browser_entry(&mut self, is_dir: bool, name: &str) {
+        let name = name.trim().to_string();
+        if name.is_empty() || name.contains('/') {
+            if let Some(fb) = self.file_browser.as_mut() {
+                fb.status = Some("Invalid name".to_string());
+            }
+            return;
+        }
+        let target = self.file_browser.as_ref().map(|fb| fb.cwd.join(&name));
+        let Some(target) = target else { return };
+        let result = if is_dir {
+            std::fs::create_dir_all(&target)
+        } else {
+            std::fs::File::create(&target).map(|_| ())
+        };
+        let kind = if is_dir { "Folder" } else { "File" };
+        match result {
+            Ok(_) => {
+                if let Some(fb) = self.file_browser.as_mut() {
+                    fb.reload();
+                    fb.select(&name);
+                    fb.status = Some(format!("✓ {} created: {}", kind, name));
+                }
+            }
+            Err(e) => {
+                if let Some(fb) = self.file_browser.as_mut() {
+                    fb.status = Some(format!("✗ {}", e));
+                }
+            }
+        }
+    }
+
+    /// Close the browser and write the picked path into the popup that
+    /// opened it (US-CFG-09/10).
+    fn accept_file_browser(&mut self, path: &std::path::Path) {
+        let pick_dir = self.file_browser.as_ref().is_some_and(|fb| fb.pick_dir);
+        let path_str = path.to_string_lossy().to_string();
+        self.file_browser = None;
+        if pick_dir {
+            if let Some(target) = self.config_target_input.as_mut() {
+                *target = path_str;
+            }
+        } else if let Some(form) = self.config_input.as_mut() {
+            form.path = path_str;
+            form.error = None;
+            form.sync_name_from_path();
+        }
+    }
+
     /// `m`: cycle the selected config's deploy mode (US-CFG-10).
     async fn cycle_config_deploy_mode(&mut self) {
         let Some(selected) = self.configs_list.get_selected().cloned() else {
@@ -1168,6 +1520,10 @@ log:
                 .map(|c| c.name.clone())
                 .unwrap_or_default();
             self.render_config_target_modal(f, path, &cfg_name);
+        }
+        // In-TUI file browser renders on top of the config popups (US-CFG-09)
+        if let Some(fb) = &self.file_browser {
+            self.render_file_browser(f, fb);
         }
         if let Some(path) = &self.import_input {
             self.render_import_input(f, path);
@@ -1931,6 +2287,11 @@ log:
             self.handle_sudo_password_key(key).await;
             return;
         }
+        // In-TUI file browser is the topmost overlay when open (US-CFG-09)
+        if self.file_browser.is_some() {
+            self.handle_file_browser_key(key);
+            return;
+        }
         if self.keybinds_overlay {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter) {
                 self.keybinds_overlay = false;
@@ -2103,9 +2464,16 @@ log:
             return;
         }
         if let Some(mut form) = self.config_input.take() {
-            // System file picker on the Path field (same browsing as
-            // import/export: yazi / nnn / ranger / lf / zenity / kdialog)
+            // Ctrl+O: built-in file browser (pick existing or create new
+            // files/folders in-app, US-CFG-09). Ctrl+P: external system
+            // picker (yazi / nnn / ranger / lf / zenity / kdialog) as fallback.
             if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                let start = form.path.clone();
+                self.config_input = Some(form);
+                self.open_file_browser(false, &start);
+                return;
+            }
+            if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 let picked = crate::filepicker::pick(crate::filepicker::PickKind::File);
                 self.needs_full_redraw = true; // picker suspended the TUI
                 match picked {
@@ -2200,7 +2568,13 @@ log:
         }
         if let Some(path) = self.config_target_input.as_mut() {
             if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                // Browse for the deploy destination (same picker as export)
+                // Built-in folder browser (US-CFG-10)
+                let start = path.clone();
+                self.open_file_browser(true, &start);
+                return;
+            }
+            if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                // External system picker as fallback
                 let picked = crate::filepicker::pick(crate::filepicker::PickKind::File);
                 self.needs_full_redraw = true; // picker suspended the TUI
                 match picked {
@@ -3251,7 +3625,7 @@ log:
         f.render_widget(
             self.form_help_line(
                 form.error.as_ref(),
-                "~ = $HOME | Ctrl+O: browse | Tab/arrows: field | Enter: register | Esc: cancel",
+                "~ = $HOME | Ctrl+O: browse · Ctrl+P: picker | Tab/arrows: field | Enter: register | Esc: cancel",
             ),
             rows[6],
         );
@@ -3299,7 +3673,136 @@ log:
         );
         f.render_widget(
             Paragraph::new(Span::styled(
-                "~ = $HOME | Ctrl+O: browse | Enter: add target | Esc: cancel",
+                "~ = $HOME | Ctrl+O: browse · Ctrl+P: picker | Enter: add target | Esc: cancel",
+                Style::default().fg(self.ui.theme.border),
+            )),
+            rows[3],
+        );
+    }
+
+    /// In-TUI file browser modal (US-CFG-09): browse directories, pick an
+    /// existing file/folder, or create new files (`a`) / folders (`A`).
+    fn render_file_browser(&self, f: &mut Frame, fb: &FileBrowser) {
+        let area = self.centered_rect(70, 22, f);
+        f.render_widget(Clear, area);
+        let title = if fb.pick_dir {
+            " Select folder "
+        } else {
+            " Select file "
+        };
+        let block = Block::default()
+            .title(title)
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.secondary))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // current directory
+                Constraint::Min(1),    // listing
+                Constraint::Length(1), // status / new-name entry
+                Constraint::Length(1), // help
+            ])
+            .split(inner);
+
+        // Current directory (with ~ shortening)
+        let home = std::env::var("HOME").unwrap_or_default();
+        let cwd_str = fb.cwd.to_string_lossy().to_string();
+        let cwd_disp = if !home.is_empty() {
+            if let Some(stripped) = cwd_str.strip_prefix(home.as_str()) {
+                format!("~{}", stripped)
+            } else {
+                cwd_str.clone()
+            }
+        } else {
+            cwd_str.clone()
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                format!(" {} ", cwd_disp),
+                Style::default()
+                    .fg(self.ui.theme.secondary)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            rows[0],
+        );
+
+        // Listing: window centered on the selection
+        let avail = rows[1].height as usize;
+        let total = fb.entries.len();
+        let start = fb
+            .selected
+            .saturating_sub(avail / 2)
+            .min(total.saturating_sub(avail));
+        let end = (start + avail).min(total);
+        let mut lines: Vec<Line> = Vec::new();
+        for (i, row) in fb.entries[start..end].iter().enumerate() {
+            let idx = start + i;
+            let focused = idx == fb.selected;
+            let (marker, style) = if focused {
+                (
+                    "▶ ",
+                    Style::default()
+                        .fg(self.ui.theme.secondary)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else if row.is_dir {
+                ("  ", Style::default().fg(self.ui.theme.warning))
+            } else {
+                ("  ", Style::default().fg(self.ui.theme.fg))
+            };
+            let suffix = if row.is_dir { "/" } else { "" };
+            let label = if row.is_parent {
+                "..".to_string()
+            } else {
+                format!("{}{}", row.name, suffix)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(marker, style),
+                Span::styled(label, style),
+            ]));
+        }
+        f.render_widget(Paragraph::new(lines), rows[1]);
+
+        // Status line: new-entry prompt takes precedence
+        if let Some((is_dir, name)) = &fb.new_entry {
+            let kind = if *is_dir { "folder" } else { "file" };
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        format!(" New {} name: ", kind),
+                        Style::default()
+                            .fg(self.ui.theme.success)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{}\u{2588}", name),
+                        Style::default().fg(self.ui.theme.fg),
+                    ),
+                ])),
+                rows[2],
+            );
+        } else if let Some(status) = &fb.status {
+            let color = if status.starts_with('✓') {
+                self.ui.theme.success
+            } else if status.starts_with('✗') {
+                self.ui.theme.error
+            } else {
+                self.ui.theme.border
+            };
+            f.render_widget(
+                Paragraph::new(Span::styled(status.clone(), Style::default().fg(color))),
+                rows[2],
+            );
+        }
+
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "↑↓ move · Enter open/pick file · Space pick · ←/h up · a new file · A new folder · . hidden · Esc cancel",
                 Style::default().fg(self.ui.theme.border),
             )),
             rows[3],
@@ -9116,6 +9619,10 @@ mod configs_tab_tests {
         KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
     }
 
+    fn ctrl_o() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)
+    }
+
     async fn test_app() -> ModernApp {
         let pool = std::sync::Arc::new(
             sqlx::sqlite::SqlitePoolOptions::new()
@@ -9133,6 +9640,164 @@ mod configs_tab_tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[tokio::test]
+    async fn given_register_form_when_ctrl_o_then_builtin_browser_opens() {
+        let mut app = test_app().await;
+        let dir = tmp("browser");
+        app.config_store_dir = dir.join("store");
+        app.ui.state = AppState::Configs;
+        app.fetch_configs().await.unwrap();
+
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        for c in dir.to_string_lossy().chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(ctrl_o()).await;
+
+        assert!(app.config_input.is_some(), "form must stay open");
+        let fb = app.file_browser.as_ref().expect("browser must open");
+        assert_eq!(fb.cwd, dir);
+        assert!(!fb.pick_dir);
+        // Visible in the framebuffer
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("Select file"), "browser must be drawn");
+        // Esc closes only the browser, the form stays
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert!(app.file_browser.is_none());
+        assert!(app.config_input.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn given_file_browser_when_new_file_then_created_picked_into_form() {
+        let mut app = test_app().await;
+        let dir = tmp("newfile");
+        app.ui.state = AppState::Configs;
+        app.config_input = Some(ConfigRegisterForm::new());
+        app.file_browser = Some(FileBrowser::new(false, dir.clone()));
+
+        // `a` = new file, type the name, Enter creates it
+        app.handle_key(key(KeyCode::Char('a'))).await;
+        for c in "brand-new.conf".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert!(dir.join("brand-new.conf").exists(), "file must be created");
+        let fb = app.file_browser.as_ref().unwrap();
+        assert_eq!(fb.current().unwrap().name, "brand-new.conf");
+
+        // Space picks it -> form path filled, name auto-derived, browser closed
+        app.handle_key(key(KeyCode::Char(' '))).await;
+        assert!(app.file_browser.is_none());
+        let form = app.config_input.as_ref().expect("form open");
+        assert_eq!(
+            form.path,
+            dir.join("brand-new.conf").to_string_lossy().to_string()
+        );
+        assert_eq!(form.name, "brand-new.conf");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn given_folder_browser_when_new_folder_then_created_and_pickable() {
+        let mut app = test_app().await;
+        let dir = tmp("newdir");
+        app.ui.state = AppState::Configs;
+        app.config_target_input = Some(String::new());
+        app.file_browser = Some(FileBrowser::new(true, dir.clone()));
+
+        // `A` = new folder, type the name, Enter creates it
+        app.handle_key(key(KeyCode::Char('A'))).await;
+        for c in "deploy-here".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert!(dir.join("deploy-here").is_dir(), "folder must be created");
+
+        // Space picks the folder under the cursor for the target field
+        app.handle_key(key(KeyCode::Char(' '))).await;
+        assert!(app.file_browser.is_none());
+        assert_eq!(
+            app.config_target_input.as_deref(),
+            Some(dir.join("deploy-here").to_string_lossy().as_ref())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn given_file_browser_when_navigating_then_descend_parent_and_pick_work() {
+        let mut app = test_app().await;
+        let dir = tmp("nav2");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub").join("x.conf"), "k=v").unwrap();
+        app.ui.state = AppState::Configs;
+        app.config_input = Some(ConfigRegisterForm::new());
+        app.file_browser = Some(FileBrowser::new(false, dir.clone()));
+
+        // entries: "..", "sub/"; Down -> subdir, Right -> descend
+        app.handle_key(key(KeyCode::Down)).await;
+        app.handle_key(key(KeyCode::Right)).await;
+        assert_eq!(app.file_browser.as_ref().unwrap().cwd, dir.join("sub"));
+        // ".." is selected after descending; Down -> x.conf, Enter picks it
+        app.handle_key(key(KeyCode::Down)).await;
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert!(app.file_browser.is_none());
+        let form = app.config_input.as_ref().unwrap();
+        assert_eq!(
+            form.path,
+            dir.join("sub").join("x.conf").to_string_lossy().to_string()
+        );
+        assert_eq!(form.name, "x.conf");
+
+        // Parent navigation: open again, go up with Left
+        app.file_browser = Some(FileBrowser::new(false, dir.join("sub")));
+        app.handle_key(key(KeyCode::Left)).await;
+        assert_eq!(app.file_browser.as_ref().unwrap().cwd, dir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn given_file_browser_when_hidden_toggled_then_dotfiles_shown() {
+        let mut app = test_app().await;
+        let dir = tmp("hidden");
+        std::fs::write(dir.join(".secret"), "x").unwrap();
+        app.file_browser = Some(FileBrowser::new(false, dir.clone()));
+
+        assert!(!app
+            .file_browser
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .any(|r| r.name == ".secret"));
+        app.handle_key(key(KeyCode::Char('.'))).await;
+        assert!(app
+            .file_browser
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .any(|r| r.name == ".secret"));
+        app.handle_key(key(KeyCode::Char('.'))).await;
+        assert!(!app
+            .file_browser
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .any(|r| r.name == ".secret"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
