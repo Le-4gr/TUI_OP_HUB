@@ -445,7 +445,7 @@ starter kits without touching core.
 
 | ID | Story | Priority | Points |
 |:---|:---|:---:|:---:|
-| `US-PLG-13` | As a **Plugin Developer**, I want to **register UI actions with labels** from plugin code (e.g. a "Create starting files" button on a project), so that my mod visibly extends the interface. | 🟡 | 5 |
+| `US-PLG-13` | As a **Plugin Developer**, I want to **register UI actions with labels** from plugin code (e.g. a "Create starting files" button on a project), so that my mod visibly extends the interface. | ✅ | 5 |
 | `US-PLG-14` | As a **Plugin Developer**, I want to ship **project scaffold templates** (files, folders, git init, post-create commands) as plugin data — e.g. a Python template that creates a venv, README, pyproject and a repo — so that starters are maintained outside core. | ✅ | 5 |
 | `US-PLG-15` | As a **User**, I want to **preview and customize a template** (file list and contents editable) before it is applied, so that scaffolding never surprises me. | ✅ | 3 |
 | `US-PROJ-08` | As a **User**, I want an **optional template picker at project creation** — default is none — so that plain projects stay plain and templated ones are an explicit choice. | ✅ | 3 |

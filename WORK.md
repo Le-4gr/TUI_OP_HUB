@@ -18,12 +18,44 @@
    preview popup with file include/exclude (`x`) and inline content editing (`e`);
    application runs off-thread on create, never overwrites existing files, reports
    written/skipped/git/commands in the status bar.
-4. **🟡 P2 — Plugin UI actions (US-PLG-13)**: plugins register on-screen buttons
-   (label/target defined in plugin code), capability-gated; e.g. "Create starting files"
-   button on a project view.
+4. **✅ DONE (Session 22) — Plugin UI actions (US-PLG-13)**: plugins declare labeled
+   `[[actions]]` in their manifest (id/label/command/surface/requires); `a` on the
+   Projects tab opens the actions popup for the selected project (only actions from
+   loaded/approved plugins, `requires` capability subset enforced at discovery AND at
+   run time); Enter runs the action's Lua fn with [project_name, project_path]; result
+   shown in the popup + status bar.
 5. **🟡 P2 — Visual-scripting logic gates (US-FUT-07)**: AND/OR/NOT/XOR/comparison/if-else
    nodes with typed boolean ports in the visual workflow builder.
 6. **🟢 P3 — Parked future areas** (backend exists, UI not planned yet): US-PROC
+   (process manager — use btop/htop, don't rebuild), US-PKG, US-ENV, US-BAK, US-DB.
+7. **🟡 leftovers**: US-SSH-04 host grouping/tags; US-SSH-05 connection *test* (currently
+   quick-connect only); plugin approval workflow for headless service runs.
+
+---
+## 🎯 Session 22: Plugin UI actions — US-PLG-13 (completed)
+
+Continued the story backlog (item 4). Plugins can now visibly extend the interface.
+
+- **Manifest**: optional `[[actions]]` entries — id, label, command (Lua fn name),
+  `surface` ("project" = selected project on the Projects tab) and `requires`
+  (capability ids the action needs).
+- **Gating (two layers)**: `discover_actions()` drops actions whose `requires` exceed
+  the plugin's declared capabilities; the popup only offers actions from *loaded*
+  (approved) plugins; `run_action()` re-checks the capability subset against the
+  loaded plugin before invoking.
+- **TUI**: `a` on Projects opens the actions popup for the selected project
+  (↑↓ navigate, Enter runs with args [project_name, project_path], Esc closes).
+  Results render inside the popup and in the status bar
+  ("✓ Create starting files: starter.txt created").
+- Example plugin manifest + Lua:
+  `[[actions]] id='starter-files' label='Create starting files' command='create_starting_files' surface='project' requires=['filesystem_write']`
+
+Tests: manifest parse + capability-filtered discovery, run_action end-to-end
+(approve → load → run → file created), TUI flow (a → popup visible → Enter runs →
+file + status). 246 total (198 lib + 48 BDD), clippy 0, build ok.
+USER_STORIES.md updated (US-PLG-13 ✅). Backlog items 6-7 restored (were mangled).
+
+---
 ## 🎯 Session 21: delete-folder option + merge-into-existing-folder (completed)
 
 User: "when i delete a project it doesn't delete the folder — add an option for that;

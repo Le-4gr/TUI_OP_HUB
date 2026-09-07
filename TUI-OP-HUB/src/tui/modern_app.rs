@@ -183,6 +183,17 @@ struct SshForm {
     field: usize,
 }
 
+/// Plugin UI actions popup for the selected project (US-PLG-13): lists the
+/// labeled actions contributed by approved plugins and runs the chosen one.
+#[derive(Debug, Clone)]
+struct ProjectActionsPanel {
+    entries: Vec<crate::plugin::PluginActionEntry>,
+    selected: usize,
+    project_name: String,
+    project_path: String,
+    last_result: Option<(bool, String)>,
+}
+
 /// Preview/customize popup state for a project template (US-PLG-15):
 /// file inclusion toggles and inline content editing before apply.
 #[derive(Debug, Clone)]
@@ -517,6 +528,8 @@ pub struct ModernApp {
     new_project_template: Option<usize>,
     /// Template preview/customize popup (US-PLG-15)
     template_preview: Option<TemplatePreview>,
+    /// Plugin UI actions popup for the selected project (US-PLG-13)
+    project_actions: Option<ProjectActionsPanel>,
     // Login-screen dev user manager (cargo run only)
     dev_user_manager: bool,
     dev_user_list: Vec<crate::models::UserProfile>,
@@ -708,6 +721,7 @@ impl ModernApp {
             templates: Vec::new(),
             new_project_template: None,
             template_preview: None,
+            project_actions: None,
             options_popup: None,
             keybinds_overlay: false,
             wants_terminal: false,
@@ -1660,6 +1674,10 @@ log:
         if self.new_project_open {
             self.render_new_project_form(f);
         }
+        // Plugin UI actions popup renders on top of the Projects list (US-PLG-13)
+        if self.project_actions.is_some() {
+            self.render_project_actions(f);
+        }
         // Template preview renders on top of the workspace form (US-PLG-15)
         if self.template_preview.is_some() {
             self.render_template_preview(f);
@@ -2405,6 +2423,11 @@ log:
         // In-TUI file browser is the topmost overlay when open (US-CFG-09)
         if self.file_browser.is_some() {
             self.handle_file_browser_key(key);
+            return;
+        }
+        // Plugin UI actions popup is topmost when open (US-PLG-13)
+        if self.project_actions.is_some() {
+            self.handle_project_actions_key(key).await;
             return;
         }
         if self.keybinds_overlay {
@@ -3377,6 +3400,10 @@ log:
                             Err(e) => self.status_message = Some(format!("{}", e)),
                         }
                     }
+                }
+                // Projects: plugin UI actions on the selected project (US-PLG-13)
+                if self.ui.state == AppState::Projects {
+                    self.open_project_actions().await;
                 }
             }
             KeyCode::Char('e') => {
@@ -4486,6 +4513,7 @@ log:
                 ("N", "New ws"),
                 ("n", "Register"),
                 ("e", "Edit"),
+                ("a", "Actions"),
                 ("d", "Delete"),
                 ("E", "Shell"),
                 ("O", "Editor"),
@@ -7174,6 +7202,71 @@ log:
         }
     }
 
+    /// Open the plugin-actions popup for the selected project (US-PLG-13):
+    /// only actions from loaded (approved) plugins on the "project" surface.
+    async fn open_project_actions(&mut self) {
+        let Some(project) = self.projects_list.get_selected().cloned() else {
+            self.status_message = Some("No project selected".to_string());
+            return;
+        };
+        let loaded = self.plugins.list_plugins().await;
+        let entries: Vec<crate::plugin::PluginActionEntry> = self
+            .plugins
+            .discover_actions()
+            .into_iter()
+            .filter(|e| e.action.surface == "project" && loaded.contains(&e.plugin_id))
+            .collect();
+        if entries.is_empty() {
+            self.status_message =
+                Some("No plugin actions available (load a plugin with actions)".to_string());
+            return;
+        }
+        self.project_actions = Some(ProjectActionsPanel {
+            entries,
+            selected: 0,
+            project_name: project.name.clone(),
+            project_path: project.path.clone().unwrap_or_default(),
+            last_result: None,
+        });
+    }
+
+    /// Keys for the plugin-actions popup (US-PLG-13).
+    async fn handle_project_actions_key(&mut self, key: KeyEvent) {
+        let Some(panel) = self.project_actions.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.project_actions = None,
+            KeyCode::Up | KeyCode::Char('k') => {
+                panel.selected = panel.selected.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if panel.selected + 1 < panel.entries.len() {
+                    panel.selected += 1;
+                }
+            }
+            KeyCode::Enter => {
+                let Some(entry) = panel.entries.get(panel.selected).cloned() else {
+                    return;
+                };
+                let args = vec![panel.project_name.clone(), panel.project_path.clone()];
+                let result = self.plugins.run_action(&entry, &args).await;
+                let project_actions = self.project_actions.as_mut();
+                if let Some(panel) = project_actions {
+                    panel.last_result = Some(match &result {
+                        Ok(msg) => (true, msg.clone()),
+                        Err(e) => (false, format!("{}", e)),
+                    });
+                }
+                self.status_message = Some(match result {
+                    Ok(msg) => format!("✓ {}: {}", entry.action.label, msg),
+                    Err(e) => format!("✗ {}: {}", entry.action.label, e),
+                });
+            }
+            _ => {}
+        }
+    }
+
     /// Create the project directory + git repo + env, save to DB.
     async fn create_new_project(&mut self) {
         let parent = self
@@ -7529,6 +7622,78 @@ log:
                 Style::default().fg(self.ui.theme.border),
             )),
             rows[2],
+        );
+    }
+
+    /// Plugin UI actions popup (US-PLG-13): labeled entries contributed by
+    /// approved plugins, run against the selected project.
+    fn render_project_actions(&self, f: &mut Frame) {
+        let Some(panel) = &self.project_actions else {
+            return;
+        };
+        let area = self.centered_rect(64, 16, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .title(format!(" \u{1f9ee} Actions: {} ", panel.project_name))
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.success))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+
+        let mut lines: Vec<Line> = Vec::new();
+        for (i, entry) in panel.entries.iter().enumerate() {
+            let focused = i == panel.selected;
+            let marker = if focused { "\u{25b6} " } else { "  " };
+            let style = if focused {
+                Style::default()
+                    .fg(self.ui.theme.secondary)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(self.ui.theme.fg)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(marker, style),
+                Span::styled(
+                    entry.action.label.clone(),
+                    Style::default()
+                        .fg(self.ui.theme.fg)
+                        .add_modifier(if focused {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    format!("  ({})", entry.plugin_name),
+                    Style::default().fg(self.ui.theme.border),
+                ),
+            ]));
+        }
+        if let Some((ok, msg)) = &panel.last_result {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("{} {}", if *ok { "\u{2713}" } else { "\u{2717}" }, msg),
+                Style::default().fg(if *ok {
+                    self.ui.theme.success
+                } else {
+                    self.ui.theme.error
+                }),
+            )));
+        }
+        f.render_widget(Paragraph::new(lines), rows[0]);
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "\u{2191}\u{2193}: action \u{b7} Enter: run \u{b7} Esc: close",
+                Style::default().fg(self.ui.theme.border),
+            )),
+            rows[1],
         );
     }
 
@@ -9945,6 +10110,94 @@ mod tests {
             "project row saved"
         );
         let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[tokio::test]
+    async fn given_projects_tab_when_a_pressed_then_plugin_actions_available_and_runnable() {
+        // US-PLG-13: an approved plugin's labeled action shows on the project
+        // surface and runs against the selected project.
+        let mut app = test_app_db().await;
+        app.ui.state = AppState::Projects;
+
+        let plugin_root =
+            std::env::temp_dir().join(format!("tuihub-act-{}-plug", std::process::id()));
+        let _ = std::fs::remove_dir_all(&plugin_root);
+        let plugin_dir = plugin_root.join("ui.actions");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(
+            plugin_dir.join("plugin.toml"),
+            "id = 'ui.actions'\nname = 'UI Actions'\nversion = '1.0.0'\nplugin_type = 'lua'\nentry_point = 'main.lua'\nrequired_capabilities = ['execute_commands', 'filesystem_write']\noptional_capabilities = []\n\n[[actions]]\nid = 'starter-files'\nlabel = 'Create starting files'\ncommand = 'create_starting_files'\nsurface = 'project'\nrequires = ['filesystem_write']\n",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_dir.join("main.lua"),
+            "function create_starting_files(args)\n  local out = run_command('echo ' .. args[1] .. ' > ' .. args[2] .. '/starter.txt')\n  assert(out.success)\n  return 'starter.txt created'\nend\n",
+        )
+        .unwrap();
+        app.plugins = std::sync::Arc::new(crate::plugin::PluginManager::new(
+            app.pool.clone(),
+            plugin_root.clone(),
+        ));
+        app.plugins
+            .approve_plugin("ui.actions", "default")
+            .await
+            .unwrap();
+        app.plugins.load_all_plugins().await.unwrap();
+
+        // A project with a workspace path, selected in the list
+        let ws = std::env::temp_dir().join(format!("tuihub-act-{}-ws", std::process::id()));
+        std::fs::create_dir_all(&ws).unwrap();
+        let project = repository::create_project(
+            &*app.pool,
+            &CreateProject {
+                name: "actproj".into(),
+                description: None,
+            },
+        )
+        .await
+        .unwrap();
+        repository::set_project_path(&*app.pool, &project.id, Some(&ws.to_string_lossy()))
+            .await
+            .unwrap();
+        app.fetch_projects().await.unwrap();
+        app.projects_list.selected = 0;
+
+        // `a` opens the actions popup with the plugin's action
+        app.handle_key(key(KeyCode::Char('a'))).await;
+        let panel = app.project_actions.as_ref().expect("actions panel opens");
+        assert_eq!(panel.entries.len(), 1);
+        assert_eq!(panel.entries[0].action.label, "Create starting files");
+
+        // Visible in the framebuffer
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("Actions: actproj"), "popup must be drawn");
+
+        // Enter runs the action; the Lua fn writes into the project path
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert!(
+            ws.join("starter.txt").exists(),
+            "action must create the file in the project folder"
+        );
+        let panel = app.project_actions.as_ref().unwrap();
+        assert!(panel.last_result.as_ref().unwrap().0, "result ok");
+        assert!(
+            app.status_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("starter.txt created"),
+            "status shows the action result"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+        let _ = std::fs::remove_dir_all(&plugin_root);
     }
 
     #[tokio::test]

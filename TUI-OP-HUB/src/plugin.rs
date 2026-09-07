@@ -49,6 +49,35 @@ impl Capability {
     }
 }
 
+/// A UI action registered by a plugin (US-PLG-13): plugins declare labeled
+/// on-screen entries in their manifest; core renders them where `surface`
+/// says and runs the plugin's Lua function on invocation. Gated twice: the
+/// plugin must be approved/loaded, and the action's `requires` capabilities
+/// must be a subset of the plugin's declared ones.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PluginAction {
+    pub id: String,
+    pub label: String,
+    /// Lua function name called on invocation; receives
+    /// `args = [project_name, project_path]` for project-surface actions.
+    pub command: String,
+    /// Where the action appears. Currently: "project" (Projects tab on the
+    /// selected project). Unknown surfaces are ignored by the UI.
+    #[serde(default)]
+    pub surface: String,
+    /// Capabilities the action needs; denied unless the plugin declares all.
+    #[serde(default)]
+    pub requires: Vec<String>,
+}
+
+/// An action plus the plugin that registered it (as shown in the UI).
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginActionEntry {
+    pub plugin_id: String,
+    pub plugin_name: String,
+    pub action: PluginAction,
+}
+
 /// Plugin manifest
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
@@ -66,6 +95,9 @@ pub struct PluginManifest {
     pub optional_capabilities: Vec<String>,
     #[serde(default)]
     pub commands: HashMap<String, String>,
+    /// Labeled UI actions this plugin contributes (US-PLG-13).
+    #[serde(default)]
+    pub actions: Vec<PluginAction>,
 }
 
 /// One scaffold file shipped by a plugin template (US-PLG-14). `path` is
@@ -666,6 +698,83 @@ impl PluginManager {
         found
     }
 
+    /// Collect every UI action declared by discovered plugins (US-PLG-13).
+    /// Actions whose `requires` capabilities exceed the plugin's own
+    /// declaration are dropped (defense in depth: the gate is re-checked at
+    /// run time). Nothing executes during discovery.
+    pub fn discover_actions(&self) -> Vec<PluginActionEntry> {
+        let mut found = Vec::new();
+        for manifest in self.discover_plugins() {
+            let declared: Vec<Capability> = manifest
+                .required_capabilities
+                .iter()
+                .chain(manifest.optional_capabilities.iter())
+                .filter_map(|s| Capability::from_str(s))
+                .collect();
+            for action in &manifest.actions {
+                let satisfied = action.requires.iter().all(|r| {
+                    Capability::from_str(r)
+                        .map(|c| declared.contains(&c))
+                        .unwrap_or(false)
+                });
+                if !satisfied {
+                    tracing::warn!(
+                        plugin = %manifest.id,
+                        action = %action.id,
+                        "UI action denied: requires capabilities the plugin does not declare"
+                    );
+                    continue;
+                }
+                found.push(PluginActionEntry {
+                    plugin_id: manifest.id.clone(),
+                    plugin_name: manifest.name.clone(),
+                    action: action.clone(),
+                });
+            }
+        }
+        found.sort_by(|x, y| {
+            x.plugin_id
+                .cmp(&y.plugin_id)
+                .then(x.action.id.cmp(&y.action.id))
+        });
+        found
+    }
+
+    /// Invoke a UI action (US-PLG-13). Re-checks the capability gate against
+    /// the *loaded* plugin and requires it to be loaded (i.e. approved);
+    /// then calls the action's Lua function with `args`.
+    pub async fn run_action(
+        &self,
+        entry: &PluginActionEntry,
+        args: &[String],
+    ) -> AppResult<String> {
+        let caps = {
+            let plugins = self.plugins.read().await;
+            plugins
+                .get(&entry.plugin_id)
+                .map(|p| p.capabilities().to_vec())
+        };
+        let Some(caps) = caps else {
+            return Err(AppError::Other(format!(
+                "Plugin not loaded: {}",
+                entry.plugin_id
+            )));
+        };
+        let satisfied = entry.action.requires.iter().all(|r| {
+            Capability::from_str(r)
+                .map(|c| caps.contains(&c))
+                .unwrap_or(false)
+        });
+        if !satisfied {
+            return Err(AppError::Unauthorized(format!(
+                "Action '{}' requires capabilities the plugin does not have",
+                entry.action.id
+            )));
+        }
+        self.execute_command(&entry.plugin_id, &entry.action.command, args)
+            .await
+    }
+
     /// Dispatch an event to every loaded plugin that subscribes to it.
     pub async fn emit_event(
         &self,
@@ -901,6 +1010,77 @@ run = "echo scaffolded > created.txt"
         )
         .unwrap();
         plugin_dir
+    }
+
+    #[tokio::test]
+    async fn given_manifest_with_actions_when_discovered_then_gated_and_listed() {
+        // US-PLG-13: labeled actions come from the manifest; actions whose
+        // `requires` exceed the plugin's declared capabilities are dropped.
+        let pool = test_pool().await;
+        let tmp = std::env::temp_dir().join(format!("plug-actions-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let manager = PluginManager::new(std::sync::Arc::new(pool), tmp.clone());
+        let plugin_dir = tmp.join("ui.actions");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(
+            plugin_dir.join("plugin.toml"),
+            "id = 'ui.actions'\nname = 'UI Actions'\nversion = '1.0.0'\nplugin_type = 'lua'\nentry_point = 'main.lua'\nrequired_capabilities = ['execute_commands', 'filesystem_write']\noptional_capabilities = []\n\n[[actions]]\nid = 'starter-files'\nlabel = 'Create starting files'\ncommand = 'create_starting_files'\nsurface = 'project'\nrequires = ['filesystem_write']\n\n[[actions]]\nid = 'needs-network'\nlabel = 'Needs network'\ncommand = 'whatever'\nsurface = 'project'\nrequires = ['network_access']\n",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_dir.join("main.lua"),
+            "function create_starting_files(args)\n  return 'ok'\nend\n",
+        )
+        .unwrap();
+
+        let entries = manager.discover_actions();
+        assert_eq!(entries.len(), 1, "over-privileged action must be dropped");
+        assert_eq!(entries[0].action.id, "starter-files");
+        assert_eq!(entries[0].action.label, "Create starting files");
+        assert_eq!(entries[0].plugin_id, "ui.actions");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn given_approved_plugin_when_action_run_then_lua_fn_executes() {
+        let pool = test_pool().await;
+        let tmp = std::env::temp_dir().join(format!("plug-run-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let manager = PluginManager::new(std::sync::Arc::new(pool), tmp.clone());
+        let plugin_dir = tmp.join("ui.actions");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        let marker = tmp.join("starter.txt");
+        std::fs::write(
+            plugin_dir.join("plugin.toml"),
+            "id = 'ui.actions'\nname = 'UI Actions'\nversion = '1.0.0'\nplugin_type = 'lua'\nentry_point = 'main.lua'\nrequired_capabilities = ['execute_commands', 'filesystem_write']\noptional_capabilities = []\n\n[[actions]]\nid = 'starter-files'\nlabel = 'Create starting files'\ncommand = 'create_starting_files'\nsurface = 'project'\nrequires = ['filesystem_write']\n",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_dir.join("main.lua"),
+            format!(
+                "function create_starting_files(args)\n  local out = run_command('echo ' .. args[1] .. ' > ' .. args[2] .. '/starter.txt')\n  assert(out.success)\n  return 'created starter.txt'\nend\n"
+            ),
+        )
+        .unwrap();
+
+        // Approve + load, then run the action like the UI would
+        manager
+            .approve_plugin("ui.actions", "test-user")
+            .await
+            .unwrap();
+        manager.load_all_plugins().await.unwrap();
+
+        let entries = manager.discover_actions();
+        let result = manager
+            .run_action(
+                &entries[0],
+                &["myproj".to_string(), tmp.display().to_string()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, "created starter.txt");
+        assert!(marker.exists(), "action must have created the file");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[tokio::test]
