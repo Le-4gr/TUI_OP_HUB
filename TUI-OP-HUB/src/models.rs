@@ -191,9 +191,19 @@ pub struct ScheduledTask {
 // Display implementations for TUI rendering
 impl std::fmt::Display for Entity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Type icon so mixed views (Knowledge → All) stay readable
+        let icon = match self.type_id.as_str() {
+            "cmd" => "\u{1f4bb} ",
+            "app" => "\u{1f680} ",
+            "script" => "\u{1f4dc} ",
+            "wf" => "\u{2699}\u{fe0f} ",
+            "opt" => "\u{1f518} ",
+            _ => "",
+        };
         write!(
             f,
-            "{} - {}",
+            "{}{} - {}",
+            icon,
             self.name,
             self.description.as_deref().unwrap_or("No description")
         )

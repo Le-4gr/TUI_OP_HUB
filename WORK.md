@@ -28,6 +28,24 @@
    quick-connect only); plugin approval workflow for headless service runs.
 
 ---
+## 🎯 Session 18b: Knowledge page — type picker + combined All view (completed)
+
+User follow-up to US-TUI-11: the Knowledge Base page is now the real hub for creating.
+
+- **4th row “All”**: opens the Commands list in a combined view (`kb_all_view`) showing
+  cmd + app + script together (workflows/options excluded), sorted by name, with the list
+  title “📚 Knowledge — All”. Direct digit jumps (3/4/5) reset the combined view.
+- **`n` on the Knowledge page = type picker**: creates a new item pre-set to the type of
+  the SELECTED row (row 0 → cmd, row 1 → app, row 2 → script; “All” defaults to cmd).
+  Footer hint and `?` overlay updated.
+- **Entity type icons** in `Display` (💻 cmd, 🚀 app, 📜 script, ⚙️ wf, 🔘 opt) so the
+  mixed list stays readable — icons now also show on the single-type lists.
+- Tests +3 (type-picker mapping incl. the “cmd/script/app” index swap gotcha, All-view
+  filtering with wf/opt excluded + reset on digit jump, Display icons). **209 total
+  (162 lib + 47 BDD), clippy 0, build ok.**
+
+---
+
 ## 🎯 Session 18: story #1 — Knowledge Base parent page + configurable tab order (completed)
 
 Implemented backlog item 1 (US-TUI-11/12 ✅):

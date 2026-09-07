@@ -265,10 +265,14 @@ pub struct ModernApp {
     running_workflow: Option<RunningWorkflow>,
     /// Admin user management panel (Settings → `u`)
     users_panel: Option<UsersPanel>,
-    /// Selected subpage on the Knowledge Base parent page (US-TUI-11)
+    /// Selected subpage on the Knowledge Base parent page (US-TUI-11);
+    /// 0..2 = Commands/Apps/Scripts, 3 = combined "All" view.
     kb_selected: usize,
     /// Live item counts for the Knowledge page: [commands, apps, scripts]
     knowledge_counts: [usize; 3],
+    /// When true, the Commands list shows ALL knowledge types (cmd+app+script)
+    /// instead of only the tab's own type (Knowledge → All view).
+    kb_all_view: bool,
     /// SSH host manager panel (Secrets → `H`)
     ssh_panel: Option<SshPanel>,
     // New project creation form (US-PROJ)
@@ -406,6 +410,7 @@ impl ModernApp {
             users_panel: None,
             kb_selected: 0,
             knowledge_counts: [0, 0, 0],
+            kb_all_view: false,
             ssh_panel: None,
             dev_user_manager: false,
             dev_user_list: Vec::new(),
@@ -501,6 +506,8 @@ impl ModernApp {
                 self.fetch_knowledge_counts().await;
             }
             AppState::Commands | AppState::Apps | AppState::Scripts => {
+                // Direct digit jumps always show the tab's own type only
+                self.kb_all_view = false;
                 let _ = self.fetch_commands().await;
             }
             AppState::Projects => {
@@ -560,14 +567,34 @@ impl ModernApp {
         self.knowledge_counts = counts;
     }
 
-    /// Open the selected Knowledge Base subpage (US-TUI-11).
+    /// Open the selected Knowledge Base subpage (US-TUI-11); row 3 = All view.
     async fn open_knowledge_subpage(&mut self) {
+        // Rows: 0 Commands, 1 Apps, 2 Scripts, 3 All
+        self.kb_all_view = self.kb_selected == 3;
         self.ui.state = match self.kb_selected {
             0 => AppState::Commands,
             1 => AppState::Apps,
-            _ => AppState::Scripts,
+            2 => AppState::Scripts,
+            _ => AppState::Commands, // All view lives on the Commands list
         };
         let _ = self.fetch_commands().await;
+    }
+
+    /// `n` on the Knowledge page: create a new item of the SELECTED row's type
+    /// (this is the type picker — pick the row, then `n`).
+    fn new_knowledge_item(&mut self) {
+        // ENTITY_TYPE_IDS = ["cmd", "script", "app"] — form indexes differ
+        // from the row order (0 Commands, 1 Apps, 2 Scripts).
+        let form_index = match self.kb_selected {
+            1 => 2, // Apps
+            2 => 1, // Scripts
+            _ => 0, // Commands (also used when "All" is selected)
+        };
+        self.command_form = CommandFormState {
+            mode: Some(FormMode::Create),
+            entity_type: form_index,
+            ..Default::default()
+        };
     }
 
     /// Fetch dashboard statistics from database
@@ -613,6 +640,18 @@ impl ModernApp {
     /// Fetch commands list from database
     async fn fetch_commands(&mut self) -> anyhow::Result<()> {
         // Same list state serves the Commands / Apps / Scripts tabs
+        if self.kb_all_view {
+            // Knowledge → All: show cmd + app + script together (US-TUI-11)
+            let entities = repository::list_entities(&*self.pool, None, None).await?;
+            let mut all: Vec<_> = entities
+                .into_iter()
+                .filter(|e| matches!(e.type_id.as_str(), "cmd" | "app" | "script"))
+                .collect();
+            all.sort_by(|a, b| a.name.cmp(&b.name));
+            let total = all.len();
+            self.commands_list.set_items(all, total);
+            return Ok(());
+        }
         let type_filter = entity_type_for_tab(&self.ui.state);
         let entities = repository::list_entities(&*self.pool, Some(type_filter), None).await?;
         let total = entities.len();
@@ -999,6 +1038,12 @@ impl ModernApp {
                 '5',
                 self.knowledge_counts[2],
             ),
+            (
+                "All",
+                "Show commands, apps and scripts together in one list",
+                ' ',
+                self.knowledge_counts[0] + self.knowledge_counts[1] + self.knowledge_counts[2],
+            ),
         ];
         let items: Vec<Line> = entries
             .iter()
@@ -1031,7 +1076,7 @@ impl ModernApp {
             chunks[1],
         );
         f.render_widget(
-            Paragraph::new("\u{2191}\u{2193} select \u{b7} Enter open \u{b7} 3/4/5 quick jump \u{b7} Tab next tab \u{b7} ? help")
+            Paragraph::new("\u{2191}\u{2193} select \u{b7} Enter open \u{b7} n new (selected type) \u{b7} 3/4/5 quick jump \u{b7} ? help")
                 .style(Style::default().fg(self.ui.theme.warning)),
             chunks[2],
         );
@@ -2092,12 +2137,16 @@ impl ModernApp {
                     }
                 }
                 KeyCode::Down => {
-                    if self.kb_selected + 1 < 3 {
+                    if self.kb_selected + 1 < 4 {
                         self.kb_selected += 1;
                     }
                 }
                 KeyCode::Enter => {
                     self.open_knowledge_subpage().await;
+                }
+                KeyCode::Char('n') => {
+                    // Create a new item of the selected row's type
+                    self.new_knowledge_item();
                 }
                 _ => {}
             }
@@ -2136,14 +2185,17 @@ impl ModernApp {
             }
             KeyCode::Char('3') => {
                 self.ui.state = AppState::Commands;
+                self.kb_all_view = false;
                 let _ = self.fetch_commands().await;
             }
             KeyCode::Char('4') => {
                 self.ui.state = AppState::Apps;
+                self.kb_all_view = false;
                 let _ = self.fetch_commands().await;
             }
             KeyCode::Char('5') => {
                 self.ui.state = AppState::Scripts;
+                self.kb_all_view = false;
                 let _ = self.fetch_commands().await;
             }
             KeyCode::Char('6') => {
@@ -2760,10 +2812,14 @@ impl ModernApp {
     }
 
     fn render_commands_list(&self, f: &mut Frame) {
-        let title = match self.ui.state {
-            AppState::Apps => "🚀 Apps",
-            AppState::Scripts => "📜 Scripts",
-            _ => "💻 Commands",
+        let title = if self.kb_all_view {
+            "📚 Knowledge — All"
+        } else {
+            match self.ui.state {
+                AppState::Apps => "🚀 Apps",
+                AppState::Scripts => "📜 Scripts",
+                _ => "💻 Commands",
+            }
         };
         self.render_list(
             f,
@@ -3306,6 +3362,7 @@ impl ModernApp {
             AppState::Knowledge => vec![
                 ("\u{2191}\u{2193}", "Select"),
                 ("Enter", "Open"),
+                ("n", "New (of type)"),
                 ("3/4/5", "Quick jump"),
                 ("?", "Keybinds"),
                 ("q", "Quit"),
@@ -8428,5 +8485,124 @@ mod knowledge_nav_tests {
         let cycle = app.tab_cycle();
         assert_eq!(cycle.len(), 10, "falls back to the default order");
         assert_eq!(cycle[cycle.len() - 1], AppState::Settings);
+    }
+}
+
+#[cfg(test)]
+mod knowledge_picker_tests {
+    use super::*;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    async fn test_app() -> ModernApp {
+        let pool = std::sync::Arc::new(
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        crate::db::run_migrations(&pool).await.unwrap();
+        ModernApp::new(pool, crate::config::AppConfig::default())
+    }
+
+    // ENTITY_TYPE_IDS = ["cmd", "script", "app"]
+    #[tokio::test]
+    async fn given_knowledge_page_when_n_pressed_then_form_preset_to_row_type() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Dashboard;
+        app.handle_key(key(KeyCode::Char('2'))).await; // Knowledge page
+
+        // Row 0 = Commands → form type cmd (index 0)
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        assert_eq!(app.command_form.entity_type, 0);
+        app.command_form.mode = None;
+
+        // Row 1 = Apps → form type app (index 2)
+        app.handle_key(key(KeyCode::Down)).await;
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        assert_eq!(app.command_form.entity_type, 2);
+        app.command_form.mode = None;
+
+        // Row 2 = Scripts → form type script (index 1)
+        app.handle_key(key(KeyCode::Down)).await;
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        assert_eq!(app.command_form.entity_type, 1);
+    }
+
+    #[tokio::test]
+    async fn given_knowledge_all_row_when_entered_then_mixed_list_shown() {
+        let mut app = test_app().await;
+        for (name, ty) in [
+            ("a-cmd", "cmd"),
+            ("b-app", "app"),
+            ("c-script", "script"),
+            ("d-wf", "wf"), // workflows must NOT appear in the All view
+            ("e-opt", "opt"),
+        ] {
+            repository::create_entity(
+                &*app.pool,
+                &crate::models::CreateEntity {
+                    name: name.to_string(),
+                    description: None,
+                    content: Some("x".to_string()),
+                    type_id: ty.to_string(),
+                    project_id: None,
+                    tags: None,
+                    metadata_json: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        app.ui.state = AppState::Dashboard;
+        app.handle_key(key(KeyCode::Char('2'))).await; // Knowledge page
+
+        // Move to the 4th row (All) and open it
+        for _ in 0..3 {
+            app.handle_key(key(KeyCode::Down)).await;
+        }
+        app.handle_key(key(KeyCode::Enter)).await;
+
+        assert!(app.kb_all_view);
+        assert_eq!(app.ui.state, AppState::Commands);
+        assert_eq!(app.commands_list.items.len(), 3, "cmd+app+script only");
+        let types: Vec<&str> = app
+            .commands_list
+            .items
+            .iter()
+            .map(|e| e.type_id.as_str())
+            .collect();
+        assert!(types.contains(&"cmd") && types.contains(&"app") && types.contains(&"script"));
+
+        // Jumping to a specific tab resets the combined view
+        app.handle_key(key(KeyCode::Char('4'))).await;
+        assert!(!app.kb_all_view);
+        assert_eq!(app.commands_list.items.len(), 1);
+    }
+
+    #[test]
+    fn entity_display_shows_type_icon() {
+        let e = crate::models::Entity {
+            id: "1".into(),
+            name: "docker ps".into(),
+            description: None,
+            content: None,
+            type_id: "cmd".into(),
+            project_id: None,
+            parent_id: None,
+            metadata_json: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        assert!(e.to_string().starts_with("\u{1f4bb} "), "cmd gets the icon");
+
+        let app_entity = crate::models::Entity {
+            type_id: "app".into(),
+            ..e.clone()
+        };
+        assert!(app_entity.to_string().starts_with("\u{1f680} "));
     }
 }
