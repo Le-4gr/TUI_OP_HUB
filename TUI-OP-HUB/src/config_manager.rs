@@ -291,6 +291,19 @@ impl ConfigManager {
     /// Register an EXISTING file (or folder tree, copied recursively) as a
     /// managed config: the master copy is stored centrally (US-CFG-09).
     pub fn register_existing(&self, source: &Path, name: &str) -> AppResult<ConfigEntry> {
+        self.register_existing_full(source, name, None, Vec::new(), DeployMode::default())
+    }
+
+    /// Register an existing file with full metadata (US-CFG-09): description,
+    /// tags and deploy mode come from the TUI register form.
+    pub fn register_existing_full(
+        &self,
+        source: &Path,
+        name: &str,
+        description: Option<String>,
+        tags: Vec<String>,
+        deploy_mode: DeployMode,
+    ) -> AppResult<ConfigEntry> {
         if !source.exists() {
             return Err(AppError::NotFound {
                 entity: "config source",
@@ -303,15 +316,15 @@ impl ConfigManager {
             name: name.to_string(),
             source_path: source.to_string_lossy().to_string(),
             target_path: String::new(),
-            description: None,
-            tags: Vec::new(),
+            description,
+            tags,
             project_id: None,
             content: None,
             version: 1,
             created_at: chrono::Utc::now().to_rfc3339(),
             updated_at: chrono::Utc::now().to_rfc3339(),
             targets: Vec::new(),
-            deploy_mode: DeployMode::default(),
+            deploy_mode,
         };
         self.store_config(&entry)?;
         let mut registry = self.load_registry();
@@ -734,6 +747,41 @@ mod deploy_tests {
         assert!(log.contains("first config"), "log shows commit: {}", log);
         // Idempotent init
         assert!(man.git_init().unwrap().contains("already"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn given_register_existing_full_when_called_then_metadata_is_persisted() {
+        let dir = temp_dir("full");
+        let man = ConfigManager::new(dir.join("store"));
+        let src = dir.join("app.conf");
+        fs::write(&src, "key=value").unwrap();
+
+        let entry = man
+            .register_existing_full(
+                &src,
+                "app.conf",
+                Some("main app config".to_string()),
+                vec!["app".to_string(), "gui".to_string()],
+                DeployMode::Copy,
+            )
+            .unwrap();
+
+        assert_eq!(entry.name, "app.conf");
+        assert_eq!(entry.description.as_deref(), Some("main app config"));
+        assert_eq!(entry.tags, vec!["app".to_string(), "gui".to_string()]);
+        assert_eq!(entry.deploy_mode, DeployMode::Copy);
+        // Round-trips through the registry
+        let stored = man.load_registry();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].description.as_deref(), Some("main app config"));
+        assert_eq!(stored[0].deploy_mode, DeployMode::Copy);
+        // Legacy register_existing delegates with defaults
+        let src2 = dir.join("b.conf");
+        fs::write(&src2, "b").unwrap();
+        let plain = man.register_existing(&src2, "b.conf").unwrap();
+        assert_eq!(plain.description, None);
+        assert!(plain.tags.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 }

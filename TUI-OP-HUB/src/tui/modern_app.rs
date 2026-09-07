@@ -177,6 +177,44 @@ struct SshForm {
     field: usize,
 }
 
+/// Register-config form (Configs tab, `n`, US-CFG-09): path + optional
+/// metadata fields. Path supports Ctrl+O external file browsing and
+/// auto-fills the Name from the chosen file.
+#[derive(Debug, Clone, Default)]
+struct ConfigRegisterForm {
+    path: String,
+    name: String,
+    /// False until the user edits the Name manually, so typing the path can
+    /// keep auto-filling it from the file name.
+    name_touched: bool,
+    description: String,
+    /// Comma-separated; parsed on submit.
+    tags: String,
+    deploy_mode: crate::config_manager::DeployMode,
+    /// 0=path, 1=name, 2=description, 3=tags, 4=deploy mode
+    focus: usize,
+    error: Option<String>,
+}
+
+impl ConfigRegisterForm {
+    const FIELDS: usize = 5;
+
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Derive the Name from the current path text unless it was edited.
+    fn sync_name_from_path(&mut self) {
+        if self.name_touched {
+            return;
+        }
+        self.name = std::path::Path::new(&self.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+    }
+}
+
 impl SshForm {
     const FIELDS: [&'static str; 5] = ["Name", "Hostname", "Port", "Username", "Key path"];
     fn new() -> Self {
@@ -270,8 +308,8 @@ pub struct ModernApp {
     kb_filter: KbFilter,
     /// Managed-config list (Configs tab, US-CFG-09..12)
     configs_list: ListState<crate::config_manager::ConfigEntry>,
-    /// Source-path popup for registering an existing config file
-    config_input: Option<String>,
+    /// Register-config form popup (path + metadata, US-CFG-09)
+    config_input: Option<ConfigRegisterForm>,
     /// Target-path popup for deploying the selected config
     config_target_input: Option<String>,
     /// Where managed configs are stored (temp dir in tests)
@@ -781,14 +819,49 @@ impl ModernApp {
     }
 
     /// Register an existing file as a managed config (source-path popup).
-    async fn register_config_from_path(&mut self, raw: &str) {
-        let path = expand_tilde(raw);
-        let source = std::path::PathBuf::from(&path);
-        let name = source
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "config".to_string());
-        match self.config_manager().register_existing(&source, &name) {
+    /// Inline validation for the register-config form (US-CFG-09).
+    /// Returns the error message to display, or None when valid.
+    fn validate_config_form(&self, form: &ConfigRegisterForm) -> Option<String> {
+        if form.path.trim().is_empty() {
+            return Some("Path is required".to_string());
+        }
+        let expanded = expand_tilde(form.path.trim());
+        if !std::path::Path::new(&expanded).exists() {
+            return Some(format!("File not found: {}", expanded));
+        }
+        None
+    }
+
+    /// Submit the register-config form: register the file with its metadata
+    /// (name, description, tags, deploy mode) and refresh the list (US-CFG-09).
+    async fn register_config_from_form(&mut self, form: &ConfigRegisterForm) {
+        let source = expand_tilde(form.path.trim());
+        let name = if form.name.trim().is_empty() {
+            std::path::Path::new(&source)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "config".to_string())
+        } else {
+            form.name.trim().to_string()
+        };
+        let description = if form.description.trim().is_empty() {
+            None
+        } else {
+            Some(form.description.trim().to_string())
+        };
+        let tags: Vec<String> = form
+            .tags
+            .split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+        match self.config_manager().register_existing_full(
+            std::path::Path::new(&source),
+            &name,
+            description,
+            tags,
+            form.deploy_mode,
+        ) {
             Ok(entry) => {
                 self.status_message = Some(format!(
                     "✓ Managed '{}' (v{} stored)",
@@ -1082,14 +1155,19 @@ log:
         if let Some(path) = &self.register_input {
             self.render_register_input(f, path);
         }
-        // Configs path popups render independently — they were once nested
+        // Configs popups render independently — they were once nested
         // inside the register_input block, so pressing `n`/`t` on Configs set
         // the state but drew nothing (US-CFG-09)
-        if let Some(path) = &self.config_input {
-            self.render_path_input(f, " Register existing config file ", path);
+        if let Some(form) = &self.config_input {
+            self.render_config_register_form(f, form);
         }
         if let Some(path) = &self.config_target_input {
-            self.render_path_input(f, " Deploy target path ", path);
+            let cfg_name = self
+                .configs_list
+                .get_selected()
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            self.render_config_target_modal(f, path, &cfg_name);
         }
         if let Some(path) = &self.import_input {
             self.render_import_input(f, path);
@@ -2024,23 +2102,117 @@ log:
             }
             return;
         }
-        if let Some(path) = self.config_input.as_mut() {
+        if let Some(mut form) = self.config_input.take() {
+            // System file picker on the Path field (same browsing as
+            // import/export: yazi / nnn / ranger / lf / zenity / kdialog)
+            if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                let picked = crate::filepicker::pick(crate::filepicker::PickKind::File);
+                self.needs_full_redraw = true; // picker suspended the TUI
+                match picked {
+                    Ok(Some(p)) => {
+                        form.path = p.to_string_lossy().to_string();
+                        form.sync_name_from_path();
+                    }
+                    Ok(None) => {
+                        self.status_message =
+                            Some(String::from("No file picker available - type the path"));
+                    }
+                    Err(e) => self.status_message = Some(format!("{}", e)),
+                }
+                self.config_input = Some(form);
+                return;
+            }
             match key.code {
-                KeyCode::Esc => self.config_input = None,
-                KeyCode::Enter => {
-                    let entered = path.clone();
-                    self.config_input = None;
-                    self.register_config_from_path(&entered).await;
+                KeyCode::Esc => {
+                    // form already taken; stays closed
+                }
+                KeyCode::Enter => match self.validate_config_form(&form) {
+                    Some(err) => {
+                        form.error = Some(err);
+                        self.config_input = Some(form);
+                    }
+                    None => self.register_config_from_form(&form).await,
+                },
+                KeyCode::Tab | KeyCode::Down => {
+                    form.focus = cycle_field(form.focus, ConfigRegisterForm::FIELDS, true);
+                    self.config_input = Some(form);
+                }
+                KeyCode::BackTab | KeyCode::Up => {
+                    form.focus = cycle_field(form.focus, ConfigRegisterForm::FIELDS, false);
+                    self.config_input = Some(form);
+                }
+                KeyCode::Left | KeyCode::Right if form.focus == 4 => {
+                    // Deploy-mode selector row: cycle with arrow keys
+                    // (3 variants, so Left = 2 forward steps)
+                    let steps = if key.code == KeyCode::Left { 2 } else { 1 };
+                    for _ in 0..steps {
+                        form.deploy_mode = form.deploy_mode.next();
+                    }
+                    self.config_input = Some(form);
                 }
                 KeyCode::Backspace => {
-                    path.pop();
+                    match form.focus {
+                        0 => {
+                            form.path.pop();
+                            form.sync_name_from_path();
+                        }
+                        1 => {
+                            form.name.pop();
+                            form.name_touched = true;
+                        }
+                        2 => {
+                            form.description.pop();
+                        }
+                        3 => {
+                            form.tags.pop();
+                        }
+                        _ => {}
+                    }
+                    self.config_input = Some(form);
                 }
-                KeyCode::Char(c) => path.push(c),
-                _ => {}
+                KeyCode::Char(c) => {
+                    match form.focus {
+                        0 => {
+                            form.path.push(c);
+                            form.sync_name_from_path();
+                        }
+                        1 => {
+                            // Typing replaces the auto-filled suggestion
+                            if !form.name_touched {
+                                form.name.clear();
+                                form.name_touched = true;
+                            }
+                            form.name.push(c);
+                        }
+                        2 => {
+                            form.description.push(c);
+                        }
+                        3 => {
+                            form.tags.push(c);
+                        }
+                        _ => {}
+                    }
+                    self.config_input = Some(form);
+                }
+                _ => self.config_input = Some(form),
             }
             return;
         }
         if let Some(path) = self.config_target_input.as_mut() {
+            if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                // Browse for the deploy destination (same picker as export)
+                let picked = crate::filepicker::pick(crate::filepicker::PickKind::File);
+                self.needs_full_redraw = true; // picker suspended the TUI
+                match picked {
+                    Ok(Some(p)) => *path = p.to_string_lossy().to_string(),
+                    Ok(None) => {
+                        self.status_message =
+                            Some(String::from("No file picker available - type the path"));
+                    }
+                    Err(e) => self.status_message = Some(format!("{}", e)),
+                }
+                return;
+            }
             match key.code {
                 KeyCode::Esc => self.config_target_input = None,
                 KeyCode::Enter => {
@@ -2259,7 +2431,7 @@ log:
         if self.ui.state == AppState::Configs {
             match key.code {
                 KeyCode::Char('n') => {
-                    self.config_input = Some(String::new());
+                    self.config_input = Some(ConfigRegisterForm::new());
                     return;
                 }
                 KeyCode::Char('t') => {
@@ -3008,21 +3180,129 @@ log:
     }
 
     /// Generic single-line path input popup (shared by the config popups).
-    fn render_path_input(&self, f: &mut Frame, title: &str, value: &str) {
-        let area = self.centered_rect(70, 7, f);
+    /// Register-config form modal (Configs `n`, US-CFG-09): path + name +
+    /// description + tags + deploy mode, with inline error line.
+    fn render_config_register_form(&self, f: &mut Frame, form: &ConfigRegisterForm) {
+        let area = self.centered_rect(64, 11, f);
         f.render_widget(Clear, area);
         let block = Block::default()
+            .title(" Register existing config ")
+            .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(self.ui.theme.warning))
-            .title(title.to_string())
             .style(Style::default().bg(self.ui.theme.bg));
         let inner = block.inner(area);
         f.render_widget(block, area);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // Path
+                Constraint::Length(1), // Name
+                Constraint::Length(1), // Description
+                Constraint::Length(1), // Tags
+                Constraint::Length(1), // Deploy mode
+                Constraint::Length(1), // spacer
+                Constraint::Length(1), // help / error
+            ])
+            .split(inner);
+
+        let row = |f: &mut Frame, area: Rect, label: &str, value: &str, focused: bool| {
+            let (marker, style) = if focused {
+                (
+                    "▶ ",
+                    Style::default()
+                        .fg(self.ui.theme.secondary)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                ("  ", Style::default().fg(self.ui.theme.border))
+            };
+            let cursor = if focused { "\u{2588}" } else { "" };
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(format!("{}{} ", marker, label), style),
+                    Span::styled(
+                        format!("{}{}", value, cursor),
+                        Style::default().fg(self.ui.theme.fg),
+                    ),
+                ])),
+                area,
+            );
+        };
+
+        row(f, rows[0], "Path", &form.path, form.focus == 0);
+        row(f, rows[1], "Name", &form.name, form.focus == 1);
+        row(
+            f,
+            rows[2],
+            "Description",
+            &form.description,
+            form.focus == 2,
+        );
+        row(f, rows[3], "Tags (comma-sep)", &form.tags, form.focus == 3);
+        row(
+            f,
+            rows[4],
+            "Deploy mode (←→)",
+            form.deploy_mode.label(),
+            form.focus == 4,
+        );
         f.render_widget(
-            Paragraph::new(format!("{}\u{2502}", value))
-                .style(Style::default().fg(self.ui.theme.fg)),
-            inner,
+            self.form_help_line(
+                form.error.as_ref(),
+                "~ = $HOME | Ctrl+O: browse | Tab/arrows: field | Enter: register | Esc: cancel",
+            ),
+            rows[6],
+        );
+    }
+
+    /// Deploy-target modal (Configs `t`, US-CFG-10): destination path for the
+    /// selected config, with Ctrl+O browsing.
+    fn render_config_target_modal(&self, f: &mut Frame, value: &str, config_name: &str) {
+        let area = self.centered_rect(62, 7, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .title(" Add deploy target ")
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.secondary))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // for <config>
+                Constraint::Length(1), // path
+                Constraint::Length(1), // spacer
+                Constraint::Length(1), // help
+            ])
+            .split(inner);
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                format!("for config: {}", config_name),
+                Style::default().fg(self.ui.theme.secondary),
+            )),
+            rows[0],
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("  ", Style::default().fg(self.ui.theme.border)),
+                Span::styled(
+                    format!("{}\u{2588}", value),
+                    Style::default().fg(self.ui.theme.fg),
+                ),
+            ])),
+            rows[1],
+        );
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "~ = $HOME | Ctrl+O: browse | Enter: add target | Esc: cancel",
+                Style::default().fg(self.ui.theme.border),
+            )),
+            rows[3],
         );
     }
 
@@ -3312,10 +3592,16 @@ log:
             .style(Style::default().bg(self.ui.theme.bg));
 
         if items.is_empty() {
-            let empty_text = Paragraph::new("No items found. Press 'n' to create a new one.")
-                .style(Style::default().fg(self.ui.theme.fg))
-                .alignment(Alignment::Center)
-                .block(list_block);
+            let empty_text = if self.ui.state == AppState::Configs {
+                Paragraph::new(
+                    "No configs registered yet. Press 'n' to register one (Ctrl+O browses).",
+                )
+            } else {
+                Paragraph::new("No items found. Press 'n' to create a new one.")
+            }
+            .style(Style::default().fg(self.ui.theme.fg))
+            .alignment(Alignment::Center)
+            .block(list_block);
             f.render_widget(empty_text, chunks[1]);
         } else {
             let list_items: Vec<ListItem> = items
@@ -9030,7 +9316,7 @@ mod configs_tab_tests {
             .map(|c| c.symbol())
             .collect();
         assert!(
-            text.contains("Register existing config file"),
+            text.contains("Register existing config"),
             "register popup must be drawn after `n`"
         );
 
@@ -9047,8 +9333,96 @@ mod configs_tab_tests {
             .map(|c| c.symbol())
             .collect();
         assert!(
-            text.contains("Deploy target path"),
+            text.contains("Add deploy target"),
             "target popup must be drawn after `t`"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn given_register_form_when_fields_filled_then_metadata_is_stored() {
+        // More fields (US-CFG-09): path, name, description, tags, deploy mode
+        let mut app = test_app().await;
+        let dir = tmp("form");
+        app.config_store_dir = dir.join("store");
+        let src = dir.join("hypr.conf");
+        std::fs::write(&src, "monitor=eDP-1,1920x1080").unwrap();
+        app.ui.state = AppState::Configs;
+        app.fetch_configs().await.unwrap();
+
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        for c in src.to_string_lossy().chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        // Name auto-filled from the file name
+        {
+            let form = app.config_input.as_ref().unwrap();
+            assert_eq!(form.name, "hypr.conf", "name must auto-fill from path");
+        }
+        // Tab -> Name, override it
+        app.handle_key(key(KeyCode::Tab)).await;
+        for c in "my-hypr".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        // Tab -> Description
+        app.handle_key(key(KeyCode::Tab)).await;
+        for c in "Hyprland monitor setup".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        // Tab -> Tags
+        app.handle_key(key(KeyCode::Tab)).await;
+        for c in "hyprland, waybar".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        // Tab -> Deploy mode; Right cycles symlink -> hardlink
+        app.handle_key(key(KeyCode::Tab)).await;
+        app.handle_key(key(KeyCode::Right)).await;
+        app.handle_key(key(KeyCode::Enter)).await;
+
+        assert!(app.config_input.is_none(), "valid form must close");
+        let entries = app.config_manager().load_registry();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "my-hypr");
+        assert_eq!(
+            entries[0].description.as_deref(),
+            Some("Hyprland monitor setup")
+        );
+        assert_eq!(
+            entries[0].tags,
+            vec!["hyprland".to_string(), "waybar".to_string()]
+        );
+        assert_eq!(
+            entries[0].deploy_mode,
+            crate::config_manager::DeployMode::HardLink
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn given_register_form_when_path_empty_then_error_shown_and_form_stays() {
+        let mut app = test_app().await;
+        let dir = tmp("formerr");
+        app.config_store_dir = dir.join("store");
+        app.ui.state = AppState::Configs;
+        app.fetch_configs().await.unwrap();
+
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        app.handle_key(key(KeyCode::Enter)).await;
+        let form = app.config_input.as_ref().expect("form must stay open");
+        assert_eq!(form.error.as_deref(), Some("Path is required"));
+
+        // Nonexistent path -> file-not-found error
+        let mut form = app.config_input.take().unwrap();
+        form.path = "/definitely/not/here.conf".to_string();
+        app.config_input = Some(form);
+        app.handle_key(key(KeyCode::Enter)).await;
+        let form = app.config_input.as_ref().expect("form must stay open");
+        assert!(
+            form.error
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("File not found"),
+            "missing file must surface an inline error"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
