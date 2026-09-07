@@ -16,7 +16,7 @@ secure secret storage — local-first, single binary, keyboard-driven.
 - **Encrypted Secrets**: XChaCha20Poly1305 AEAD cipher with per-user key management
 - **User Profiles**: Multi-user support with individual encryption keys
 - **REST API**: Axum-based HTTP API for full CRUD and workflow execution
-- **TUI Dashboard**: Interactive terminal UI with 10 screens (Dashboard, **Knowledge Base** parent page, Commands, Apps, Scripts, Projects, Workflows, Secrets, Plugins, Settings last) — keys 1-9 + 0; the Knowledge page describes each type with live counts, opens a combined **All** view, and `n` there creates a new item of the selected type; Enter on a project opens its detail view
+- **TUI Dashboard**: Interactive terminal UI with 10 screens (Dashboard, **Knowledge Base** parent page, Commands, Apps, Scripts, Projects, Workflows, Secrets, Plugins, Settings last) — keys 1-9 + 0; the **Knowledge Base** is ONE tab (2) holding commands, apps and scripts in a single list with type icons, a **type filter** (`f`: All/Commands/Apps/Scripts) and `n` to create an item of the filtered type; Enter on a project opens its detail view
 - ✅ Knowledge **import/export**: portable JSON bundles (see [`docs/IMPORT_EXPORT.md`](docs/IMPORT_EXPORT.md)) — AI-generatable
 - ✅ **Cron scheduling** (US-WF-07): run workflows on cron expressions via the built-in scheduler daemon
 - ✅ **systemd / cron compatibility** (US-DEP-04): `tui-op-hub --install-service` runs the hub headless — `./install.sh` sets everything up; see [`docs/INSTALL.md`](docs/INSTALL.md)
@@ -172,8 +172,9 @@ The Settings screen (`8`) previews live and `a` opens the visual color editor.
 
 | Key | Action |
 |:----|:-------|
-| 1-9, 0 | Switch tab (from any screen) — 2 Knowledge Base, 3 Commands, 4 Apps, 5 Scripts, 6 Projects, 7 Workflows, 8 Secrets, 9 Plugins, 0 Settings |
+| 1-6, 0 | Switch tab (from any screen) — 1 Dashboard, 2 Knowledge Base, 3 Projects, 4 Workflows, 5 Secrets, 6 Plugins, 0 Settings |
 | Tab | Cycle tabs (order from `[tui].tab_order` in config.conf; Settings last by default) |
+| f | Knowledge tab: cycle the type filter (All, Commands, Apps, Scripts) |
 | Up/Down | Navigate items |
 | Enter | Select / open project detail |
 | n | Create new |

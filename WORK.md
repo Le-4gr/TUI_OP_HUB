@@ -28,7 +28,29 @@
    quick-connect only); plugin approval workflow for headless service runs.
 
 ---
-## 🎯 Session 18b: Knowledge page — type picker + combined All view (completed)
+## ## 🎯 Session 18c: Knowledge redesign — ONE tab + type filter (completed)
+
+User feedback: Commands/Apps/Scripts must NOT be separate tabs — one parent tab with a
+filter; and the KB page swallowed keys (its `_ => {}` ate digits/Tab/q).
+
+- **AppState::Commands/Apps/Scripts REMOVED** (65 sites collapsed into `AppState::Knowledge`);
+  the Knowledge tab now hosts the entity list directly (navigation/run/copy/edit work there).
+- **`KbFilter` enum** (All -> Cmd -> App -> Script -> All): **`f` cycles the filter** and refetches;
+  title shows `Knowledge . <label>`; entity rows carry type icons.
+- **`n`** creates an item pre-set to the CURRENT filter type (All -> cmd; form can still cycle).
+- **New digit mapping**: 1 Dash . 2 Knowledge . 3 Projects . 4 Workflows . 5 Secrets . 6 Plugins . 0 Settings.
+  Unmapped digits (7-9) do nothing. Default Tab cycle = 7 entries, Settings last.
+- Removed: cards page, kb_selected, knowledge_counts, kb_all_view, fetch_commands, open_knowledge_subpage;
+  `fetch_knowledge()` replaces them. `delete_all_in_tab` (dev) deletes per the active filter.
+- Tests rewritten as filter tests; digit tests + 2 BDD scenarios re-pinned; fuzzy `dck` scenario now
+  covers the All list (docker, kubectl, docker compose, lazydocker). **209 total (162 lib + 47 BDD),
+  clippy 0, build ok.**
+
+Docs: README (digits, `f` filter). **Next: backlog item 2 — Config Management page (US-CFG-09..12).**
+
+---
+
+🎯 Session 18b: Knowledge page — type picker + combined All view (completed)
 
 User follow-up to US-TUI-11: the Knowledge Base page is now the real hub for creating.
 

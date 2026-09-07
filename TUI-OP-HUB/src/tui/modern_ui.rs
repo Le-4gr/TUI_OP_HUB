@@ -158,12 +158,9 @@ impl ModernTheme {
 pub enum AppState {
     Login,
     Dashboard,
-    /// "Knowledge Base" parent page (US-TUI-11): describes + links the
-    /// Commands / Apps / Scripts subpages.
+    /// Knowledge Base (US-TUI-11/12): the ONE tab for commands, apps and
+    /// scripts — a single list filtered by type (`f` cycles the filter).
     Knowledge,
-    Commands,
-    Apps,
-    Scripts,
     Projects,
     Workflows,
     Secrets,
@@ -252,7 +249,7 @@ impl ModernUI {
 
         match key {
             KeyCode::Char('1') => self.state = AppState::Dashboard,
-            KeyCode::Char('2') => self.state = AppState::Commands,
+            KeyCode::Char('2') => self.state = AppState::Knowledge,
             KeyCode::Char('3') => self.state = AppState::Workflows,
             KeyCode::Char('4') => self.state = AppState::Secrets,
             KeyCode::Char('5') => self.state = AppState::Settings,
@@ -272,7 +269,7 @@ impl ModernUI {
         match self.state {
             AppState::Login => self.render_login(f),
             AppState::Dashboard => self.render_dashboard(f),
-            AppState::Commands => self.render_commands(f),
+            AppState::Knowledge => self.render_dashboard(f),
             AppState::Workflows => self.render_workflows(f),
             AppState::Secrets => self.render_secrets(f),
             AppState::Settings => self.render_settings(f),

@@ -265,14 +265,8 @@ pub struct ModernApp {
     running_workflow: Option<RunningWorkflow>,
     /// Admin user management panel (Settings → `u`)
     users_panel: Option<UsersPanel>,
-    /// Selected subpage on the Knowledge Base parent page (US-TUI-11);
-    /// 0..2 = Commands/Apps/Scripts, 3 = combined "All" view.
-    kb_selected: usize,
-    /// Live item counts for the Knowledge page: [commands, apps, scripts]
-    knowledge_counts: [usize; 3],
-    /// When true, the Commands list shows ALL knowledge types (cmd+app+script)
-    /// instead of only the tab's own type (Knowledge → All view).
-    kb_all_view: bool,
+    /// Type filter of the Knowledge tab (US-TUI-11/12): one tab, filtered list
+    kb_filter: KbFilter,
     /// SSH host manager panel (Secrets → `H`)
     ssh_panel: Option<SshPanel>,
     // New project creation form (US-PROJ)
@@ -345,12 +339,56 @@ impl std::fmt::Display for PluginEntry {
 }
 
 type PluginsListState = super::list_state::ListState<PluginEntry>;
-/// Entity type shown by the current entity tab (Commands / Apps / Scripts).
-fn entity_type_for_tab(state: &AppState) -> &'static str {
-    match state {
-        AppState::Apps => "app",
-        AppState::Scripts => "script",
-        _ => "cmd",
+
+/// Type filter on the Knowledge tab (US-TUI-11): ONE tab, filtered list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KbFilter {
+    #[default]
+    All,
+    Cmd,
+    App,
+    Script,
+}
+
+impl KbFilter {
+    /// Cycle order: All → Commands → Apps → Scripts → All.
+    pub fn next(self) -> Self {
+        match self {
+            KbFilter::All => KbFilter::Cmd,
+            KbFilter::Cmd => KbFilter::App,
+            KbFilter::App => KbFilter::Script,
+            KbFilter::Script => KbFilter::All,
+        }
+    }
+
+    /// Label shown in the list title.
+    pub fn label(self) -> &'static str {
+        match self {
+            KbFilter::All => "All",
+            KbFilter::Cmd => "Commands",
+            KbFilter::App => "Apps",
+            KbFilter::Script => "Scripts",
+        }
+    }
+
+    /// Entity type ids covered by this filter.
+    pub fn type_ids(self) -> &'static [&'static str] {
+        match self {
+            KbFilter::All => &["cmd", "app", "script"],
+            KbFilter::Cmd => &["cmd"],
+            KbFilter::App => &["app"],
+            KbFilter::Script => &["script"],
+        }
+    }
+
+    /// Index into `ENTITY_TYPE_IDS` ([\"cmd\", \"script\", \"app\"]) for the
+    /// create-form type selector; `All` defaults to Command.
+    pub fn form_type_index(self) -> usize {
+        match self {
+            KbFilter::All | KbFilter::Cmd => 0,
+            KbFilter::App => 2,
+            KbFilter::Script => 1,
+        }
     }
 }
 
@@ -408,9 +446,7 @@ impl ModernApp {
             sudo_pending_command: None,
             running_workflow: None,
             users_panel: None,
-            kb_selected: 0,
-            knowledge_counts: [0, 0, 0],
-            kb_all_view: false,
+            kb_filter: KbFilter::default(),
             ssh_panel: None,
             dev_user_manager: false,
             dev_user_list: Vec::new(),
@@ -438,9 +474,7 @@ impl ModernApp {
     /// Switch to the tab for digit 1-9 (US-APP-02 tab keys). Works from ANY
     /// screen, including Settings/Advanced, so digits always mean tabs.
     /// Default Tab-cycle order (US-TUI-12): Settings is intentionally LAST.
-    const DEFAULT_TAB_ORDER: [&'static str; 10] = [
-        "dash", "kb", "cmd", "app", "script", "proj", "wf", "sec", "plug", "set",
-    ];
+    const DEFAULT_TAB_ORDER: [&'static str; 7] = ["dash", "kb", "proj", "wf", "sec", "plug", "set"];
 
     /// Resolve the configured Tab-cycle order to AppState values (US-TUI-12).
     /// Unknown ids are dropped; an empty result falls back to the default.
@@ -448,9 +482,7 @@ impl ModernApp {
         let parse = |id: &str| match id.trim().to_lowercase().as_str() {
             "dash" => Some(AppState::Dashboard),
             "kb" => Some(AppState::Knowledge),
-            "cmd" => Some(AppState::Commands),
-            "app" => Some(AppState::Apps),
-            "script" => Some(AppState::Scripts),
+
             "proj" => Some(AppState::Projects),
             "wf" => Some(AppState::Workflows),
             "sec" => Some(AppState::Secrets),
@@ -488,27 +520,20 @@ impl ModernApp {
     async fn jump_to_tab_digit(&mut self, c: char) {
         self.ui.state = match c {
             '2' => AppState::Knowledge,
-            '3' => AppState::Commands,
-            '4' => AppState::Apps,
-            '5' => AppState::Scripts,
-            '6' => AppState::Projects,
-            '7' => AppState::Workflows,
-            '8' => AppState::Secrets,
-            '9' => AppState::Plugins,
+            '3' => AppState::Projects,
+            '4' => AppState::Workflows,
+            '5' => AppState::Secrets,
+            '6' => AppState::Plugins,
             '0' => AppState::Settings,
-            _ => AppState::Dashboard, // 1 and anything else
+            '1' => AppState::Dashboard,
+            _ => return, // unmapped digits do nothing
         };
         match self.ui.state {
             AppState::Dashboard => {
                 let _ = self.fetch_stats().await;
             }
             AppState::Knowledge => {
-                self.fetch_knowledge_counts().await;
-            }
-            AppState::Commands | AppState::Apps | AppState::Scripts => {
-                // Direct digit jumps always show the tab's own type only
-                self.kb_all_view = false;
-                let _ = self.fetch_commands().await;
+                let _ = self.fetch_knowledge().await;
             }
             AppState::Projects => {
                 let _ = self.fetch_projects().await;
@@ -556,47 +581,6 @@ impl ModernApp {
         std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string())
     }
 
-    /// Count Commands / Apps / Scripts for the Knowledge Base page (US-TUI-11).
-    async fn fetch_knowledge_counts(&mut self) {
-        let mut counts = [0usize; 3];
-        for (i, ty) in ["cmd", "app", "script"].iter().enumerate() {
-            if let Ok(items) = repository::list_entities(&*self.pool, Some(ty), None).await {
-                counts[i] = items.len();
-            }
-        }
-        self.knowledge_counts = counts;
-    }
-
-    /// Open the selected Knowledge Base subpage (US-TUI-11); row 3 = All view.
-    async fn open_knowledge_subpage(&mut self) {
-        // Rows: 0 Commands, 1 Apps, 2 Scripts, 3 All
-        self.kb_all_view = self.kb_selected == 3;
-        self.ui.state = match self.kb_selected {
-            0 => AppState::Commands,
-            1 => AppState::Apps,
-            2 => AppState::Scripts,
-            _ => AppState::Commands, // All view lives on the Commands list
-        };
-        let _ = self.fetch_commands().await;
-    }
-
-    /// `n` on the Knowledge page: create a new item of the SELECTED row's type
-    /// (this is the type picker — pick the row, then `n`).
-    fn new_knowledge_item(&mut self) {
-        // ENTITY_TYPE_IDS = ["cmd", "script", "app"] — form indexes differ
-        // from the row order (0 Commands, 1 Apps, 2 Scripts).
-        let form_index = match self.kb_selected {
-            1 => 2, // Apps
-            2 => 1, // Scripts
-            _ => 0, // Commands (also used when "All" is selected)
-        };
-        self.command_form = CommandFormState {
-            mode: Some(FormMode::Create),
-            entity_type: form_index,
-            ..Default::default()
-        };
-    }
-
     /// Fetch dashboard statistics from database
     async fn fetch_stats(&mut self) -> anyhow::Result<()> {
         use sqlx::Row;
@@ -638,25 +622,28 @@ impl ModernApp {
     }
 
     /// Fetch commands list from database
-    async fn fetch_commands(&mut self) -> anyhow::Result<()> {
-        // Same list state serves the Commands / Apps / Scripts tabs
-        if self.kb_all_view {
-            // Knowledge → All: show cmd + app + script together (US-TUI-11)
-            let entities = repository::list_entities(&*self.pool, None, None).await?;
-            let mut all: Vec<_> = entities
-                .into_iter()
-                .filter(|e| matches!(e.type_id.as_str(), "cmd" | "app" | "script"))
-                .collect();
-            all.sort_by(|a, b| a.name.cmp(&b.name));
-            let total = all.len();
-            self.commands_list.set_items(all, total);
-            return Ok(());
+    /// Fetch the Knowledge list for the current type filter (US-TUI-11):
+    /// one tab, filtered by `kb_filter` (All = cmd+app+script).
+    async fn fetch_knowledge(&mut self) -> anyhow::Result<()> {
+        let mut items = Vec::new();
+        for ty in self.kb_filter.type_ids() {
+            items.extend(repository::list_entities(&*self.pool, Some(ty), None).await?);
         }
-        let type_filter = entity_type_for_tab(&self.ui.state);
-        let entities = repository::list_entities(&*self.pool, Some(type_filter), None).await?;
-        let total = entities.len();
-        self.commands_list.set_items(entities, total);
+        items.sort_by(|a, b| a.name.cmp(&b.name));
+        let total = items.len();
+        self.commands_list.set_items(items, total);
         Ok(())
+    }
+
+    /// `n` on the Knowledge tab: create a new item pre-set to the CURRENT
+    /// filter's type (All → Command; the form can still cycle the type with
+    /// ←/→).
+    fn new_knowledge_item(&mut self) {
+        self.command_form = CommandFormState {
+            mode: Some(FormMode::Create),
+            entity_type: self.kb_filter.form_type_index(),
+            ..Default::default()
+        };
     }
 
     /// Validate the entered cron expression and persist a scheduled task for
@@ -774,9 +761,7 @@ impl ModernApp {
     /// Refresh data for current tab
     async fn refresh_current_tab(&mut self) -> anyhow::Result<()> {
         match self.ui.state {
-            AppState::Commands | AppState::Apps | AppState::Scripts => {
-                self.fetch_commands().await?
-            }
+            AppState::Knowledge => self.fetch_knowledge().await?,
             AppState::Projects => self.fetch_projects().await?,
             AppState::Workflows => self.fetch_workflows().await?,
             AppState::Secrets => self.fetch_secrets().await?,
@@ -956,10 +941,10 @@ impl ModernApp {
                 self.render_dashboard_with_stats(f);
             }
             AppState::Knowledge => {
-                // Knowledge Base parent page (US-TUI-11)
-                self.render_knowledge_page(f);
+                // ONE knowledge tab: filtered list (US-TUI-11/12)
+                self.render_commands_list(f);
             }
-            AppState::Commands | AppState::Apps | AppState::Scripts => {
+            AppState::Knowledge => {
                 self.render_commands_list(f);
             }
             AppState::Projects => {
@@ -987,99 +972,6 @@ impl ModernApp {
                 self.ui.render(f);
             }
         }
-    }
-
-    /// Knowledge Base parent page (US-TUI-11): describes the Commands, Apps
-    /// and Scripts subpages with live item counts.
-    fn render_knowledge_page(&self, f: &mut Frame) {
-        let area = f.area();
-        f.render_widget(
-            Block::default().style(Style::default().bg(self.ui.theme.bg)),
-            area,
-        );
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), // header
-                Constraint::Min(6),    // subpage cards
-                Constraint::Length(1), // footer
-            ])
-            .split(area);
-
-        let header = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(self.ui.theme.accent))
-            .title(" \u{1f4da} Knowledge Base ")
-            .style(Style::default().bg(self.ui.theme.bg));
-        f.render_widget(
-            Paragraph::new("Everything you save lives here \u{2014} pick a section:")
-                .style(Style::default().fg(self.ui.theme.fg))
-                .block(header),
-            chunks[0],
-        );
-
-        let entries = [
-            (
-                "Commands",
-                "One-off shell commands with tagged, fuzzy-searchable option families",
-                '3',
-                self.knowledge_counts[0],
-            ),
-            (
-                "Apps",
-                "Desktop applications and TUI tools launched detached (GUI-safe)",
-                '4',
-                self.knowledge_counts[1],
-            ),
-            (
-                "Scripts",
-                "Multi-line scripts in any language — python, lua, node, ruby, perl",
-                '5',
-                self.knowledge_counts[2],
-            ),
-            (
-                "All",
-                "Show commands, apps and scripts together in one list",
-                ' ',
-                self.knowledge_counts[0] + self.knowledge_counts[1] + self.knowledge_counts[2],
-            ),
-        ];
-        let items: Vec<Line> = entries
-            .iter()
-            .enumerate()
-            .map(|(i, (name, desc, digit, count))| {
-                let selected = i == self.kb_selected;
-                let marker = if selected { "\u{25b6} " } else { "  " };
-                let style = if selected {
-                    Style::default()
-                        .fg(self.ui.theme.bg)
-                        .bg(self.ui.theme.accent)
-                } else {
-                    Style::default().fg(self.ui.theme.fg)
-                };
-                let desc_style = if selected {
-                    style
-                } else {
-                    Style::default().fg(self.ui.theme.border)
-                };
-                Line::from(vec![
-                    Span::styled(format!("{}[{}] ", marker, digit), style),
-                    Span::styled(format!("{} ", name), style.add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("({} items) ", count), style),
-                    Span::styled(format!("\u{2014} {}", desc), desc_style),
-                ])
-            })
-            .collect();
-        f.render_widget(
-            Paragraph::new(items).style(Style::default().bg(self.ui.theme.bg)),
-            chunks[1],
-        );
-        f.render_widget(
-            Paragraph::new("\u{2191}\u{2193} select \u{b7} Enter open \u{b7} n new (selected type) \u{b7} 3/4/5 quick jump \u{b7} ? help")
-                .style(Style::default().fg(self.ui.theme.warning)),
-            chunks[2],
-        );
     }
 
     fn render_dashboard_with_stats(&self, f: &mut Frame) {
@@ -2028,9 +1920,7 @@ impl ModernApp {
                 }
             }
             AppState::Dashboard
-            | AppState::Commands
-            | AppState::Apps
-            | AppState::Scripts
+            | AppState::Knowledge
             | AppState::Projects
             | AppState::Workflows
             | AppState::Secrets
@@ -2128,29 +2018,24 @@ impl ModernApp {
     }
 
     async fn handle_dashboard_key(&mut self, key: KeyEvent) {
-        // Knowledge Base parent page has its own small key set (US-TUI-11)
+        // Knowledge tab: `f` cycles the type filter, `n` creates an item of
+        // the filtered type; EVERY other key falls through to the normal
+        // list handling so navigation/run/copy/etc. work here too (US-TUI-11).
         if self.ui.state == AppState::Knowledge {
             match key.code {
-                KeyCode::Up => {
-                    if self.kb_selected > 0 {
-                        self.kb_selected -= 1;
-                    }
-                }
-                KeyCode::Down => {
-                    if self.kb_selected + 1 < 4 {
-                        self.kb_selected += 1;
-                    }
-                }
-                KeyCode::Enter => {
-                    self.open_knowledge_subpage().await;
+                KeyCode::Char('f') => {
+                    self.kb_filter = self.kb_filter.next();
+                    self.status_message = Some(format!("Filter: {}", self.kb_filter.label()));
+                    let _ = self.fetch_knowledge().await;
+                    return;
                 }
                 KeyCode::Char('n') => {
-                    // Create a new item of the selected row's type
+                    // Create a new item of the filtered type
                     self.new_knowledge_item();
+                    return;
                 }
                 _ => {}
             }
-            return;
         }
         // Action keys come from the config (US-APP-02) and can be rebound in Settings
         let kb_quit = self.action_keycode("quit");
@@ -2181,41 +2066,26 @@ impl ModernApp {
             }
             KeyCode::Char('2') => {
                 self.ui.state = AppState::Knowledge;
-                self.fetch_knowledge_counts().await;
+                let _ = self.fetch_knowledge().await;
             }
             KeyCode::Char('3') => {
-                self.ui.state = AppState::Commands;
-                self.kb_all_view = false;
-                let _ = self.fetch_commands().await;
-            }
-            KeyCode::Char('4') => {
-                self.ui.state = AppState::Apps;
-                self.kb_all_view = false;
-                let _ = self.fetch_commands().await;
-            }
-            KeyCode::Char('5') => {
-                self.ui.state = AppState::Scripts;
-                self.kb_all_view = false;
-                let _ = self.fetch_commands().await;
-            }
-            KeyCode::Char('6') => {
                 self.ui.state = AppState::Projects;
                 let _ = self.fetch_projects().await;
             }
-            KeyCode::Char('7') => {
+            KeyCode::Char('4') => {
                 self.ui.state = AppState::Workflows;
                 let _ = self.fetch_workflows().await;
             }
-            KeyCode::Char('8') => {
+            KeyCode::Char('5') => {
                 self.ui.state = AppState::Secrets;
                 let _ = self.fetch_secrets().await;
             }
-            KeyCode::Char('0') => {
-                self.ui.state = AppState::Settings;
-            }
-            KeyCode::Char('9') => {
+            KeyCode::Char('6') => {
                 self.ui.state = AppState::Plugins;
                 self.fetch_plugins().await;
+            }
+            KeyCode::Char('0') => {
+                self.ui.state = AppState::Settings;
             }
             // Tab - Cycle through the configured order (US-TUI-12)
             KeyCode::Tab => {
@@ -2226,22 +2096,12 @@ impl ModernApp {
             k if Some(k) == kb_create => {
                 // Create new item (context-dependent)
                 match self.ui.state {
-                    AppState::Commands => {
+                    AppState::Knowledge => {
+                        // Pre-select the type matching the current filter
+                        // (All → Command; the form can cycle with ←/→)
                         self.command_form = CommandFormState {
                             mode: Some(FormMode::Create),
-                            ..Default::default()
-                        };
-                    }
-                    AppState::Apps | AppState::Scripts => {
-                        // Pre-select the type matching the tab (cmd/script/app)
-                        let entity_type = if self.ui.state == AppState::Apps {
-                            2 // "app"
-                        } else {
-                            1 // "script"
-                        };
-                        self.command_form = CommandFormState {
-                            mode: Some(FormMode::Create),
-                            entity_type,
+                            entity_type: self.kb_filter.form_type_index(),
                             ..Default::default()
                         };
                     }
@@ -2268,7 +2128,7 @@ impl ModernApp {
             k if Some(k) == kb_edit => {
                 // Edit selected item
                 match self.ui.state {
-                    AppState::Commands | AppState::Apps | AppState::Scripts => {
+                    AppState::Knowledge => {
                         let selected = self.commands_list.get_selected().cloned();
                         if let Some(entity) = selected {
                             let entity_type = ENTITY_TYPE_IDS
@@ -2345,7 +2205,7 @@ impl ModernApp {
             k if Some(k) == kb_delete => {
                 // Delete selected item — ask for confirmation first
                 match self.ui.state {
-                    AppState::Commands | AppState::Apps | AppState::Scripts => {
+                    AppState::Knowledge => {
                         if let Some(entity) = self.commands_list.get_selected() {
                             self.confirm_delete = Some(ConfirmDelete {
                                 id: entity.id.clone(),
@@ -2400,10 +2260,7 @@ impl ModernApp {
             }
             KeyCode::Char('o') => {
                 // Open selected command in the configured external editor (US-CMD-05)
-                if matches!(
-                    self.ui.state,
-                    AppState::Commands | AppState::Apps | AppState::Scripts
-                ) {
+                if matches!(self.ui.state, AppState::Knowledge) {
                     self.open_in_editor().await;
                 }
             }
@@ -2411,11 +2268,7 @@ impl ModernApp {
                 // Export knowledge base to a chosen path (US-CMD-01, sharing)
                 if matches!(
                     self.ui.state,
-                    AppState::Commands
-                        | AppState::Apps
-                        | AppState::Scripts
-                        | AppState::Workflows
-                        | AppState::Secrets
+                    AppState::Knowledge | AppState::Workflows | AppState::Secrets
                 ) {
                     self.export_input = Some(default_bundle_path());
                 }
@@ -2491,10 +2344,7 @@ impl ModernApp {
             }
             KeyCode::Char('m') => {
                 // Man page for the selected command (graceful when missing)
-                if matches!(
-                    self.ui.state,
-                    AppState::Commands | AppState::Apps | AppState::Scripts
-                ) {
+                if matches!(self.ui.state, AppState::Knowledge) {
                     self.show_man_page().await;
                 }
             }
@@ -2566,19 +2416,13 @@ impl ModernApp {
             }
             KeyCode::Char('R') => {
                 // Run with elevated privileges (sudo/doas/su)
-                if matches!(
-                    self.ui.state,
-                    AppState::Commands | AppState::Apps | AppState::Scripts
-                ) {
+                if matches!(self.ui.state, AppState::Knowledge) {
                     self.run_privileged_command().await;
                 }
             }
             KeyCode::Char('i') => {
                 // Structured options of the selected command family (US-CMD-01)
-                if matches!(
-                    self.ui.state,
-                    AppState::Commands | AppState::Apps | AppState::Scripts
-                ) {
+                if matches!(self.ui.state, AppState::Knowledge) {
                     self.show_options_popup().await;
                 }
             }
@@ -2616,7 +2460,7 @@ impl ModernApp {
             k if Some(k) == kb_filter => {
                 // Toggle filter mode
                 match self.ui.state {
-                    AppState::Commands | AppState::Apps | AppState::Scripts => {
+                    AppState::Knowledge => {
                         self.commands_list.filter = if self
                             .commands_list
                             .filter
@@ -2657,9 +2501,7 @@ impl ModernApp {
             }
             // Arrow keys for navigation
             KeyCode::Up => match self.ui.state {
-                AppState::Commands | AppState::Apps | AppState::Scripts => {
-                    self.commands_list.select_previous()
-                }
+                AppState::Knowledge => self.commands_list.select_previous(),
                 AppState::Projects => self.projects_list.select_previous(),
                 AppState::Workflows => self.workflows_list.select_previous(),
                 AppState::Secrets => self.secrets_list.select_previous(),
@@ -2667,9 +2509,7 @@ impl ModernApp {
                 _ => {}
             },
             KeyCode::Down => match self.ui.state {
-                AppState::Commands | AppState::Apps | AppState::Scripts => {
-                    self.commands_list.select_next()
-                }
+                AppState::Knowledge => self.commands_list.select_next(),
                 AppState::Projects => self.projects_list.select_next(),
                 AppState::Workflows => self.workflows_list.select_next(),
                 AppState::Secrets => self.secrets_list.select_next(),
@@ -2677,9 +2517,7 @@ impl ModernApp {
                 _ => {}
             },
             KeyCode::PageUp => match self.ui.state {
-                AppState::Commands | AppState::Apps | AppState::Scripts => {
-                    self.commands_list.previous_page()
-                }
+                AppState::Knowledge => self.commands_list.previous_page(),
                 AppState::Projects => self.projects_list.previous_page(),
                 AppState::Workflows => self.workflows_list.previous_page(),
                 AppState::Secrets => self.secrets_list.previous_page(),
@@ -2687,9 +2525,7 @@ impl ModernApp {
                 _ => {}
             },
             KeyCode::PageDown => match self.ui.state {
-                AppState::Commands | AppState::Apps | AppState::Scripts => {
-                    self.commands_list.next_page()
-                }
+                AppState::Knowledge => self.commands_list.next_page(),
                 AppState::Projects => self.projects_list.next_page(),
                 AppState::Workflows => self.workflows_list.next_page(),
                 AppState::Secrets => self.secrets_list.next_page(),
@@ -2697,9 +2533,7 @@ impl ModernApp {
                 _ => {}
             },
             KeyCode::Home => match self.ui.state {
-                AppState::Commands | AppState::Apps | AppState::Scripts => {
-                    self.commands_list.selected = 0
-                }
+                AppState::Knowledge => self.commands_list.selected = 0,
                 AppState::Projects => self.projects_list.selected = 0,
                 AppState::Workflows => self.workflows_list.selected = 0,
                 AppState::Secrets => self.secrets_list.selected = 0,
@@ -2707,7 +2541,7 @@ impl ModernApp {
                 _ => {}
             },
             KeyCode::End => match self.ui.state {
-                AppState::Commands | AppState::Apps | AppState::Scripts => {
+                AppState::Knowledge => {
                     if !self.commands_list.items.is_empty() {
                         self.commands_list.selected = self.commands_list.items.len() - 1;
                     }
@@ -2812,15 +2646,11 @@ impl ModernApp {
     }
 
     fn render_commands_list(&self, f: &mut Frame) {
-        let title = if self.kb_all_view {
-            "📚 Knowledge — All"
-        } else {
-            match self.ui.state {
-                AppState::Apps => "🚀 Apps",
-                AppState::Scripts => "📜 Scripts",
-                _ => "💻 Commands",
-            }
-        };
+        let title = format!(
+            "📚 Knowledge · {} · f: filter · n: new",
+            self.kb_filter.label()
+        );
+        let title = title.as_str();
         self.render_list(
             f,
             title,
@@ -3314,8 +3144,9 @@ impl ModernApp {
                 ("?", "Keybinds"),
                 ("q", "Quit"),
             ],
-            AppState::Commands | AppState::Apps | AppState::Scripts => vec![
+            AppState::Knowledge => vec![
                 ("\u{2191}\u{2193}", "Navigate"),
+                ("f", "Filter type"),
                 ("n", "New"),
                 ("e", "Edit"),
                 ("d", "Delete"),
@@ -3325,9 +3156,6 @@ impl ModernApp {
                 ("i", "Options"),
                 ("m", "Man"),
                 ("R", "Sudo"),
-                ("`", "New term"),
-                ("x", "Export"),
-                ("I", "Import"),
                 ("/", "Find"),
                 ("?", "Keybinds"),
                 ("q", "Quit"),
@@ -3459,8 +3287,8 @@ impl ModernApp {
     async fn apply_search_filter(&mut self) {
         let q = self.search_state.query.clone();
         match self.ui.state {
-            AppState::Commands | AppState::Apps | AppState::Scripts => {
-                let _ = self.fetch_commands().await;
+            AppState::Knowledge => {
+                let _ = self.fetch_knowledge().await;
                 self.commands_list.items = fuzzy_rank(&self.commands_list.items, &q, |e| {
                     (e.name.as_str(), e.description.as_deref().unwrap_or(""))
                 });
@@ -3581,7 +3409,7 @@ impl ModernApp {
             Ok(_) => {
                 self.command_form.mode = None;
                 self.status_message = Some("✓ Saved".to_string());
-                let _ = self.fetch_commands().await;
+                let _ = self.fetch_knowledge().await;
                 let _ = self.fetch_stats().await;
             }
             Err(e) => self.command_form.error_message = Some(format!("Save failed: {}", e)),
@@ -4086,7 +3914,7 @@ impl ModernApp {
     /// Secrets are decrypted first, then copied.
     async fn copy_selected(&mut self) {
         let content: Option<String> = match self.ui.state {
-            AppState::Commands | AppState::Apps | AppState::Scripts => self
+            AppState::Knowledge => self
                 .commands_list
                 .get_selected()
                 .and_then(|e| e.content.clone()),
@@ -4137,7 +3965,7 @@ impl ModernApp {
     /// user's secrets. Shows the result in a popup.
     async fn run_selected(&mut self) {
         match self.ui.state {
-            AppState::Commands | AppState::Apps | AppState::Scripts => {
+            AppState::Knowledge => {
                 let selected = self.commands_list.get_selected().cloned();
                 let Some(entity) = selected else {
                     self.status_message = Some("Nothing selected".to_string());
@@ -5471,16 +5299,11 @@ impl ModernApp {
     /// Delete all entities in the current tab (dev mode group delete).
     async fn delete_all_in_tab(&mut self) {
         match self.ui.state {
-            AppState::Commands => {
-                self.delete_entities_by_type("cmd", "command").await;
-                self.delete_entities_by_type("script", "script").await;
-                self.delete_entities_by_type("app", "app").await;
-            }
-            AppState::Apps => {
-                self.delete_entities_by_type("app", "app").await;
-            }
-            AppState::Scripts => {
-                self.delete_entities_by_type("script", "script").await;
+            AppState::Knowledge => {
+                // Delete according to the active filter (All = all three)
+                for ty in self.kb_filter.type_ids() {
+                    self.delete_entities_by_type(ty, ty).await;
+                }
             }
             AppState::Projects => {
                 let projects = repository::list_projects(&*self.pool)
@@ -7048,8 +6871,12 @@ impl ModernApp {
             "Switch tabs (configurable order, Settings last)",
         ));
         lines.push(row(
-            "1-9,0",
-            "1 Dashboard · 2 Knowledge Base · 3 Commands · 4 Apps · 5 Scripts · 6 Projects · 7 Workflows · 8 Secrets · 9 Plugins · 0 Settings",
+            "1-6,0",
+            "1 Dashboard · 2 Knowledge (cmd/app/script, f filters) · 3 Projects · 4 Workflows · 5 Secrets · 6 Plugins · 0 Settings",
+        ));
+        lines.push(row(
+            "f",
+            "Knowledge tab: cycle the type filter (All/Commands/Apps/Scripts)",
         ));
         lines.push(row("`", "Open a new terminal window"));
         lines.push(row("/", "Fuzzy search in the current list"));
@@ -7229,8 +7056,8 @@ impl ModernApp {
 
     #[doc(hidden)]
     pub async fn bdd_goto_commands(&mut self) {
-        self.ui.state = AppState::Commands;
-        let _ = self.fetch_commands().await;
+        self.ui.state = AppState::Knowledge;
+        let _ = self.fetch_knowledge().await;
     }
 }
 
@@ -7297,7 +7124,7 @@ impl ModernApp {
         match repository::update_entity(&*self.pool, &entity.id, &req).await {
             Ok(_) => {
                 self.status_message = Some("✓ Saved from editor".to_string());
-                let _ = self.fetch_commands().await;
+                let _ = self.fetch_knowledge().await;
             }
             Err(e) => self.status_message = Some(format!("✗ Save failed: {}", e)),
         }
@@ -7555,7 +7382,7 @@ mod tests {
     #[tokio::test]
     async fn given_command_form_open_when_esc_then_form_closes() {
         let mut app = test_app().await;
-        app.ui.state = AppState::Commands;
+        app.ui.state = AppState::Knowledge;
         app.command_form.mode = Some(FormMode::Create);
 
         app.handle_key(key(KeyCode::Esc)).await;
@@ -7569,7 +7396,7 @@ mod tests {
     #[tokio::test]
     async fn given_command_form_open_when_typed_then_goes_into_focused_field() {
         let mut app = test_app().await;
-        app.ui.state = AppState::Commands;
+        app.ui.state = AppState::Knowledge;
         app.command_form.mode = Some(FormMode::Create);
 
         app.handle_key(key(KeyCode::Char('h'))).await;
@@ -7755,7 +7582,7 @@ mod tests {
         assert!(app.settings.capturing_key.is_none());
 
         // The rebound key opens the create form on the dashboard
-        app.ui.state = AppState::Commands;
+        app.ui.state = AppState::Knowledge;
         app.handle_key(key(KeyCode::Char('K'))).await;
         assert!(app.command_form.mode.is_some());
     }
@@ -7962,71 +7789,91 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_entities_of_three_types_when_tab_fetched_then_only_matching_type_listed() {
+    async fn given_entities_of_three_types_when_filter_changed_then_list_matches_filter() {
         let mut app = test_app_db().await;
         seed_typed_entities(&mut app).await;
+        app.ui.state = AppState::Knowledge;
 
-        for (state, expected_type) in [
-            (AppState::Commands, "cmd"),
-            (AppState::Scripts, "script"),
-            (AppState::Apps, "app"),
-        ] {
-            app.ui.state = state.clone();
-            app.fetch_commands().await.unwrap();
-            assert_eq!(
-                app.commands_list.items.len(),
-                1,
-                "tab {:?} should list exactly one item",
-                state
-            );
-            assert_eq!(app.commands_list.items[0].type_id, expected_type);
-        }
-    }
+        // All: 3 items (cmd + app + script)
+        app.kb_filter = KbFilter::All;
+        app.fetch_knowledge().await.unwrap();
+        assert_eq!(app.commands_list.items.len(), 3);
 
-    #[tokio::test]
-    async fn given_any_tab_when_number_key_pressed_then_correct_state_and_data() {
-        let mut app = test_app_db().await;
-        seed_typed_entities(&mut app).await;
-        app.ui.state = AppState::Dashboard; // leave the Login screen
-
-        // New mapping (US-TUI-11/12): 2 KB, 3 cmd, 4 app, 5 script, 6 proj,
-        // 7 wf, 8 sec, 9 plugins, 0 settings
-        app.handle_key(key(KeyCode::Char('3'))).await;
-        assert_eq!(app.ui.state, AppState::Commands);
+        // Commands only
+        app.kb_filter = KbFilter::Cmd;
+        app.fetch_knowledge().await.unwrap();
         assert_eq!(app.commands_list.items.len(), 1);
         assert_eq!(app.commands_list.items[0].type_id, "cmd");
 
-        app.handle_key(key(KeyCode::Char('4'))).await;
-        assert_eq!(app.ui.state, AppState::Apps);
+        // Apps only
+        app.kb_filter = KbFilter::App;
+        app.fetch_knowledge().await.unwrap();
+        assert_eq!(app.commands_list.items.len(), 1);
         assert_eq!(app.commands_list.items[0].type_id, "app");
 
-        app.handle_key(key(KeyCode::Char('5'))).await;
-        assert_eq!(app.ui.state, AppState::Scripts);
+        // Scripts only
+        app.kb_filter = KbFilter::Script;
+        app.fetch_knowledge().await.unwrap();
+        assert_eq!(app.commands_list.items.len(), 1);
         assert_eq!(app.commands_list.items[0].type_id, "script");
 
-        app.handle_key(key(KeyCode::Char('6'))).await;
+        // `f` cycles the filter and refetches (All -> Cmd -> App)
+        app.kb_filter = KbFilter::All;
+        app.handle_key(key(KeyCode::Char('f'))).await;
+        assert_eq!(app.kb_filter, KbFilter::Cmd);
+        assert_eq!(app.commands_list.items.len(), 1);
+        app.handle_key(key(KeyCode::Char('f'))).await;
+        assert_eq!(app.kb_filter, KbFilter::App);
+        assert_eq!(app.commands_list.items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn given_any_tab_when_digit_pressed_then_correct_state_and_data() {
+        let mut app = test_app_db().await;
+        seed_typed_entities(&mut app).await;
+        app.ui.state = AppState::Dashboard;
+
+        // Mapping: 2 Knowledge, 3 Projects, 4 Workflows, 5 Secrets, 0 Settings
+        app.handle_key(key(KeyCode::Char('2'))).await;
+        assert_eq!(app.ui.state, AppState::Knowledge);
+        assert_eq!(app.commands_list.items.len(), 3, "All filter");
+
+        // Cycle the filter to Commands and re-fetch via f
+        app.handle_key(key(KeyCode::Char('f'))).await;
+        assert_eq!(app.commands_list.items.len(), 1);
+        assert_eq!(app.commands_list.items[0].type_id, "cmd");
+
+        app.handle_key(key(KeyCode::Char('3'))).await;
         assert_eq!(app.ui.state, AppState::Projects);
-        app.handle_key(key(KeyCode::Char('7'))).await;
+        app.handle_key(key(KeyCode::Char('4'))).await;
         assert_eq!(app.ui.state, AppState::Workflows);
-        app.handle_key(key(KeyCode::Char('8'))).await;
+        app.handle_key(key(KeyCode::Char('5'))).await;
         assert_eq!(app.ui.state, AppState::Secrets);
         app.handle_key(key(KeyCode::Char('0'))).await;
         assert_eq!(app.ui.state, AppState::Settings);
     }
 
     #[tokio::test]
-    async fn given_apps_tab_when_creating_then_type_preset_to_app() {
+    async fn given_knowledge_filter_when_creating_then_type_preset_to_filter() {
         let mut app = test_app().await;
-        app.ui.state = AppState::Apps;
+        app.ui.state = AppState::Knowledge;
+
+        // All filter -> cmd (index 0)
         app.handle_key(key(KeyCode::Char('n'))).await;
         assert!(app.command_form.mode.is_some());
-        assert_eq!(app.command_form.entity_type, 2); // ENTITY_TYPE_IDS[2] == "app"
+        assert_eq!(app.command_form.entity_type, 0);
+        app.handle_key(key(KeyCode::Esc)).await;
 
-        app.handle_key(key(KeyCode::Esc)).await; // close the form
-
-        app.ui.state = AppState::Scripts;
+        // App filter -> app (index 2)
+        app.kb_filter = KbFilter::App;
         app.handle_key(key(KeyCode::Char('n'))).await;
-        assert_eq!(app.command_form.entity_type, 1); // "script"
+        assert_eq!(app.command_form.entity_type, 2);
+        app.handle_key(key(KeyCode::Esc)).await;
+
+        // Script filter -> script (index 1)
+        app.kb_filter = KbFilter::Script;
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        assert_eq!(app.command_form.entity_type, 1);
     }
 
     #[tokio::test]
@@ -8092,7 +7939,7 @@ mod tests {
     #[tokio::test]
     async fn given_import_popup_when_path_entered_then_file_imported() {
         let mut app = test_app_db().await;
-        app.ui.state = AppState::Commands;
+        app.ui.state = AppState::Knowledge;
 
         // Write a bare AI-style entity array to a temp file
         let dir = std::env::temp_dir().join(format!("tui-op-hub-import-{}", std::process::id()));
@@ -8115,7 +7962,7 @@ mod tests {
         app.handle_key(key(KeyCode::Enter)).await;
 
         assert!(app.import_input.is_none(), "popup closed");
-        app.fetch_commands().await.unwrap();
+        app.fetch_knowledge().await.unwrap();
         assert!(app
             .commands_list
             .items
@@ -8217,14 +8064,14 @@ mod tests {
         // Digits must switch tabs from inside Settings (previously eaten by
         // the numpad-style navigation).
         app.handle_key(key(KeyCode::Char('3'))).await;
-        assert_eq!(app.ui.state, AppState::Commands);
+        assert_eq!(app.ui.state, AppState::Projects);
 
-        app.handle_key(key(KeyCode::Char('9'))).await;
+        app.handle_key(key(KeyCode::Char('6'))).await;
         assert_eq!(app.ui.state, AppState::Plugins);
 
         // Back to Settings, then to Workflows
         app.handle_key(key(KeyCode::Char('0'))).await;
-        app.handle_key(key(KeyCode::Char('7'))).await;
+        app.handle_key(key(KeyCode::Char('4'))).await;
         assert_eq!(app.ui.state, AppState::Workflows);
     }
 
@@ -8428,24 +8275,7 @@ mod knowledge_nav_tests {
     }
 
     #[tokio::test]
-    async fn given_knowledge_page_when_enter_pressed_then_opens_selected_subpage() {
-        let mut app = test_app().await;
-        app.ui.state = AppState::Dashboard;
-
-        // 2 opens the Knowledge Base parent page with live counts
-        app.handle_key(key(KeyCode::Char('2'))).await;
-        assert_eq!(app.ui.state, AppState::Knowledge);
-        assert_eq!(app.knowledge_counts, [0, 0, 0]);
-
-        // Select Scripts and open it
-        app.handle_key(key(KeyCode::Down)).await;
-        app.handle_key(key(KeyCode::Down)).await;
-        app.handle_key(key(KeyCode::Enter)).await;
-        assert_eq!(app.ui.state, AppState::Scripts);
-    }
-
-    #[tokio::test]
-    async fn default_tab_cycle_ends_with_settings() {
+    async fn default_tab_cycle_has_knowledge_and_settings_last() {
         let app = ModernApp::new(
             std::sync::Arc::new(
                 sqlx::sqlite::SqlitePoolOptions::new()
@@ -8456,7 +8286,7 @@ mod knowledge_nav_tests {
             crate::config::AppConfig::default(),
         );
         let cycle = app.tab_cycle();
-        assert_eq!(cycle.len(), 10);
+        assert_eq!(cycle.len(), 7);
         assert_eq!(cycle[0], AppState::Dashboard);
         assert_eq!(cycle[1], AppState::Knowledge);
         assert_eq!(cycle[cycle.len() - 1], AppState::Settings, "last tab");
@@ -8483,8 +8313,33 @@ mod knowledge_nav_tests {
         let mut app = test_app().await;
         app.config.tui.tab_order = Some("bogus,,nope".to_string());
         let cycle = app.tab_cycle();
-        assert_eq!(cycle.len(), 10, "falls back to the default order");
+        assert_eq!(cycle.len(), 7, "falls back to the default order");
         assert_eq!(cycle[cycle.len() - 1], AppState::Settings);
+    }
+
+    #[tokio::test]
+    async fn given_any_tab_when_digit_pressed_then_correct_state() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Dashboard;
+
+        // Mapping (US-TUI-11/12): 2 kb, 3 proj, 4 wf, 5 sec, 6 plug, 0 set
+        app.handle_key(key(KeyCode::Char('2'))).await;
+        assert_eq!(app.ui.state, AppState::Knowledge);
+        app.handle_key(key(KeyCode::Char('3'))).await;
+        assert_eq!(app.ui.state, AppState::Projects);
+        app.handle_key(key(KeyCode::Char('4'))).await;
+        assert_eq!(app.ui.state, AppState::Workflows);
+        app.handle_key(key(KeyCode::Char('5'))).await;
+        assert_eq!(app.ui.state, AppState::Secrets);
+        app.handle_key(key(KeyCode::Char('6'))).await;
+        assert_eq!(app.ui.state, AppState::Plugins);
+        app.handle_key(key(KeyCode::Char('0'))).await;
+        assert_eq!(app.ui.state, AppState::Settings);
+        app.handle_key(key(KeyCode::Char('1'))).await;
+        assert_eq!(app.ui.state, AppState::Dashboard);
+        // Unmapped digits do nothing
+        app.handle_key(key(KeyCode::Char('9'))).await;
+        assert_eq!(app.ui.state, AppState::Dashboard);
     }
 }
 
@@ -8508,79 +8363,35 @@ mod knowledge_picker_tests {
         ModernApp::new(pool, crate::config::AppConfig::default())
     }
 
-    // ENTITY_TYPE_IDS = ["cmd", "script", "app"]
     #[tokio::test]
-    async fn given_knowledge_page_when_n_pressed_then_form_preset_to_row_type() {
+    async fn given_knowledge_tab_when_n_pressed_then_form_preset_to_filter_type() {
         let mut app = test_app().await;
         app.ui.state = AppState::Dashboard;
-        app.handle_key(key(KeyCode::Char('2'))).await; // Knowledge page
+        app.handle_key(key(KeyCode::Char('2'))).await; // Knowledge tab
 
-        // Row 0 = Commands → form type cmd (index 0)
+        // Default filter All -> form type cmd (index 0)
         app.handle_key(key(KeyCode::Char('n'))).await;
         assert_eq!(app.command_form.entity_type, 0);
         app.command_form.mode = None;
 
-        // Row 1 = Apps → form type app (index 2)
-        app.handle_key(key(KeyCode::Down)).await;
+        // Filter to Apps (All -> Cmd -> App), then `n` presets app (index 2)
+        app.handle_key(key(KeyCode::Char('f'))).await;
+        app.handle_key(key(KeyCode::Char('f'))).await;
+        assert_eq!(app.kb_filter, KbFilter::App);
         app.handle_key(key(KeyCode::Char('n'))).await;
         assert_eq!(app.command_form.entity_type, 2);
-        app.command_form.mode = None;
-
-        // Row 2 = Scripts → form type script (index 1)
-        app.handle_key(key(KeyCode::Down)).await;
-        app.handle_key(key(KeyCode::Char('n'))).await;
-        assert_eq!(app.command_form.entity_type, 1);
     }
 
-    #[tokio::test]
-    async fn given_knowledge_all_row_when_entered_then_mixed_list_shown() {
-        let mut app = test_app().await;
-        for (name, ty) in [
-            ("a-cmd", "cmd"),
-            ("b-app", "app"),
-            ("c-script", "script"),
-            ("d-wf", "wf"), // workflows must NOT appear in the All view
-            ("e-opt", "opt"),
-        ] {
-            repository::create_entity(
-                &*app.pool,
-                &crate::models::CreateEntity {
-                    name: name.to_string(),
-                    description: None,
-                    content: Some("x".to_string()),
-                    type_id: ty.to_string(),
-                    project_id: None,
-                    tags: None,
-                    metadata_json: None,
-                },
-            )
-            .await
-            .unwrap();
-        }
-        app.ui.state = AppState::Dashboard;
-        app.handle_key(key(KeyCode::Char('2'))).await; // Knowledge page
-
-        // Move to the 4th row (All) and open it
-        for _ in 0..3 {
-            app.handle_key(key(KeyCode::Down)).await;
-        }
-        app.handle_key(key(KeyCode::Enter)).await;
-
-        assert!(app.kb_all_view);
-        assert_eq!(app.ui.state, AppState::Commands);
-        assert_eq!(app.commands_list.items.len(), 3, "cmd+app+script only");
-        let types: Vec<&str> = app
-            .commands_list
-            .items
-            .iter()
-            .map(|e| e.type_id.as_str())
-            .collect();
-        assert!(types.contains(&"cmd") && types.contains(&"app") && types.contains(&"script"));
-
-        // Jumping to a specific tab resets the combined view
-        app.handle_key(key(KeyCode::Char('4'))).await;
-        assert!(!app.kb_all_view);
-        assert_eq!(app.commands_list.items.len(), 1);
+    #[test]
+    fn kb_filter_cycle_and_mappings_are_consistent() {
+        assert_eq!(KbFilter::All.next(), KbFilter::Cmd);
+        assert_eq!(KbFilter::Cmd.next(), KbFilter::App);
+        assert_eq!(KbFilter::App.next(), KbFilter::Script);
+        assert_eq!(KbFilter::Script.next(), KbFilter::All);
+        assert_eq!(KbFilter::All.form_type_index(), 0);
+        assert_eq!(KbFilter::App.form_type_index(), 2);
+        assert_eq!(KbFilter::Script.form_type_index(), 1);
+        assert_eq!(KbFilter::All.type_ids().len(), 3);
     }
 
     #[test]
@@ -8597,12 +8408,12 @@ mod knowledge_picker_tests {
             created_at: String::new(),
             updated_at: String::new(),
         };
-        assert!(e.to_string().starts_with("\u{1f4bb} "), "cmd gets the icon");
+        assert!(e.to_string().starts_with("💻 "), "cmd gets the icon");
 
         let app_entity = crate::models::Entity {
             type_id: "app".into(),
             ..e.clone()
         };
-        assert!(app_entity.to_string().starts_with("\u{1f680} "));
+        assert!(app_entity.to_string().starts_with("🚀 "));
     }
 }

@@ -599,7 +599,7 @@ async fn given_any_screen_when_question_mark_then_keybinds_overlay_toggles() {
 fn given_any_state_when_hints_requested_then_hints_are_non_empty() {
     let states = [
         tui_op_hub::tui::modern_ui::AppState::Dashboard,
-        tui_op_hub::tui::modern_ui::AppState::Commands,
+        tui_op_hub::tui::modern_ui::AppState::Knowledge,
         tui_op_hub::tui::modern_ui::AppState::Projects,
         tui_op_hub::tui::modern_ui::AppState::Workflows,
         tui_op_hub::tui::modern_ui::AppState::Secrets,
@@ -719,7 +719,7 @@ async fn given_commands_tab_when_slash_search_then_live_filtering() {
         .unwrap();
     app.bdd_goto_commands().await;
 
-    app.bdd_set_state(tui_op_hub::tui::modern_ui::AppState::Commands);
+    app.bdd_set_state(tui_op_hub::tui::modern_ui::AppState::Knowledge);
     app.bdd_press(crossterm::event::KeyCode::Char('/')).await;
     assert!(
         app.bdd_search_active(),
@@ -732,9 +732,13 @@ async fn given_commands_tab_when_slash_search_then_live_filtering() {
     }
     let (items, _) = app.bdd_command_list();
     assert!(!items.is_empty(), "dck should match docker");
+    // All matches are docker/k8s related (fuzzy over name + description)
     assert!(
-        items.iter().all(|n| n.contains("docker")),
-        "only matches shown"
+        items
+            .iter()
+            .all(|n| n.contains("docker") || n.contains("kubectl")),
+        "only fuzzy matches shown, got {:?}",
+        items
     );
 
     // Esc clears the filter and restores the full list
@@ -765,12 +769,12 @@ async fn given_settings_open_when_digit_pressed_then_switches_tab() {
     app.bdd_press(crossterm::event::KeyCode::Up).await;
     assert_eq!(app.bdd_settings_selected(), 0);
 
-    // Digits switch tabs (US-TUI-11/12 mapping: 3 cmd, 0 settings, 9 plugins)
+    // Digits switch tabs (US-TUI-11/12 mapping: 3 projects, 0 settings, 6 plugins)
     app.bdd_press(crossterm::event::KeyCode::Char('3')).await;
-    assert_eq!(app.bdd_state(), AppState::Commands);
+    assert_eq!(app.bdd_state(), AppState::Projects);
     app.bdd_press(crossterm::event::KeyCode::Char('0')).await;
     assert_eq!(app.bdd_state(), AppState::Settings);
-    app.bdd_press(crossterm::event::KeyCode::Char('9')).await;
+    app.bdd_press(crossterm::event::KeyCode::Char('6')).await;
     assert_eq!(app.bdd_state(), AppState::Plugins);
 }
 
@@ -808,8 +812,8 @@ async fn given_advanced_open_when_arrows_pressed_then_nav_and_colors_work() {
     app.bdd_press(crossterm::event::KeyCode::Left).await;
     assert_eq!(app.bdd_theme_bg(), "black");
 
-    // Digits switch tabs out of Advanced (US-TUI-11/12: 7 = Workflows)
-    app.bdd_press(crossterm::event::KeyCode::Char('7')).await;
+    // Digits switch tabs out of Advanced (US-TUI-11/12: 4 = Workflows)
+    app.bdd_press(crossterm::event::KeyCode::Char('4')).await;
     assert_eq!(app.bdd_state(), AppState::Workflows);
 }
 
