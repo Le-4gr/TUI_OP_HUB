@@ -177,6 +177,44 @@ struct SshForm {
     field: usize,
 }
 
+/// Preview/customize popup state for a project template (US-PLG-15):
+/// file inclusion toggles and inline content editing before apply.
+#[derive(Debug, Clone)]
+struct TemplatePreview {
+    template_idx: usize,
+    template: crate::plugin::ProjectTemplate,
+    selected: usize,
+    included: Vec<bool>,
+    editing: bool,
+    edit_buf: String,
+}
+
+impl TemplatePreview {
+    fn new(template_idx: usize, template: crate::plugin::ProjectTemplate) -> Self {
+        let included = vec![true; template.files.len()];
+        Self {
+            template_idx,
+            template,
+            selected: 0,
+            included,
+            editing: false,
+            edit_buf: String::new(),
+        }
+    }
+
+    /// Drop excluded files so creation uses the customized template.
+    fn into_customized(self) -> crate::plugin::ProjectTemplate {
+        let mut template = self.template;
+        template.files = template
+            .files
+            .into_iter()
+            .zip(&self.included)
+            .filter_map(|(f, inc)| if *inc { Some(f) } else { None })
+            .collect();
+        template
+    }
+}
+
 /// Register-config form (Configs tab, `n`, US-CFG-09): path + optional
 /// metadata fields. Path supports Ctrl+O external file browsing and
 /// auto-fills the Name from the chosen file.
@@ -464,6 +502,12 @@ pub struct ModernApp {
     new_project_editor: usize,
     new_project_error: Option<String>,
     new_project_field_idx: usize,
+    /// Templates discovered from plugins (US-PLG-14), loaded when the
+    /// workspace form opens. Selection None = plain project (US-PROJ-08).
+    templates: Vec<crate::plugin::ProjectTemplate>,
+    new_project_template: Option<usize>,
+    /// Template preview/customize popup (US-PLG-15)
+    template_preview: Option<TemplatePreview>,
     // Login-screen dev user manager (cargo run only)
     dev_user_manager: bool,
     dev_user_list: Vec<crate::models::UserProfile>,
@@ -651,6 +695,9 @@ impl ModernApp {
             new_project_editor: 0,
             new_project_error: None,
             new_project_field_idx: 0,
+            templates: Vec::new(),
+            new_project_template: None,
+            template_preview: None,
             options_popup: None,
             keybinds_overlay: false,
             wants_terminal: false,
@@ -1602,6 +1649,10 @@ log:
         }
         if self.new_project_open {
             self.render_new_project_form(f);
+        }
+        // Template preview renders on top of the workspace form (US-PLG-15)
+        if self.template_preview.is_some() {
+            self.render_template_preview(f);
         }
         if let Some(ref confirm) = self.confirm_delete {
             self.render_confirm_delete(f, confirm);
@@ -3370,6 +3421,10 @@ log:
                     self.new_project_open = true;
                     self.new_project_name.clear();
                     self.new_project_error = None;
+                    // Discover plugin templates (US-PLG-14); plain = default
+                    self.templates = self.plugins.discover_templates();
+                    self.new_project_template = None;
+                    self.template_preview = None;
                 }
             }
             KeyCode::Char('O') => {
@@ -6728,6 +6783,11 @@ log:
 
     /// New project creation form input: name/kind/editor, Ctrl+S creates.
     async fn handle_new_project_key(&mut self, key: KeyEvent) {
+        // Template preview popup (US-PLG-15) sits on top of the form
+        if self.template_preview.is_some() {
+            self.handle_template_preview_key(key);
+            return;
+        }
         if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.create_new_project().await;
             return;
@@ -6759,10 +6819,94 @@ log:
                 self.new_project_editor =
                     (self.new_project_editor + 1) % project_workspace::ProjectEditor::all().len();
             }
+            KeyCode::Left if field == 3 => {
+                // Template picker (US-PROJ-08): None first, then each template
+                self.new_project_template = match self.new_project_template {
+                    None => None, // stay on "none" when only one step back
+                    Some(0) => None,
+                    Some(i) => Some(i - 1),
+                };
+            }
+            KeyCode::Right if field == 3 => {
+                if self.new_project_template.is_none() {
+                    if !self.templates.is_empty() {
+                        self.new_project_template = Some(0);
+                    }
+                } else {
+                    let idx = self.new_project_template.unwrap();
+                    if idx + 1 < self.templates.len() {
+                        self.new_project_template = Some(idx + 1);
+                    }
+                }
+            }
+            KeyCode::Enter | KeyCode::Char('p') if field == 3 => {
+                // Preview the selected template before anything is written
+                if let Some(idx) = self.new_project_template {
+                    if let Some(tpl) = self.templates.get(idx) {
+                        self.template_preview = Some(TemplatePreview::new(idx, tpl.clone()));
+                    }
+                }
+            }
             KeyCode::Backspace if field == 0 => {
                 self.new_project_name.pop();
             }
             KeyCode::Char(c) if field == 0 => self.new_project_name.push(c),
+            _ => {}
+        }
+    }
+
+    /// Keys for the template preview popup (US-PLG-15): browse files, toggle
+    /// inclusion with `x`, edit content inline with `e`, Esc applies the
+    /// customizations back to the selected template and closes.
+    fn handle_template_preview_key(&mut self, key: KeyEvent) {
+        let Some(preview) = self.template_preview.as_mut() else {
+            return;
+        };
+        if preview.editing {
+            match key.code {
+                KeyCode::Esc => preview.editing = false,
+                KeyCode::Enter => {
+                    if let Some(file) = preview.template.files.get_mut(preview.selected) {
+                        file.content = preview.edit_buf.clone();
+                    }
+                    preview.editing = false;
+                }
+                KeyCode::Backspace => {
+                    preview.edit_buf.pop();
+                }
+                KeyCode::Char(c) => preview.edit_buf.push(c),
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                // Apply customizations back, then close
+                let preview = self.template_preview.take().unwrap();
+                let idx = preview.template_idx;
+                if let Some(slot) = self.templates.get_mut(idx) {
+                    *slot = preview.into_customized();
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                preview.selected = preview.selected.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if preview.selected + 1 < preview.template.files.len() {
+                    preview.selected += 1;
+                }
+            }
+            KeyCode::Char('x') => {
+                if let Some(flag) = preview.included.get_mut(preview.selected) {
+                    *flag = !*flag;
+                }
+            }
+            KeyCode::Char('e') => {
+                if let Some(file) = preview.template.files.get(preview.selected) {
+                    preview.edit_buf = file.content.clone();
+                    preview.editing = true;
+                }
+            }
             _ => {}
         }
     }
@@ -6991,11 +7135,45 @@ log:
                     }
                 }
                 self.new_project_open = false;
+
+                // Apply the selected plugin template, if any (US-PLG-14/15,
+                // US-PROJ-08). Runs file writes, git init and post-create
+                // commands off the async thread.
+                let mut template_note = String::new();
+                if let Some(idx) = self.new_project_template {
+                    if let Some(tpl) = self.templates.get(idx) {
+                        let tpl = tpl.clone();
+                        let tpl_name = tpl.name.clone();
+                        let target = created.path.clone();
+                        let name_clone = name.clone();
+                        let applied = tokio::task::spawn_blocking(move || {
+                            tpl.instantiate(&name_clone, &target)
+                        })
+                        .await;
+                        match applied {
+                            Ok(Ok(report)) => {
+                                template_note = format!(
+                                    " \u{2014} template '{}': {}",
+                                    tpl_name,
+                                    report.summary()
+                                );
+                            }
+                            Ok(Err(e)) => {
+                                template_note = format!(" \u{2014} template failed: {}", e);
+                            }
+                            Err(e) => {
+                                template_note = format!(" \u{2014} template task failed: {}", e);
+                            }
+                        }
+                    }
+                }
+
                 self.fire_project_created(&name, &created.path).await;
                 self.status_message = Some(format!(
-                    "\u{2713} Project '{}' created at {} \u{2014} press O to open it",
+                    "\u{2713} Project '{}' created at {} \u{2014} press O to open it{}",
                     name,
-                    created.path.display()
+                    created.path.display(),
+                    template_note
                 ));
                 let _ = self.fetch_projects().await;
             }
@@ -7048,9 +7226,10 @@ log:
         self.status_message = Some(format!("Opened in {}", editor.display_name()));
     }
 
-    /// Render the new project creation form (US-PROJ).
+    /// Render the new project creation form (US-PROJ + US-PROJ-08 template
+    /// picker, default none).
     fn render_new_project_form(&self, f: &mut Frame) {
-        let area = self.centered_rect(64, 18, f);
+        let area = self.centered_rect(64, 21, f);
         f.render_widget(Clear, area);
         let block = Block::default()
             .title(" \u{1f4c1} New Project Workspace ")
@@ -7068,6 +7247,7 @@ log:
                 Constraint::Length(3), // Name
                 Constraint::Length(3), // Kind
                 Constraint::Length(3), // Editor
+                Constraint::Length(3), // Template
                 Constraint::Length(1), // Help/error
             ])
             .split(inner);
@@ -7092,11 +7272,157 @@ log:
         let editor_text = format!("\u{25c4} {} \u{25ba}", editor_name);
         self.render_field(f, chunks[2], "Editor", &editor_text, field == 2, false);
 
+        // Template picker (US-PROJ-08): default none, explicit choice
+        let template_text = match self
+            .new_project_template
+            .and_then(|idx| self.templates.get(idx))
+        {
+            Some(tpl) => format!("\u{25c4} {} \u{25ba} (Enter: preview)", tpl.name),
+            None => "\u{25c4} (none) \u{25ba}".to_string(),
+        };
+        self.render_field(f, chunks[3], "Template", &template_text, field == 3, false);
+
         let help = self.form_help_line(
             self.new_project_error.as_ref(),
-            "Tab: fields \u{b7} \u{2190}/\u{2192}: cycle kind/editor \u{b7} Ctrl+S: create \u{b7} Esc: cancel",
+            "Tab: fields \u{b7} \u{2190}/\u{2192}: cycle kind/editor/template \u{b7} Ctrl+S: create \u{b7} Esc: cancel",
         );
-        f.render_widget(Paragraph::new(help).alignment(Alignment::Center), chunks[3]);
+        f.render_widget(Paragraph::new(help).alignment(Alignment::Center), chunks[4]);
+    }
+
+    /// Template preview popup (US-PLG-15): file list with inclusion toggles,
+    /// selected file content, post-create commands. Nothing is written until
+    /// the project is created.
+    fn render_template_preview(&self, f: &mut Frame) {
+        let Some(preview) = &self.template_preview else {
+            return;
+        };
+        let area = self.centered_rect(74, 24, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .title(format!(
+                " \u{1f4c1} Template: {} ({}) ",
+                preview.template.name, preview.template.plugin_name
+            ))
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.success))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // description + git flag
+                Constraint::Min(1),    // files + content
+                Constraint::Length(1), // help
+            ])
+            .split(inner);
+
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{}{}",
+                preview
+                    .template
+                    .description
+                    .as_deref()
+                    .unwrap_or("Project scaffold"),
+                if preview.template.git_init {
+                    " \u{b7} git init: yes"
+                } else {
+                    ""
+                }
+            ),
+            Style::default().fg(self.ui.theme.border),
+        )));
+        lines.push(Line::from(Span::styled(
+            "Files (x: include/exclude):",
+            Style::default()
+                .fg(self.ui.theme.secondary)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for (i, file) in preview.template.files.iter().enumerate() {
+            let focused = i == preview.selected;
+            let marker = if focused { "\u{25b6} " } else { "  " };
+            let flag = if preview.included[i] {
+                "\u{2713}"
+            } else {
+                "\u{2717}"
+            };
+            let color = if preview.included[i] {
+                self.ui.theme.success
+            } else {
+                self.ui.theme.error
+            };
+            let style = if focused {
+                Style::default()
+                    .fg(self.ui.theme.secondary)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(self.ui.theme.border)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(marker, style),
+                Span::styled(format!("{} ", flag), Style::default().fg(color)),
+                Span::styled(
+                    file.path.clone(),
+                    Style::default()
+                        .fg(self.ui.theme.fg)
+                        .add_modifier(if focused {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+            ]));
+        }
+        // Selected file content (edit mode shows the buffer instead)
+        lines.push(Line::from(Span::styled(
+            "Content:",
+            Style::default()
+                .fg(self.ui.theme.secondary)
+                .add_modifier(Modifier::BOLD),
+        )));
+        let content = if preview.editing {
+            format!("{}\u{2588}", preview.edit_buf)
+        } else {
+            preview
+                .template
+                .files
+                .get(preview.selected)
+                .map(|f| f.content.clone())
+                .unwrap_or_default()
+        };
+        let budget = rows[1].height as usize;
+        let reserve = preview.template.commands.len() + 3;
+        let take = budget.saturating_sub(lines.len() + reserve).max(1);
+        for line in content.lines().take(take) {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", line),
+                Style::default().fg(self.ui.theme.fg),
+            )));
+        }
+        if !preview.template.commands.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("Post-create: {}", preview.template.commands.join(" ; ")),
+                Style::default().fg(self.ui.theme.warning),
+            )));
+        }
+        f.render_widget(Paragraph::new(lines), rows[1]);
+
+        let help_text = if preview.editing {
+            "Type to edit \u{b7} Enter: save content \u{b7} Esc: discard"
+        } else {
+            "\u{2191}\u{2193}: file \u{b7} x: include/exclude \u{b7} e: edit content \u{b7} Esc: done (customizations kept)"
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                help_text,
+                Style::default().fg(self.ui.theme.border),
+            )),
+            rows[2],
+        );
     }
 
     /// Keygen form input (US-SEC-01): name/email/passphrase/kind + generate.
@@ -9284,6 +9610,107 @@ mod tests {
         assert_eq!(p.path.as_deref(), Some(created.to_string_lossy().as_ref()));
 
         let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[tokio::test]
+    async fn given_new_project_form_when_template_picked_then_preview_and_scaffold_applied() {
+        // US-PLG-14/15 + US-PROJ-08: plugin ships a template; the picker is
+        // optional (none by default); preview + customize before apply.
+        let mut app = test_app_db().await;
+        app.ui.state = AppState::Projects;
+
+        // Plugin with one template, discoverable via the app's manager
+        let plugin_root =
+            std::env::temp_dir().join(format!("tuihub-tpl-{}-pick", std::process::id()));
+        let _ = std::fs::remove_dir_all(&plugin_root);
+        std::fs::create_dir_all(plugin_root.join("py-dev").join("templates")).unwrap();
+        std::fs::write(
+            plugin_root.join("py-dev").join("plugin.toml"),
+            "id = 'py-dev'\nname = 'Python Dev'\nversion = '0.1.0'\nplugin_type = 'lua'\nentry_point = 'main.lua'\nrequired_capabilities = []\n",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_root.join("py-dev").join("templates").join("python.toml"),
+            "[template]\nname = \"Python dev\"\ngit_init = false\n\n[[files]]\npath = \"STARTER.md\"\ncontent = \"# {{project_name}}\"\n\n[[files]]\npath = \"notes.md\"\ncontent = \"notes\"\n",
+        )
+        .unwrap();
+        app.plugins = std::sync::Arc::new(crate::plugin::PluginManager::new(
+            app.pool.clone(),
+            plugin_root.clone(),
+        ));
+
+        // Open the form (N) — templates load, selection defaults to none
+        app.handle_key(key(KeyCode::Char('N'))).await;
+        assert_eq!(app.templates.len(), 1);
+        assert!(app.new_project_template.is_none(), "default is none");
+        for c in "tplproj".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.new_project_kind = project_workspace::ProjectKind::all()
+            .iter()
+            .position(|k| k.name() == "generic")
+            .unwrap();
+
+        // Field 3: Right selects the first template, Enter opens the preview
+        app.new_project_field_idx = 3;
+        app.handle_key(key(KeyCode::Right)).await;
+        assert_eq!(app.new_project_template, Some(0));
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert!(app.template_preview.is_some(), "preview opens");
+        // Visible in the framebuffer
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("Template: Python dev"));
+
+        // Customize: exclude the second file, edit the first one's content
+        app.handle_key(key(KeyCode::Down)).await;
+        app.handle_key(key(KeyCode::Char('x'))).await;
+        app.handle_key(key(KeyCode::Up)).await;
+        app.handle_key(key(KeyCode::Char('e'))).await;
+        for c in "edited".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Enter)).await; // save content
+        app.handle_key(key(KeyCode::Esc)).await; // close preview, keep edits
+        assert!(app.template_preview.is_none());
+        // `e` opens the editor with the current content; typing appends
+        assert_eq!(
+            app.templates[0].files[0].content, "# {{project_name}}edited",
+            "content edit must persist"
+        );
+        assert_eq!(app.templates[0].files.len(), 1, "excluded file dropped");
+
+        // Create — the customized template lands in the new workspace
+        let parent = std::env::temp_dir().join(format!("tuihub-tpl-ws-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        app.create_new_project_in(&parent).await;
+        let created = parent.join("tplproj");
+        assert_eq!(
+            std::fs::read_to_string(created.join("STARTER.md")).unwrap(),
+            "# tplprojedited",
+            "edited template content applied"
+        );
+        assert!(
+            !created.join("notes.md").exists(),
+            "excluded file must not be created"
+        );
+        assert!(
+            app.status_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("template 'Python dev'"),
+            "status reports the template application"
+        );
+        let _ = std::fs::remove_dir_all(&parent);
+        let _ = std::fs::remove_dir_all(&plugin_root);
     }
 
     #[tokio::test]

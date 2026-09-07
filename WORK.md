@@ -11,15 +11,49 @@
    page (key 2) with live counts; digits now 1-9 + 0 (0 = Settings); Tab cycle configurable
    via `[tui].tab_order` in config.conf, Settings last by default.
 2. **✅ DONE (Session 19) — Config management page (US-CFG-09..12)**: Configs tab (key 6) — register via `n`, deploy targets via `t`, mode cycle via `m`, deploy `l`, update+drift `u`, git `g`.
-3. **🟡 P2 — Plugin project templates (US-PLG-14/15, US-PROJ-08)**: plugins ship scaffold
-   templates (files/folders/git/commands); optional (never default) template picker in the
-   project creation flow; preview + edit before apply.
+3. **✅ DONE (Session 20) — Plugin project templates (US-PLG-14/15, US-PROJ-08)**: plugins ship
+   scaffold templates as inert data in `<plugin>/templates/*.toml` (files with
+   `{{project_name}}` placeholders, git_init flag, post-create commands); optional
+   template picker in the New Project Workspace form (default none, ←/→ cycle);
+   preview popup with file include/exclude (`x`) and inline content editing (`e`);
+   application runs off-thread on create, never overwrites existing files, reports
+   written/skipped/git/commands in the status bar.
 4. **🟡 P2 — Plugin UI actions (US-PLG-13)**: plugins register on-screen buttons
    (label/target defined in plugin code), capability-gated; e.g. "Create starting files"
    button on a project view.
 5. **🟡 P2 — Visual-scripting logic gates (US-FUT-07)**: AND/OR/NOT/XOR/comparison/if-else
    nodes with typed boolean ports in the visual workflow builder.
 6. **🟢 P3 — Parked future areas** (backend exists, UI not planned yet): US-PROC
+## 🎯 Session 20: Plugin project templates — US-PLG-14/15 + US-PROJ-08 (completed)
+
+Continued the story backlog (item 3). Plugins can now ship project starters as DATA.
+
+- **US-PLG-14 (backend, `plugin.rs`)**: `ProjectTemplate` + `TemplateFile` +
+  `TemplateReport`; templates live at `<plugin_dir>/<plugin_id>/templates/*.toml` with
+  a `[template]` meta section (name/description/git_init), `[[files]]` (path + content,
+  `{{project_name}}` placeholders) and `[[commands]]` (post-create, run via `sh -c`
+  inside the new project). `PluginManager::discover_templates()` is inert — no plugin
+  code executes. `instantiate()` never overwrites existing files (reports skipped),
+  git-inits only when git exists and the template asks.
+- **US-PROJ-08 (TUI)**: the New Project Workspace form gained a Template field
+  (←/→ cycles, "(none)" default so plain projects stay plain), discovered when the
+  form opens (`N` on Projects).
+- **US-PLG-15 (TUI)**: Enter on the Template field opens a preview popup: file list
+  with include/exclude toggles (`x`), inline content editor (`e`, Enter saves, Esc
+  discards), post-create command list. Esc applies customizations back to the
+  selection. On create, the template is instantiated off-thread
+  (`spawn_blocking`) in the new workspace and the status bar reports
+  "template 'X': N file(s) written, M skipped…".
+
+Tests: plugin.rs (parse, discovery via manager, instantiate with placeholder
+substitution + command run, skip-existing/no-overwrite), TUI end-to-end (pick →
+preview visible in TestBackend → exclude file → edit content → create → only
+included file with edited+substituted content exists; status reports template).
+241 total (193 lib + 48 BDD), clippy 0, build ok. USER_STORIES.md updated.
+
+Next up (backlog): item 4 — Plugin UI actions (US-PLG-13).
+
+
    (process manager — use btop/htop, don't rebuild), US-PKG, US-ENV, US-BAK, US-DB.
 7. **🟡 leftovers**: US-SSH-04 host grouping/tags; US-SSH-05 connection *test* (currently
    quick-connect only); plugin approval workflow for headless service runs.

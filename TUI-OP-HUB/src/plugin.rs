@@ -68,6 +68,183 @@ pub struct PluginManifest {
     pub commands: HashMap<String, String>,
 }
 
+/// One scaffold file shipped by a plugin template (US-PLG-14). `path` is
+/// relative to the project root and may contain `{{project_name}}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TemplateFile {
+    pub path: String,
+    pub content: String,
+}
+
+/// A project scaffold template shipped as plugin DATA (US-PLG-14): plugins
+/// maintain starters outside core; no plugin code runs when one is applied —
+/// core materializes the files, optionally `git init`s, and runs the listed
+/// post-create commands in the new project directory.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectTemplate {
+    /// Template id: the toml file stem inside the plugin's `templates/` dir.
+    pub id: String,
+    pub plugin_id: String,
+    pub plugin_name: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub git_init: bool,
+    pub files: Vec<TemplateFile>,
+    #[serde(default)]
+    pub commands: Vec<String>,
+}
+
+/// Summary of one template application (US-PLG-15): everything is reported,
+/// nothing silently overwritten.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct TemplateReport {
+    pub written: Vec<String>,
+    pub skipped: Vec<String>,
+    pub git_initialized: bool,
+    /// (command, ok, combined output)
+    pub command_results: Vec<(String, bool, String)>,
+}
+
+impl TemplateReport {
+    /// One-line human summary for the status bar.
+    pub fn summary(&self) -> String {
+        format!(
+            "{} file(s) written, {} skipped{}{}",
+            self.written.len(),
+            self.skipped.len(),
+            if self.git_initialized {
+                ", git initialized"
+            } else {
+                ""
+            },
+            if self.command_results.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    ", {} command(s) run",
+                    self.command_results.iter().filter(|(_, ok, _)| *ok).count()
+                )
+            }
+        )
+    }
+}
+
+/// Internal toml shape of a template file (US-PLG-14).
+#[derive(Debug, Deserialize)]
+struct TemplateToml {
+    template: TemplateMeta,
+    #[serde(default)]
+    files: Vec<TemplateFile>,
+    #[serde(default)]
+    commands: Vec<TemplateCommandToml>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TemplateMeta {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    git_init: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct TemplateCommandToml {
+    run: String,
+}
+
+/// Load one template toml (US-PLG-14). Public for tests.
+pub fn load_template_from(
+    path: &Path,
+    plugin_id: &str,
+    plugin_name: &str,
+) -> AppResult<ProjectTemplate> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| AppError::Io(std::io::Error::new(e.kind(), e.to_string())))?;
+    let parsed: TemplateToml = toml::from_str(&text)
+        .map_err(|e| AppError::Config(format!("invalid template {}: {}", path.display(), e)))?;
+    let id = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    Ok(ProjectTemplate {
+        id,
+        plugin_id: plugin_id.to_string(),
+        plugin_name: plugin_name.to_string(),
+        name: parsed.template.name,
+        description: parsed.template.description,
+        git_init: parsed.template.git_init,
+        files: parsed.files,
+        commands: parsed.commands.into_iter().map(|c| c.run).collect(),
+    })
+}
+
+impl ProjectTemplate {
+    /// Substitute `{{project_name}}` in a template string.
+    fn subst(s: &str, project_name: &str) -> String {
+        s.replace("{{project_name}}", project_name)
+    }
+
+    /// Materialize the template into `target` (US-PLG-14/15). Existing files
+    /// are skipped, never overwritten; placeholders become the project name;
+    /// git init and post-create commands run inside `target` when enabled.
+    pub fn instantiate(&self, project_name: &str, target: &Path) -> AppResult<TemplateReport> {
+        let mut report = TemplateReport::default();
+        std::fs::create_dir_all(target).map_err(AppError::Io)?;
+        for file in &self.files {
+            let rel = Self::subst(&file.path, project_name);
+            let dest = target.join(&rel);
+            if dest.exists() {
+                report.skipped.push(rel);
+                continue;
+            }
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(AppError::Io)?;
+            }
+            std::fs::write(&dest, Self::subst(&file.content, project_name))
+                .map_err(AppError::Io)?;
+            report.written.push(rel);
+        }
+        // Optional git repository (US-PLG-14)
+        if self.git_init && crate::keygen::which("git") {
+            let ok = std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(target)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            report.git_initialized = ok;
+        }
+        // Post-create commands run inside the new project directory
+        for cmd in &self.commands {
+            let run = Self::subst(cmd, project_name);
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&run)
+                .current_dir(target)
+                .output();
+            match output {
+                Ok(out) => {
+                    let combined = format!(
+                        "{}{}",
+                        String::from_utf8_lossy(&out.stdout),
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                    let ok = out.status.success();
+                    if !ok {
+                        tracing::warn!(command = %run, "template command failed");
+                    }
+                    report.command_results.push((run, ok, combined));
+                }
+                Err(e) => report.command_results.push((run, false, e.to_string())),
+            }
+        }
+        Ok(report)
+    }
+}
+
 /// Plugin trait for all plugin types
 pub trait Plugin: Send + Sync {
     fn id(&self) -> &str;
@@ -460,6 +637,35 @@ impl PluginManager {
         found
     }
 
+    /// Scan every plugin's `templates/` directory and return all scaffold
+    /// templates shipped as plugin data (US-PLG-14). Templates are inert data
+    /// — nothing is executed during discovery.
+    pub fn discover_templates(&self) -> Vec<ProjectTemplate> {
+        let mut found = Vec::new();
+        for manifest in self.discover_plugins() {
+            let dir = self.plugin_dir.join(&manifest.id).join("templates");
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                    continue;
+                }
+                match load_template_from(&path, &manifest.id, &manifest.name) {
+                    Ok(t) => found.push(t),
+                    Err(e) => tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "invalid template toml"
+                    ),
+                }
+            }
+        }
+        found.sort_by(|x, y| x.plugin_id.cmp(&y.plugin_id).then(x.id.cmp(&y.id)));
+        found
+    }
+
     /// Dispatch an event to every loaded plugin that subscribes to it.
     pub async fn emit_event(
         &self,
@@ -508,6 +714,129 @@ impl PluginManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_plugin_root(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("tuihub-plg-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn write_template(root: &Path, plugin_id: &str, file: &str, body: &str) -> PathBuf {
+        let dir = root.join(plugin_id).join("templates");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(file);
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    const PYTHON_TPL: &str = r##"
+[template]
+name = "Python dev"
+description = "venv starter"
+git_init = false
+
+[[files]]
+path = "README.md"
+content = "# {{project_name}}"
+
+[[files]]
+path = "src/main.py"
+content = "print('hi from {{project_name}}')"
+
+[[commands]]
+run = "echo scaffolded > created.txt"
+"##;
+
+    #[test]
+    fn given_template_toml_when_loaded_then_fields_parse() {
+        let root = temp_plugin_root("parse");
+        let path = write_template(&root, "py-dev", "python.toml", PYTHON_TPL);
+        let tpl = load_template_from(&path, "py-dev", "Python Dev").unwrap();
+        assert_eq!(tpl.id, "python");
+        assert_eq!(tpl.plugin_id, "py-dev");
+        assert_eq!(tpl.name, "Python dev");
+        assert_eq!(tpl.description.as_deref(), Some("venv starter"));
+        assert!(!tpl.git_init);
+        assert_eq!(tpl.files.len(), 2);
+        assert_eq!(tpl.files[0].path, "README.md");
+        assert_eq!(tpl.commands, vec!["echo scaffolded > created.txt"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn given_manager_with_plugin_template_when_discovered_then_listed() {
+        let root = temp_plugin_root("disc");
+        write_template(&root, "py-dev", "python.toml", PYTHON_TPL);
+        // A manifest so discover_plugins sees the plugin folder
+        std::fs::create_dir_all(root.join("py-dev")).unwrap();
+        std::fs::write(
+            root.join("py-dev").join("plugin.toml"),
+            "id = 'py-dev'\nname = 'Python Dev'\nversion = '0.1.0'\nplugin_type = 'lua'\nentry_point = 'main.lua'\nrequired_capabilities = []\n",
+        )
+        .unwrap();
+        let pool = Arc::new(
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        let mgr = PluginManager::new(pool, root.to_path_buf());
+        let templates = mgr.discover_templates();
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].plugin_id, "py-dev");
+        assert_eq!(templates[0].id, "python");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn given_template_when_instantiated_then_files_written_and_placeholders_replaced() {
+        let root = temp_plugin_root("inst");
+        let path = write_template(&root, "py-dev", "python.toml", PYTHON_TPL);
+        let tpl = load_template_from(&path, "py-dev", "Python Dev").unwrap();
+        let target = root.join("proj");
+        let report = tpl.instantiate("my-app", &target).unwrap();
+        assert_eq!(report.written.len(), 2);
+        assert!(report.skipped.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(target.join("README.md")).unwrap(),
+            "# my-app"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("src").join("main.py")).unwrap(),
+            "print('hi from my-app')"
+        );
+        // Post-create command ran inside the project dir
+        assert_eq!(
+            std::fs::read_to_string(target.join("created.txt"))
+                .unwrap()
+                .trim(),
+            "scaffolded"
+        );
+        assert!(report.command_results.iter().all(|(_, ok, _)| *ok));
+        assert!(!report.git_initialized);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn given_existing_file_when_instantiated_then_skipped_never_overwritten() {
+        let root = temp_plugin_root("skip");
+        let path = write_template(&root, "py-dev", "python.toml", PYTHON_TPL);
+        let tpl = load_template_from(&path, "py-dev", "Python Dev").unwrap();
+        let target = root.join("proj");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("README.md"), "USER CONTENT").unwrap();
+        let report = tpl.instantiate("my-app", &target).unwrap();
+        assert_eq!(report.skipped, vec!["README.md".to_string()]);
+        assert_eq!(report.written, vec!["src/main.py".to_string()]);
+        assert_eq!(
+            std::fs::read_to_string(target.join("README.md")).unwrap(),
+            "USER CONTENT",
+            "existing files must never be overwritten"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn test_capability_conversion() {
