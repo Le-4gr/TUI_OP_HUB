@@ -222,7 +222,7 @@ Environment variables:
 
 ### ✅ Phase 1 — Complete (v0.2.0)
 Entity CRUD, projects, tags, FTS5 search, Lua workflows + run history, encrypted secrets,
-user profiles, REST API, modern TUI (login + Knowledge Base parent page + 8 tabs + Settings last), Argon2-based auth (migration 0002),
+user profiles, REST API, modern TUI (login + 7 tabs incl. the single Knowledge Base tab with type filter, Settings last), Argon2-based auth (migration 0002),
 config/theming/keybindings.
 
 ### 🔄 Phase 2 — Foundation ready, integration pending (the active TODO list)
