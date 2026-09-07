@@ -25,6 +25,29 @@
    quick-connect only); plugin approval workflow for headless service runs.
 
 ---
+## 🎯 Session 19g: Deploy-to field — where it is vs where it should be (completed)
+
+User: "also path where it's saved can be different from where it should be". The register
+form only captured the source location; setting destinations required register -> select ->
+`t`.
+
+- **"Deploy to (comma-sep)"** field added to the register form (focus 4, deploy mode moved
+  to 5). Targets are stored on the entry at registration time via
+  `register_existing_full(..., targets, ...)` and may live anywhere — even inside folders
+  that don't exist yet (all deploy modes create missing parents).
+- **Ctrl+O on the Deploy-to field** opens the built-in browser in folder mode and
+  APPENDS the picked folder to the list (comma-joined, de-duplicated); `Ctrl+O` on Path
+  still replaces the source file. Browser got a `BrowserDest` (RegisterPath / DeployTo /
+  TargetPath) so accepts write to the right field.
+- Status after registration shows the target count ("✓ Managed 'x' (v1 stored, 2 targets)").
+  Deploy stays explicit via `l`.
+
+Tests: register-with-targets end-to-end (two targets, one in a missing folder -> deploy
+creates both), browser-append-to-deploy-to test, config_manager targets round-trip,
+metadata test updated for the new field order. 236 total (188 lib + 48 BDD), clippy 0,
+build ok.
+
+
 ## 🎯 Session 19f: in-TUI file browser — pick or create, no more external picker (completed)
 
 User feedback: the external picker drops you "directly in contact with the files" and
