@@ -25,6 +25,26 @@
    quick-connect only); plugin approval workflow for headless service runs.
 
 ---
+## 🎯 Session 19f: in-TUI file browser — pick or create, no more external picker (completed)
+
+User feedback: the external picker drops you "directly in contact with the files" and
+there was no way to create a new file/folder during register/target.
+
+- **Ctrl+O now opens a built-in file browser modal** (no external tool): `↑↓/jk` move,
+  `Enter` opens folders / picks files, `Space` picks (folders in target mode), `←/h`
+  parent, `.` toggles hidden files, `Esc` returns to the form with the selection filled.
+- **Create without leaving**: `a` = new file, `A` = new folder — type the name inline,
+  Enter creates it in the browsed directory, cursor jumps onto it, then Space/Enter
+  picks it. Errors (invalid name, exists) show inline in the browser.
+- **Ctrl+P** still opens the external system picker as a fallback.
+- Browser starts in the typed path's parent (or $HOME); renders topmost over the
+  config forms; the form keeps its state while browsing.
+
+Tests: browser open/close (form preserved), new-file create + pick into form,
+new-folder create + pick into target, descend/parent/pick navigation, hidden toggle.
+234 total (186 lib + 48 BDD), clippy 0, build ok.
+
+
 ## 🎯 Session 19e: Configs register form — more fields + Ctrl+O browsing (completed)
 
 User asked for a better "new" and "add target" screen, browsing like import/export, and
