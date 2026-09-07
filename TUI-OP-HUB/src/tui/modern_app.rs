@@ -190,14 +190,17 @@ struct ConfigRegisterForm {
     description: String,
     /// Comma-separated; parsed on submit.
     tags: String,
+    /// Where the file should be deployed (comma-separated paths). May differ
+    /// from where the file lives and may not exist yet (US-CFG-09/10).
+    deploy_to: String,
     deploy_mode: crate::config_manager::DeployMode,
-    /// 0=path, 1=name, 2=description, 3=tags, 4=deploy mode
+    /// 0=path, 1=name, 2=description, 3=tags, 4=deploy-to, 5=deploy mode
     focus: usize,
     error: Option<String>,
 }
 
 impl ConfigRegisterForm {
-    const FIELDS: usize = 5;
+    const FIELDS: usize = 6;
 
     fn new() -> Self {
         Self::default()
@@ -224,6 +227,18 @@ struct FileRow {
     is_parent: bool,
 }
 
+/// Where the browser writes the picked path (US-CFG-09/10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum BrowserDest {
+    /// Register form: replace the Path field (file pick).
+    #[default]
+    RegisterPath,
+    /// Register form: append the picked folder to the Deploy-to list.
+    DeployTo,
+    /// Target popup: replace the destination path.
+    TargetPath,
+}
+
 /// In-TUI file browser modal (US-CFG-09): pick an existing file/folder or
 /// create new files/folders without leaving the app. Opens over the config
 /// register/target forms with Ctrl+O; the external system picker remains
@@ -232,6 +247,8 @@ struct FileRow {
 struct FileBrowser {
     /// true = picking a directory (deploy target), false = picking a file.
     pick_dir: bool,
+    /// Where the accepted path goes.
+    dest: BrowserDest,
     cwd: std::path::PathBuf,
     entries: Vec<FileRow>,
     selected: usize,
@@ -243,9 +260,10 @@ struct FileBrowser {
 }
 
 impl FileBrowser {
-    fn new(pick_dir: bool, start: std::path::PathBuf) -> Self {
+    fn new(pick_dir: bool, dest: BrowserDest, start: std::path::PathBuf) -> Self {
         let mut fb = Self {
             pick_dir,
+            dest,
             cwd: start,
             entries: Vec::new(),
             selected: 0,
@@ -978,17 +996,29 @@ impl ModernApp {
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
             .collect();
+        // Deploy targets: where the file should end up (may differ from the
+        // source location and need not exist yet, US-CFG-10)
+        let targets: Vec<String> = form
+            .deploy_to
+            .split(',')
+            .map(|t| expand_tilde(t.trim()))
+            .filter(|t| !t.is_empty())
+            .collect();
         match self.config_manager().register_existing_full(
             std::path::Path::new(&source),
             &name,
             description,
             tags,
+            targets,
             form.deploy_mode,
         ) {
             Ok(entry) => {
                 self.status_message = Some(format!(
-                    "✓ Managed '{}' (v{} stored)",
-                    entry.name, entry.version
+                    "✓ Managed '{}' (v{} stored, {} target{})",
+                    entry.name,
+                    entry.version,
+                    entry.targets.len(),
+                    if entry.targets.len() == 1 { "" } else { "s" }
                 ));
                 self.fetch_configs().await.ok();
             }
@@ -999,7 +1029,7 @@ impl ModernApp {
     /// Open the in-TUI file browser over the current config popup (US-CFG-09).
     /// Starts in the parent directory of the typed path when it exists,
     /// otherwise in $HOME.
-    fn open_file_browser(&mut self, pick_dir: bool, from_path: &str) {
+    fn open_file_browser(&mut self, pick_dir: bool, dest: BrowserDest, from_path: &str) {
         let expanded = expand_tilde(from_path.trim());
         let start = std::path::Path::new(&expanded);
         let start = if start.is_file() {
@@ -1014,7 +1044,7 @@ impl ModernApp {
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::path::PathBuf::from("."))
         });
-        self.file_browser = Some(FileBrowser::new(pick_dir, start));
+        self.file_browser = Some(FileBrowser::new(pick_dir, dest, start));
     }
 
     /// Keys for the in-TUI file browser (US-CFG-09).
@@ -1208,20 +1238,44 @@ impl ModernApp {
         }
     }
 
-    /// Close the browser and write the picked path into the popup that
-    /// opened it (US-CFG-09/10).
+    /// Close the browser and write the picked path into whatever opened it
+    /// (US-CFG-09/10). For the register form's Path field the path replaces
+    /// the value; for the Deploy-to list it is appended; for the target
+    /// popup it replaces the destination.
     fn accept_file_browser(&mut self, path: &std::path::Path) {
-        let pick_dir = self.file_browser.as_ref().is_some_and(|fb| fb.pick_dir);
+        let dest = match self.file_browser.as_ref() {
+            Some(fb) => fb.dest,
+            None => return,
+        };
         let path_str = path.to_string_lossy().to_string();
         self.file_browser = None;
-        if pick_dir {
-            if let Some(target) = self.config_target_input.as_mut() {
-                *target = path_str;
+        match dest {
+            BrowserDest::RegisterPath => {
+                if let Some(form) = self.config_input.as_mut() {
+                    form.path = path_str;
+                    form.error = None;
+                    form.sync_name_from_path();
+                }
             }
-        } else if let Some(form) = self.config_input.as_mut() {
-            form.path = path_str;
-            form.error = None;
-            form.sync_name_from_path();
+            BrowserDest::DeployTo => {
+                if let Some(form) = self.config_input.as_mut() {
+                    let mut items: Vec<String> = form
+                        .deploy_to
+                        .split(',')
+                        .map(|t| t.trim().to_string())
+                        .filter(|t| !t.is_empty())
+                        .collect();
+                    if !items.contains(&path_str) {
+                        items.push(path_str);
+                    }
+                    form.deploy_to = items.join(", ");
+                }
+            }
+            BrowserDest::TargetPath => {
+                if let Some(target) = self.config_target_input.as_mut() {
+                    *target = path_str;
+                }
+            }
         }
     }
 
@@ -2465,12 +2519,21 @@ log:
         }
         if let Some(mut form) = self.config_input.take() {
             // Ctrl+O: built-in file browser (pick existing or create new
-            // files/folders in-app, US-CFG-09). Ctrl+P: external system
-            // picker (yazi / nnn / ranger / lf / zenity / kdialog) as fallback.
+            // files/folders in-app, US-CFG-09). On the Path field it picks a
+            // file; on the Deploy-to field it picks a folder to append.
+            // Ctrl+P: external system picker (yazi / nnn / ranger / lf /
+            // zenity / kdialog) as fallback.
             if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                let start = form.path.clone();
-                self.config_input = Some(form);
-                self.open_file_browser(false, &start);
+                if form.focus == 4 {
+                    // Deploy-to field: pick a folder to append to the list
+                    let start = form.deploy_to.clone();
+                    self.config_input = Some(form);
+                    self.open_file_browser(true, BrowserDest::DeployTo, &start);
+                } else {
+                    let start = form.path.clone();
+                    self.config_input = Some(form);
+                    self.open_file_browser(false, BrowserDest::RegisterPath, &start);
+                }
                 return;
             }
             if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -2509,7 +2572,7 @@ log:
                     form.focus = cycle_field(form.focus, ConfigRegisterForm::FIELDS, false);
                     self.config_input = Some(form);
                 }
-                KeyCode::Left | KeyCode::Right if form.focus == 4 => {
+                KeyCode::Left | KeyCode::Right if form.focus == 5 => {
                     // Deploy-mode selector row: cycle with arrow keys
                     // (3 variants, so Left = 2 forward steps)
                     let steps = if key.code == KeyCode::Left { 2 } else { 1 };
@@ -2533,6 +2596,9 @@ log:
                         }
                         3 => {
                             form.tags.pop();
+                        }
+                        4 => {
+                            form.deploy_to.pop();
                         }
                         _ => {}
                     }
@@ -2558,6 +2624,9 @@ log:
                         3 => {
                             form.tags.push(c);
                         }
+                        4 => {
+                            form.deploy_to.push(c);
+                        }
                         _ => {}
                     }
                     self.config_input = Some(form);
@@ -2570,7 +2639,7 @@ log:
             if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 // Built-in folder browser (US-CFG-10)
                 let start = path.clone();
-                self.open_file_browser(true, &start);
+                self.open_file_browser(true, BrowserDest::TargetPath, &start);
                 return;
             }
             if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -3557,7 +3626,7 @@ log:
     /// Register-config form modal (Configs `n`, US-CFG-09): path + name +
     /// description + tags + deploy mode, with inline error line.
     fn render_config_register_form(&self, f: &mut Frame, form: &ConfigRegisterForm) {
-        let area = self.centered_rect(64, 11, f);
+        let area = self.centered_rect(64, 12, f);
         f.render_widget(Clear, area);
         let block = Block::default()
             .title(" Register existing config ")
@@ -3575,6 +3644,7 @@ log:
                 Constraint::Length(1), // Name
                 Constraint::Length(1), // Description
                 Constraint::Length(1), // Tags
+                Constraint::Length(1), // Deploy to
                 Constraint::Length(1), // Deploy mode
                 Constraint::Length(1), // spacer
                 Constraint::Length(1), // help / error
@@ -3618,16 +3688,23 @@ log:
         row(
             f,
             rows[4],
+            "Deploy to (comma-sep)",
+            &form.deploy_to,
+            form.focus == 4,
+        );
+        row(
+            f,
+            rows[5],
             "Deploy mode (←→)",
             form.deploy_mode.label(),
-            form.focus == 4,
+            form.focus == 5,
         );
         f.render_widget(
             self.form_help_line(
                 form.error.as_ref(),
                 "~ = $HOME | Ctrl+O: browse · Ctrl+P: picker | Tab/arrows: field | Enter: register | Esc: cancel",
             ),
-            rows[6],
+            rows[7],
         );
     }
 
@@ -9685,7 +9762,11 @@ mod configs_tab_tests {
         let dir = tmp("newfile");
         app.ui.state = AppState::Configs;
         app.config_input = Some(ConfigRegisterForm::new());
-        app.file_browser = Some(FileBrowser::new(false, dir.clone()));
+        app.file_browser = Some(FileBrowser::new(
+            false,
+            BrowserDest::RegisterPath,
+            dir.clone(),
+        ));
 
         // `a` = new file, type the name, Enter creates it
         app.handle_key(key(KeyCode::Char('a'))).await;
@@ -9715,7 +9796,7 @@ mod configs_tab_tests {
         let dir = tmp("newdir");
         app.ui.state = AppState::Configs;
         app.config_target_input = Some(String::new());
-        app.file_browser = Some(FileBrowser::new(true, dir.clone()));
+        app.file_browser = Some(FileBrowser::new(true, BrowserDest::TargetPath, dir.clone()));
 
         // `A` = new folder, type the name, Enter creates it
         app.handle_key(key(KeyCode::Char('A'))).await;
@@ -9743,7 +9824,11 @@ mod configs_tab_tests {
         std::fs::write(dir.join("sub").join("x.conf"), "k=v").unwrap();
         app.ui.state = AppState::Configs;
         app.config_input = Some(ConfigRegisterForm::new());
-        app.file_browser = Some(FileBrowser::new(false, dir.clone()));
+        app.file_browser = Some(FileBrowser::new(
+            false,
+            BrowserDest::RegisterPath,
+            dir.clone(),
+        ));
 
         // entries: "..", "sub/"; Down -> subdir, Right -> descend
         app.handle_key(key(KeyCode::Down)).await;
@@ -9761,7 +9846,11 @@ mod configs_tab_tests {
         assert_eq!(form.name, "x.conf");
 
         // Parent navigation: open again, go up with Left
-        app.file_browser = Some(FileBrowser::new(false, dir.join("sub")));
+        app.file_browser = Some(FileBrowser::new(
+            false,
+            BrowserDest::RegisterPath,
+            dir.join("sub"),
+        ));
         app.handle_key(key(KeyCode::Left)).await;
         assert_eq!(app.file_browser.as_ref().unwrap().cwd, dir);
         let _ = std::fs::remove_dir_all(&dir);
@@ -9772,7 +9861,11 @@ mod configs_tab_tests {
         let mut app = test_app().await;
         let dir = tmp("hidden");
         std::fs::write(dir.join(".secret"), "x").unwrap();
-        app.file_browser = Some(FileBrowser::new(false, dir.clone()));
+        app.file_browser = Some(FileBrowser::new(
+            false,
+            BrowserDest::RegisterPath,
+            dir.clone(),
+        ));
 
         assert!(!app
             .file_browser
@@ -10039,7 +10132,9 @@ mod configs_tab_tests {
         for c in "hyprland, waybar".chars() {
             app.handle_key(key(KeyCode::Char(c))).await;
         }
-        // Tab -> Deploy mode; Right cycles symlink -> hardlink
+        // Tab -> Deploy to (leave empty), Tab -> Deploy mode; Right cycles
+        // symlink -> hardlink
+        app.handle_key(key(KeyCode::Tab)).await;
         app.handle_key(key(KeyCode::Tab)).await;
         app.handle_key(key(KeyCode::Right)).await;
         app.handle_key(key(KeyCode::Enter)).await;
@@ -10056,9 +10151,97 @@ mod configs_tab_tests {
             entries[0].tags,
             vec!["hyprland".to_string(), "waybar".to_string()]
         );
+        assert!(entries[0].targets.is_empty());
         assert_eq!(
             entries[0].deploy_mode,
             crate::config_manager::DeployMode::HardLink
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn given_register_form_when_deploy_to_set_then_targets_stored_and_deploy_works() {
+        // The saved path and the "should be" path are different (US-CFG-10):
+        // targets may live anywhere and need not exist yet.
+        let mut app = test_app().await;
+        let dir = tmp("targets");
+        app.config_store_dir = dir.join("store");
+        let src = dir.join("waybar.conf");
+        std::fs::write(&src, "clock { format = %H:%M }").unwrap();
+        app.ui.state = AppState::Configs;
+        app.fetch_configs().await.unwrap();
+
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        for c in src.to_string_lossy().chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        // Tab x4 -> Deploy to; two comma-separated destinations, one inside
+        // a not-yet-existing folder
+        for _ in 0..4 {
+            app.handle_key(key(KeyCode::Tab)).await;
+        }
+        let t1 = dir
+            .join("live")
+            .join("waybar.conf")
+            .to_string_lossy()
+            .to_string();
+        let t2 = dir
+            .join("backup")
+            .join("waybar.conf")
+            .to_string_lossy()
+            .to_string();
+        for c in format!("{}, {}", t1, t2).chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Enter)).await;
+
+        assert!(app.config_input.is_none());
+        let entries = app.config_manager().load_registry();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].targets,
+            vec![t1.clone(), t2.clone()],
+            "deploy targets must be stored at registration"
+        );
+
+        // Deploying materializes the file at both targets
+        let results = app.config_manager().deploy(&entries[0]).unwrap();
+        assert!(results.iter().all(|r| r.ok), "deploy must succeed");
+        assert!(dir.join("live").join("waybar.conf").exists());
+        assert!(dir.join("backup").join("waybar.conf").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn given_deploy_to_field_when_ctrl_o_then_picked_folder_appends() {
+        let mut app = test_app().await;
+        let dir = tmp("append");
+        std::fs::create_dir_all(dir.join("out")).unwrap();
+        app.ui.state = AppState::Configs;
+        app.config_input = Some(ConfigRegisterForm::new());
+        // Simulate Tab x4 to the Deploy-to field, pre-filled so the browser
+        // opens in the temp dir
+        let mut form = app.config_input.take().unwrap();
+        form.focus = 4;
+        form.deploy_to = dir.to_string_lossy().to_string();
+        app.config_input = Some(form);
+        app.handle_key(ctrl_o()).await;
+        let fb = app.file_browser.as_ref().expect("browser opens");
+        assert_eq!(fb.dest, BrowserDest::DeployTo);
+        assert!(fb.pick_dir);
+        // entries: "..", "out/"; Down -> "out", Space picks it
+        app.handle_key(key(KeyCode::Down)).await;
+        app.handle_key(key(KeyCode::Char(' '))).await;
+        assert!(app.file_browser.is_none());
+        let form = app.config_input.as_ref().unwrap();
+        assert_eq!(
+            form.deploy_to,
+            format!(
+                "{}, {}",
+                dir.to_string_lossy(),
+                dir.join("out").to_string_lossy()
+            ),
+            "picked folder must be appended to the existing Deploy-to list"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

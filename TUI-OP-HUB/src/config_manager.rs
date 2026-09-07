@@ -291,17 +291,27 @@ impl ConfigManager {
     /// Register an EXISTING file (or folder tree, copied recursively) as a
     /// managed config: the master copy is stored centrally (US-CFG-09).
     pub fn register_existing(&self, source: &Path, name: &str) -> AppResult<ConfigEntry> {
-        self.register_existing_full(source, name, None, Vec::new(), DeployMode::default())
+        self.register_existing_full(
+            source,
+            name,
+            None,
+            Vec::new(),
+            Vec::new(),
+            DeployMode::default(),
+        )
     }
 
     /// Register an existing file with full metadata (US-CFG-09): description,
-    /// tags and deploy mode come from the TUI register form.
+    /// tags, deploy targets and deploy mode come from the TUI register form.
+    /// Targets may point anywhere (and need not exist yet) — the source file
+    /// stays where it is; deploys materialize it at each target.
     pub fn register_existing_full(
         &self,
         source: &Path,
         name: &str,
         description: Option<String>,
         tags: Vec<String>,
+        targets: Vec<String>,
         deploy_mode: DeployMode,
     ) -> AppResult<ConfigEntry> {
         if !source.exists() {
@@ -323,7 +333,7 @@ impl ConfigManager {
             version: 1,
             created_at: chrono::Utc::now().to_rfc3339(),
             updated_at: chrono::Utc::now().to_rfc3339(),
-            targets: Vec::new(),
+            targets,
             deploy_mode,
         };
         self.store_config(&entry)?;
@@ -763,6 +773,7 @@ mod deploy_tests {
                 "app.conf",
                 Some("main app config".to_string()),
                 vec!["app".to_string(), "gui".to_string()],
+                vec!["/tmp/where/it/should/be.conf".to_string()],
                 DeployMode::Copy,
             )
             .unwrap();
@@ -770,11 +781,13 @@ mod deploy_tests {
         assert_eq!(entry.name, "app.conf");
         assert_eq!(entry.description.as_deref(), Some("main app config"));
         assert_eq!(entry.tags, vec!["app".to_string(), "gui".to_string()]);
+        assert_eq!(entry.targets, vec!["/tmp/where/it/should/be.conf"]);
         assert_eq!(entry.deploy_mode, DeployMode::Copy);
         // Round-trips through the registry
         let stored = man.load_registry();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].description.as_deref(), Some("main app config"));
+        assert_eq!(stored[0].targets, vec!["/tmp/where/it/should/be.conf"]);
         assert_eq!(stored[0].deploy_mode, DeployMode::Copy);
         // Legacy register_existing delegates with defaults
         let src2 = dir.join("b.conf");
