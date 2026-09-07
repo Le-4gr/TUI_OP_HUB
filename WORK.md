@@ -25,6 +25,23 @@
    quick-connect only); plugin approval workflow for headless service runs.
 
 ---
+## 🎯 Session 19d: `n` on Configs did nothing — popups never rendered (completed)
+
+User report: `n` (register) does nothing on Configs. Root cause was in `render()`, not key
+handling: the `config_input` and `config_target_input` popups were nested inside the
+unrelated `register_input` render block, so they only drew when some other popup was also
+open. State was set correctly (state-based tests passed) but nothing appeared on screen.
+
+Fix: render `register_input`, `config_input`, and `config_target_input` as three independent
+top-level blocks in `render()`.
+
+New test kind: render-visibility test — `ratatui::backend::TestBackend` + `terminal.draw`,
+asserting popup titles appear in the framebuffer. State-only tests cannot catch render
+regressions like this one; check both from now on (US-CFG-09).
+
+Validation: 226 tests (178 lib + 48 BDD), clippy 0 errors, build ok.
+
+
 
 ## 🎯 Session 19c: Configs numpad + sticky-search hardening (completed)
 
