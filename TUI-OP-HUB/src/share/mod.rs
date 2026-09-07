@@ -5,7 +5,10 @@
 //! the machine-bound key), or **plaintext** (explicit opt-in). Import merges
 //! by (name, type); existing entries always win so local edits are safe.
 
+pub mod crypto;
+
 use crate::error::{AppError, AppResult};
+
 use crate::models::Entity;
 use sqlx::SqlitePool;
 
@@ -149,10 +152,10 @@ pub async fn export_knowledge(
             // bundle is portable (the machine-bound user key is NOT in it).
             let value = match secret_mode {
                 SecretMode::Encrypted => {
-                    let key = crate::share_crypto::key_from_passphrase(
+                    let key = crate::share::crypto::key_from_passphrase(
                         export_passphrase.unwrap_or_default(),
                     )?;
-                    crate::share_crypto::encrypt(plaintext.as_bytes(), &key)?
+                    crate::share::crypto::encrypt(plaintext.as_bytes(), &key)?
                 }
                 SecretMode::Plaintext => plaintext,
                 SecretMode::Exclude => unreachable!(),
@@ -418,8 +421,8 @@ pub async fn import_secrets(
                     skipped += 1;
                     continue;
                 };
-                let key = crate::share_crypto::key_from_passphrase(pass)?;
-                match crate::share_crypto::decrypt(&secret.value, &key) {
+                let key = crate::share::crypto::key_from_passphrase(pass)?;
+                match crate::share::crypto::decrypt(&secret.value, &key) {
                     Ok(data) => String::from_utf8_lossy(&data).to_string(),
                     Err(_) => {
                         skipped += 1;

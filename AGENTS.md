@@ -43,12 +43,13 @@ TUI-OP-HUB/                       # repo root (docs live here)
 ├── AGENTS.md                     # ← this file
 ├── WORK.md                       # live work log for AI agents (ongoing tasks, what/how)
 ├── README.md                     # user-facing readme (features, config, API)
-├── install.sh                    # release installer: build + install binary + enable service
 ├── INSTALL.md                    # quick install instructions (repo root)
+├── install.sh                    # release installer: build + install binary + enable service
 ├── docs/                         # documentation (start at docs/INDEX.md)
 │   ├── INDEX.md                  # map of all documentation
 │   ├── INSTALL.md                # service/TUI coexistence, secrets key, non-systemd inits
 │   ├── IMPORT_EXPORT.md          # knowledge bundle schema, AI prompt template, cron workflows
+│   ├── PLUGINS.md                # Lua mod API: manifest, capabilities, event hooks
 │   └── business/                 # business structure
 │       ├── VISION.md             # product vision & personas
 │       ├── ROADMAP.md            # phase plan
@@ -65,36 +66,51 @@ TUI-OP-HUB/                       # repo root (docs live here)
     ├── tests/
     │   └── bdd_scenarios.rs      # BDD integration scenarios (public API, in-memory DB)
     └── src/
-        ├── main.rs               # entry point: config → DB pool → API spawn → TUI loop
-        ├── lib.rs                # module declarations
+        ├── main.rs               # entry point: CLI flags, config, DB pool, plugins, scheduler,
+        │                         # API spawn (port-conflict safe), TUI loop
+        ├── lib.rs                # 23 module declarations (single flat list)
         ├── error.rs              # AppError / AppResult
-        ├── config/               # AppConfig — Hyprland-style config.conf (themes, keybindings)
-        ├── db/                   # SQLite pool (WAL) + migrations/
-        │   └── migrations/       # 0001_init, 0002_user_auth, 0003_phase2, 0004_tooling
-        ├── models/               # data models (entities, projects, secrets, plugins, ...)
-        ├── repository/           # data access layer (all SQL lives here)
-        ├── api/                  # axum routes/handlers (entities, projects, workflows,
+        │
+        ├── api.rs                # axum routes/handlers (entities, projects, workflows,
         │                         # schedules, export/import)
-        ├── tui/                  # ratatui UI (modern_app, modern_ui, login_view, list_state)
-        ├── secrets/              # encryption helpers
-        ├── auth/                 # Argon2 password auth, per-user EncryptionKey (zeroized)
-        ├── workflow/             # Lua workflow engine
-        ├── scheduler/            # cron-based WorkflowScheduler daemon (cron crate);
-        │                         # validate_cron normalizes classic 5-field crontab syntax
-        ├── service/              # systemd user-unit generation/install, cron watchdog line;
-        │                         # CLI flags --headless/--install-service/--print-unit (US-DEP-04)
-        ├── share.rs              # knowledge export/import (KnowledgeBundle, lenient parsing)
-        ├── share_crypto.rs       # passphrase-based portable encryption for secret export
-        ├── project_workspace.rs  # project workspace editors (open project in IDE)
-        ├── privilege.rs          # sudo/doas/su detection for privileged runs
-        ├── keygen/               # SSH/GPG key generation UI
+        ├── auth.rs               # Argon2 password auth, per-user EncryptionKey (zeroized)
+        ├── config.rs             # AppConfig — Hyprland-style config.conf (themes, keybindings)
+        ├── config_manager.rs     # config file storage/versions (US-CFG, Phase 3 stub)
+        ├── db/                   # SQLite pool (WAL) + migrations/ (0001..0007)
+        ├── environment.rs        # env var management (Phase 3 stub)
+        ├── filepicker.rs         # yazi/nnn/ranger/lf/zenity/kdialog chooser chain
         ├── fuzzy.rs              # fuzzy matcher used by list search
-        ├── seed.rs, seed_data.rs # idempotent seed data (commands, options, apps)
-        ├── plugin/               # plugin system (Capability model, loading)
-        ├── process/              # sysinfo-based process/resource monitoring
-        ├── environment/          # environment variable management
-        └── config_manager/       # config file management
+        ├── keygen.rs             # SSH/GPG key generation
+        ├── models.rs             # data models (entities, projects, secrets, plugins, ...)
+        ├── monitor.rs            # dashboard mini-btop: cpu/ram/net/temps/gpu snapshot
+        ├── plugin.rs             # plugin system (Capability model, Lua sandbox, events)
+        ├── privilege.rs          # sudo/doas/su detection for privileged runs
+        ├── process.rs            # sysinfo-based process/resource monitoring
+        ├── project_workspace.rs  # project workspace editors (open project in IDE)
+        ├── repository.rs         # data access layer (all SQL lives here)
+        ├── scheduler.rs          # cron-based WorkflowScheduler daemon (cron crate)
+        ├── service.rs            # systemd user-unit generation/install, cron watchdog line
+        ├── share/                # knowledge export/import (US-CMD-01)
+        │   ├── mod.rs            # KnowledgeBundle, lenient parsing, duplicate modes
+        │   └── crypto.rs         # passphrase-based portable encryption
+        ├── seed.rs               # idempotent seed data (commands, options, apps)
+        ├── secrets/              # secret encryption + ssh-agent
+        │   ├── mod.rs            # XChaCha20Poly1305 helpers, passphrase wrap
+        │   └── ssh_agent.rs      # ssh-agent spawn + key loading, ssh terminals
+        └── tui/                  # ratatui UI layer
+            ├── modern_app.rs     # the application (login, 9 tabs, forms, popups)
+            ├── modern_ui.rs      # theme + login/dashboard rendering
+            ├── list_state.rs     # reusable list/form state + entity types
+            └── helpers.rs        # free helpers (paths, formatting, terminal spawn)
 ```
+
+**Layout rule**: a folder exists ONLY when a module has real submodules
+(`share`, `secrets`, `tui`, `db`); every other module is a flat `<name>.rs`.
+
+⚠️ **Syncthing artifacts**: files like `Cargo.sync-conflict-*.toml` and
+`main.sync-conflict-*.rs` exist from file syncing. **Never edit or import them**; they are
+stale duplicates. (Cleaning them up is a valid housekeeping task — see §6.)
+
 
 ⚠️ **Syncthing artifacts**: files like `Cargo.sync-conflict-*.toml` and
 `main.sync-conflict-*.rs` exist from file syncing. **Never edit or import them**; they are

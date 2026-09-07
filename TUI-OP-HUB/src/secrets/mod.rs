@@ -94,16 +94,16 @@ pub fn wrap_with_passphrase(plaintext: &str, passphrase: &str) -> anyhow::Result
     if passphrase.is_empty() {
         anyhow::bail!("passphrase must not be empty");
     }
-    let key = crate::share_crypto::key_from_passphrase(passphrase)?;
-    crate::share_crypto::encrypt(plaintext.as_bytes(), &key).map_err(|e| anyhow::anyhow!("{}", e))
+    let key = crate::share::crypto::key_from_passphrase(passphrase)?;
+    crate::share::crypto::encrypt(plaintext.as_bytes(), &key).map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 /// Unwrap a passphrase-protected inner layer. Exact inverse of
 /// [`wrap_with_passphrase`]; a wrong passphrase fails authentication.
 pub fn unwrap_with_passphrase(wrapped: &str, passphrase: &str) -> anyhow::Result<String> {
-    let key = crate::share_crypto::key_from_passphrase(passphrase)?;
+    let key = crate::share::crypto::key_from_passphrase(passphrase)?;
     let bytes =
-        crate::share_crypto::decrypt(wrapped, &key).map_err(|e| anyhow::anyhow!("{}", e))?;
+        crate::share::crypto::decrypt(wrapped, &key).map_err(|e| anyhow::anyhow!("{}", e))?;
     String::from_utf8(bytes).map_err(|e| anyhow::anyhow!("invalid utf-8: {e}"))
 }
 

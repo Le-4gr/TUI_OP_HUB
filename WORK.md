@@ -7,6 +7,16 @@
 
 ## 🎯 Session 16 — COMPLETE SESSION SUMMARY (all work in this chat)
 
+> **Update 15 (same session):** Full file-tree normalisation pass (continued restructure).
+> Rule now enforced uniformly: a folder exists ONLY when the module has real submodules;
+> every single-file module is a flat <name>.rs. Flattened: auth, keygen, plugin, api,
+> models, repository, workflow, config (mod.rs -> <name>.rs). Merged seed_data.rs into
+> seed.rs (its only consumer). Grouped share.rs + share_crypto.rs into share/ (mod.rs +
+> crypto.rs — the one new folder, justified by the crypto submodule); all crate::share_crypto
+> paths repointed to crate::share::crypto. lib.rs shrank to 23 module lines. Result: 32 files,
+> 18.4k lines, 4 folders (share, secrets, db, tui) + flat everything else, zero orphan mod.rs.
+> 147 lib + 45 BDD = 192 pass, clippy 0 errors.
+
 > **Update 14 (same session):** Structure normalised (uniform folder rule).
 > Rule: folders only when a module has multiple files; single-file modules are flat.
 > Flattened: config_manager, environment, process, scheduler, service (mod.rs -> <name>.rs).
