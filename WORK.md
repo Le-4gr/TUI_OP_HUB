@@ -25,6 +25,28 @@
    quick-connect only); plugin approval workflow for headless service runs.
 
 ---
+## 🎯 Session 19e: Configs register form — more fields + Ctrl+O browsing (completed)
+
+User asked for a better "new" and "add target" screen, browsing like import/export, and
+more fields — for both `n` and `t`.
+
+- **`n` (register)** is now a 5-field form modal (US-CFG-09): Path, Name, Description,
+  Tags (comma-sep), Deploy mode (←/→ cycle). Name auto-fills from the file name and
+  typing over it replaces the suggestion. Inline validation error line ("Path is
+  required", "File not found: …"); Enter submits, Tab/↑↓ move fields, Esc cancels.
+- **Ctrl+O opens the system file picker** (yazi/nnn/ranger/lf/zenity/kdialog — the same
+  browsing import/export uses) on the Path field of `n` and the destination of `t`.
+- **`t` (add target)** got a matching modal showing "for config: {name}" with help line
+  and Ctrl+O browsing (US-CFG-10).
+- `config_manager::register_existing_full()` stores description/tags/deploy-mode;
+  legacy `register_existing()` delegates with defaults. Configs empty-state text now
+  mentions Ctrl+O browsing.
+
+Tests: metadata round-trip test (form → registry), validation-error test (empty/missing
+path keeps form open with inline error), config_manager unit test for register_existing_full,
+updated TestBackend visibility tests. 229 total (181 lib + 48 BDD), clippy 0, build ok.
+
+
 ## 🎯 Session 19d: `n` on Configs did nothing — popups never rendered (completed)
 
 User report: `n` (register) does nothing on Configs. Root cause was in `render()`, not key
