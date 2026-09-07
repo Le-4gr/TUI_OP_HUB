@@ -1440,6 +1440,12 @@ impl ModernApp {
 
     async fn handle_key(&mut self, key: KeyEvent) {
         // Overlays take priority over normal tab handling (top of the input stack)
+        if self.sudo_password.is_some() {
+            // The sudo password popup renders last = topmost; without this
+            // route, typed password characters leak into the list handler.
+            self.handle_sudo_password_key(key).await;
+            return;
+        }
         if self.keybinds_overlay {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter) {
                 self.keybinds_overlay = false;
@@ -2900,42 +2906,6 @@ impl ModernApp {
         }
     }
 
-    /// Import a knowledge base from `~/tui-op-hub-export.json`.
-    async fn import_knowledge_base(&mut self) {
-        let path = dirs_home().join("tui-op-hub-export.json");
-        if !path.exists() {
-            self.status_message = Some(format!("\u{2717} No import file at {}", path.display()));
-            return;
-        }
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(e) => {
-                self.status_message = Some(format!("\u{2717} Read failed: {}", e));
-                return;
-            }
-        };
-        let bundle = match crate::share::bundle_from_json(&text) {
-            Ok(b) => b,
-            Err(e) => {
-                self.status_message = Some(format!("\u{2717} Invalid bundle: {}", e));
-                return;
-            }
-        };
-        match crate::share::import_knowledge(&*self.pool, &bundle).await {
-            Ok((imported, skipped)) => {
-                self.status_message = Some(format!(
-                    "\u{2713} Imported {} entities ({} skipped)",
-                    imported, skipped
-                ));
-                let _ = self.fetch_stats().await;
-                self.refresh_current_tab().await;
-            }
-            Err(e) => {
-                self.status_message = Some(format!("\u{2717} Import failed: {}", e));
-            }
-        }
-    }
-
     // ── Keybind helper (footer hints + `?` overlay; US-TUI-09) ─────────────
 
     /// Render a footer line of keybind hints. Keys are highlighted, labels
@@ -3759,7 +3729,7 @@ impl ModernApp {
                 let user_id = self.current_user_profile_id().await;
                 match selected {
                     Some(secret) => {
-                        match secrets::decrypt_for_user_id(&*self.pool, &user_id, &secret.value_enc)
+                        match secrets::decrypt_for_user(&*self.pool, &user_id, &secret.value_enc)
                             .await
                         {
                             Ok(value) => Some(value),
@@ -6051,12 +6021,6 @@ where
     scored.into_iter().map(|(_, item)| item).collect()
 }
 
-fn dirs_home() -> std::path::PathBuf {
-    std::env::var("HOME")
-        .map(|h| std::path::PathBuf::from(h).join("projects"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("projects"))
-}
-
 fn preset_index(name: &str) -> usize {
     ModernTheme::PRESETS
         .iter()
@@ -7272,5 +7236,28 @@ mod tests {
         app.handle_key(key(KeyCode::Char('8'))).await;
         app.handle_key(key(KeyCode::Char('6'))).await;
         assert_eq!(app.ui.state, AppState::Workflows);
+    }
+
+    #[tokio::test]
+    async fn given_sudo_prompt_open_when_typed_then_chars_stay_in_password() {
+        let mut app = test_app_db().await;
+        app.ui.state = AppState::Dashboard;
+
+        // Simulate the R-flow: popup open, command pending
+        app.sudo_password = Some(String::new());
+        app.sudo_pending_command = Some("ls -la".to_string());
+
+        for c in "hunter2".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+
+        // All characters landed in the password buffer (not the list handler)
+        assert_eq!(app.sudo_password.as_deref(), Some("hunter2"));
+        assert_eq!(app.sudo_pending_command.as_deref(), Some("ls -la"));
+
+        // Esc cancels and clears both
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert!(app.sudo_password.is_none());
+        assert!(app.sudo_pending_command.is_none());
     }
 }

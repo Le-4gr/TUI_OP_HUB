@@ -439,7 +439,7 @@ async fn get_secret_handler(
         .await
         .map_err(|e| e.to_string())?;
     // decrypt before returning
-    match crate::secrets::decrypt_for_user_id(&state.pool, &s.user_id, &s.value_enc).await {
+    match crate::secrets::decrypt_for_user(&state.pool, &s.user_id, &s.value_enc).await {
         Ok(val) => Ok(Json(
             serde_json::json!({"id": s.id, "name": s.name, "value": val}),
         )),

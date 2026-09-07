@@ -139,8 +139,7 @@ pub async fn export_knowledge(
             if secret_mode == SecretMode::Exclude {
                 break;
             }
-            let plaintext = match crate::secrets::decrypt_for_user_id(pool, uid, &s.value_enc).await
-            {
+            let plaintext = match crate::secrets::decrypt_for_user(pool, uid, &s.value_enc).await {
                 Ok(p) => p,
                 Err(e) => {
                     return Err(AppError::Other(format!("decrypt failed: {e}")));

@@ -7,6 +7,17 @@
 
 ## 🎯 Session 16 — COMPLETE SESSION SUMMARY (all work in this chat)
 
+> **Update 13 (same session):** Continuation pass — dedup, dead code, sudo routing fix.
+> **Bug found & fixed:** `handle_sudo_password_key` had zero call sites (same bug class as
+> the project form) — the `R` sudo-password popup rendered but typed characters leaked into
+> the list handler. Now routed top-of-stack; regression test added (chars stay in the
+> password buffer, Esc cancels and clears both fields). Dedup: `secrets::decrypt_for_user_id`
+> was a byte-identical copy of `decrypt_for_user` — deleted, 5 call sites (api, share,
+> modern_app x2, bdd) repointed. Dead code removed: `import_knowledge_base` (superseded by
+> import_knowledge_from_path), `render_dashboard_content` + `render_card` (old UI),
+> `default_import_path` (duplicate of default_bundle_path). Moved `dirs_home` to helpers.rs.
+> modern_app.rs 7276 -> 7263; modern_ui.rs 1140 -> 1063. 150 lib + 45 BDD = 195 pass.
+
 > **Update 12 (same session):** Picker fixes + code-base slimming. Picker chain no longer
 > falls through after a backend runs — quitting yazi with `q` closes the picker instead of
 > opening dolphin/zenity (cancelled = stop; only failed-to-start moves to the next backend).

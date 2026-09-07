@@ -225,7 +225,7 @@ async fn given_user_key_when_secret_stored_then_encrypted_at_rest_and_decryptabl
     assert!(!stored.value_enc.contains("hunter2"));
 
     // Then: decryptable for the right user
-    let decrypted = secrets::decrypt_for_user_id(&pool, &alice, &stored.value_enc)
+    let decrypted = secrets::decrypt_for_user(&pool, &alice, &stored.value_enc)
         .await
         .unwrap();
     assert_eq!(decrypted, "hunter2");

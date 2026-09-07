@@ -8,11 +8,6 @@ pub(crate) fn default_bundle_path() -> String {
     format!("{home}/tui-op-hub-export.json")
 }
 
-fn default_import_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
-    format!("{home}/tui-op-hub-export.json")
-}
-
 /// Expand a leading `~` (or `~/`) to `$HOME`.
 pub(crate) fn expand_tilde(path: &str) -> String {
     if path == "~" {
@@ -145,4 +140,11 @@ pub(crate) fn which_program(prog: &str) -> bool {
         .map(std::path::PathBuf::from)
         .map(|dir| dir.join(prog))
         .any(|candidate| candidate.is_file())
+}
+
+/// Default directory for new project workspaces: `$HOME/projects`.
+pub(crate) fn dirs_home() -> std::path::PathBuf {
+    std::env::var("HOME")
+        .map(|h| std::path::PathBuf::from(h).join("projects"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("projects"))
 }
