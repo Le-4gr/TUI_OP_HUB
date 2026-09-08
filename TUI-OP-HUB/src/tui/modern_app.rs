@@ -191,6 +191,49 @@ struct SshForm {
     field: usize,
 }
 
+/// Chain info popup (US-CMD chains): shows a parsed pipe/semicolon chain
+/// segment-by-segment with editable per-segment notes; `r` runs the chain.
+#[derive(Debug, Clone)]
+struct ChainInfoPanel {
+    entity: crate::models::Entity,
+    segments: Vec<crate::workflow::ChainSegment>,
+    notes: Vec<String>,
+    selected: usize,
+    editing: bool,
+    edit_buf: String,
+}
+
+impl ChainInfoPanel {
+    fn load(entity: crate::models::Entity) -> Self {
+        let segments = crate::workflow::parse_chain(entity.content.as_deref().unwrap_or_default());
+        let notes = crate::workflow::chain_notes(entity.metadata_json.as_ref(), segments.len());
+        Self {
+            entity,
+            segments,
+            notes,
+            selected: 0,
+            editing: false,
+            edit_buf: String::new(),
+        }
+    }
+
+    /// The effective runnable chain (segments re-joined with their operators).
+    fn chain_text(&self) -> String {
+        self.segments
+            .iter()
+            .enumerate()
+            .map(|(i, seg)| {
+                if i == 0 {
+                    seg.text.clone()
+                } else {
+                    format!("{} {}", seg.joiner, seg.text)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
 /// Plugin UI actions popup for the selected project (US-PLG-13): lists the
 /// labeled actions contributed by approved plugins and runs the chosen one.
 #[derive(Debug, Clone)]
@@ -546,6 +589,8 @@ pub struct ModernApp {
     template_preview: Option<TemplatePreview>,
     /// Plugin UI actions popup for the selected project (US-PLG-13)
     project_actions: Option<ProjectActionsPanel>,
+    /// Command-chain info popup (US-CMD chains)
+    chain_info: Option<ChainInfoPanel>,
     // Login-screen dev user manager (cargo run only)
     dev_user_manager: bool,
     dev_user_list: Vec<crate::models::UserProfile>,
@@ -618,16 +663,18 @@ pub enum KbFilter {
     Cmd,
     App,
     Script,
+    Chain,
 }
 
 impl KbFilter {
-    /// Cycle order: All → Commands → Apps → Scripts → All.
+    /// Cycle order: All → Commands → Apps → Scripts → Chains → All.
     pub fn next(self) -> Self {
         match self {
             KbFilter::All => KbFilter::Cmd,
             KbFilter::Cmd => KbFilter::App,
             KbFilter::App => KbFilter::Script,
-            KbFilter::Script => KbFilter::All,
+            KbFilter::Script => KbFilter::Chain,
+            KbFilter::Chain => KbFilter::All,
         }
     }
 
@@ -638,26 +685,29 @@ impl KbFilter {
             KbFilter::Cmd => "Commands",
             KbFilter::App => "Apps",
             KbFilter::Script => "Scripts",
+            KbFilter::Chain => "Chains",
         }
     }
 
     /// Entity type ids covered by this filter.
     pub fn type_ids(self) -> &'static [&'static str] {
         match self {
-            KbFilter::All => &["cmd", "app", "script"],
+            KbFilter::All => &["cmd", "app", "script", "chain"],
             KbFilter::Cmd => &["cmd"],
             KbFilter::App => &["app"],
             KbFilter::Script => &["script"],
+            KbFilter::Chain => &["chain"],
         }
     }
 
-    /// Index into `ENTITY_TYPE_IDS` ([\"cmd\", \"script\", \"app\"]) for the
-    /// create-form type selector; `All` defaults to Command.
+    /// Index into `ENTITY_TYPE_IDS` (["cmd", "script", "app", "chain"]) for
+    /// the create-form type selector; `All` defaults to Command.
     pub fn form_type_index(self) -> usize {
         match self {
             KbFilter::All | KbFilter::Cmd => 0,
             KbFilter::App => 2,
             KbFilter::Script => 1,
+            KbFilter::Chain => 3,
         }
     }
 }
@@ -738,6 +788,7 @@ impl ModernApp {
             new_project_template: None,
             template_preview: None,
             project_actions: None,
+            chain_info: None,
             options_popup: None,
             keybinds_overlay: false,
             wants_terminal: false,
@@ -1702,6 +1753,10 @@ log:
         if self.project_actions.is_some() {
             self.render_project_actions(f);
         }
+        // Chain info popup renders on top of the Knowledge list (US-CMD chains)
+        if self.chain_info.is_some() {
+            self.render_chain_info(f);
+        }
         // Template preview renders on top of the workspace form (US-PLG-15)
         if self.template_preview.is_some() {
             self.render_template_preview(f);
@@ -2452,6 +2507,11 @@ log:
         // Plugin UI actions popup is topmost when open (US-PLG-13)
         if self.project_actions.is_some() {
             self.handle_project_actions_key(key).await;
+            return;
+        }
+        // Chain info popup is topmost when open (US-CMD chains)
+        if self.chain_info.is_some() {
+            self.handle_chain_info_key(key).await;
             return;
         }
         if self.keybinds_overlay {
@@ -3447,7 +3507,19 @@ log:
             KeyCode::Char('i') => {
                 // Structured options of the selected command family (US-CMD-01)
                 if matches!(self.ui.state, AppState::Knowledge) {
-                    self.show_options_popup().await;
+                    let is_chain = self
+                        .commands_list
+                        .get_selected()
+                        .map(|e| e.type_id == "chain")
+                        .unwrap_or(false);
+                    if is_chain {
+                        // Command chain: segment-by-segment info (US-CMD chains)
+                        if let Some(entity) = self.commands_list.get_selected().cloned() {
+                            self.chain_info = Some(ChainInfoPanel::load(entity));
+                        }
+                    } else {
+                        self.show_options_popup().await;
+                    }
                 }
             }
             KeyCode::Char('f') => {
@@ -7650,6 +7722,200 @@ log:
         }
     }
 
+    /// Keys for the chain-info popup (US-CMD chains): ↑↓ pick a segment,
+    /// `e` edits its note (persisted into metadata_json), `r` runs the whole
+    /// chain, Esc closes.
+    async fn handle_chain_info_key(&mut self, key: KeyEvent) {
+        let Some(panel) = self.chain_info.as_mut() else {
+            return;
+        };
+        if panel.editing {
+            match key.code {
+                KeyCode::Esc => panel.editing = false,
+                KeyCode::Enter => {
+                    if let Some(note) = panel.notes.get_mut(panel.selected) {
+                        *note = panel.edit_buf.clone();
+                    }
+                    panel.editing = false;
+                    // Persist notes into metadata_json (other keys preserved)
+                    let (id, metadata, notes) = {
+                        let p = self.chain_info.as_ref().unwrap();
+                        (
+                            p.entity.id.clone(),
+                            p.entity.metadata_json.clone(),
+                            p.notes.clone(),
+                        )
+                    };
+                    let meta = crate::workflow::chain_notes_to_metadata(metadata.as_ref(), &notes);
+                    let req = CreateEntity {
+                        name: self
+                            .chain_info
+                            .as_ref()
+                            .map(|p| p.entity.name.clone())
+                            .unwrap_or_default(),
+                        description: self
+                            .chain_info
+                            .as_ref()
+                            .and_then(|p| p.entity.description.clone()),
+                        content: self
+                            .chain_info
+                            .as_ref()
+                            .and_then(|p| p.entity.content.clone()),
+                        type_id: "chain".to_string(),
+                        project_id: None,
+                        tags: None,
+                        metadata_json: meta,
+                    };
+                    match repository::update_entity(&*self.pool, &id, &req).await {
+                        Ok(updated) => {
+                            if let Some(p) = self.chain_info.as_mut() {
+                                p.entity = updated;
+                            }
+                            self.status_message = Some("\u{2713} Chain notes saved".to_string());
+                            let _ = self.fetch_knowledge().await;
+                        }
+                        Err(e) => {
+                            self.status_message = Some(format!("\u{2717} Save failed: {}", e))
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    panel.edit_buf.pop();
+                }
+                KeyCode::Char(c) => {
+                    panel.edit_buf.push(c);
+                }
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => {
+                self.chain_info = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                panel.selected = panel.selected.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if panel.selected + 1 < panel.segments.len() {
+                    panel.selected += 1;
+                }
+            }
+            KeyCode::Char('e') => {
+                panel.edit_buf = panel.notes.get(panel.selected).cloned().unwrap_or_default();
+                panel.editing = true;
+            }
+            KeyCode::Char('r') => {
+                // Run the whole chain via the shell (like a plain command)
+                let chain = panel.chain_text();
+                let name = panel.entity.name.clone();
+                self.chain_info = None;
+                let mut cmd = tokio::process::Command::new("sh");
+                cmd.arg("-c").arg(&chain);
+                self.run_invoke(cmd, &name, &chain).await;
+            }
+            _ => {}
+        }
+    }
+
+    /// Render the chain info popup (US-CMD chains).
+    fn render_chain_info(&self, f: &mut Frame) {
+        let Some(panel) = &self.chain_info else {
+            return;
+        };
+        let area = self.centered_rect(76, 20, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .title(format!(" \u{26d3}\u{fe0f} Chain: {} ", panel.entity.name))
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.warning))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+
+        let mut lines: Vec<Line> = Vec::new();
+        if let Some(desc) = &panel.entity.description {
+            if !desc.trim().is_empty() {
+                lines.push(Line::from(Span::styled(
+                    desc.clone(),
+                    Style::default().fg(self.ui.theme.border),
+                )));
+            }
+        }
+        for (i, seg) in panel.segments.iter().enumerate() {
+            let focused = i == panel.selected;
+            let marker = if focused { "\u{276f} " } else { "  " };
+            let prefix = if i == 0 {
+                String::new()
+            } else {
+                format!("{} ", seg.joiner)
+            };
+            let marker_style = if focused {
+                Style::default()
+                    .fg(self.ui.theme.secondary)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(self.ui.theme.border)
+            };
+            let text_style = if focused {
+                Style::default()
+                    .fg(self.ui.theme.fg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(self.ui.theme.fg)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(marker, marker_style),
+                Span::styled(format!("{}. ", i + 1), marker_style),
+                Span::styled(prefix, Style::default().fg(self.ui.theme.warning)),
+                Span::styled(seg.text.clone(), text_style),
+            ]));
+            let note = if panel.editing && focused {
+                format!("{}\u{2588}", panel.edit_buf)
+            } else {
+                panel.notes.get(i).cloned().unwrap_or_default()
+            };
+            let note_span = if focused && panel.editing {
+                Span::styled(
+                    format!("      note: {}", note),
+                    Style::default()
+                        .fg(self.ui.theme.success)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else if note.is_empty() {
+                Span::styled(
+                    "      note: (e to add)",
+                    Style::default().fg(self.ui.theme.border),
+                )
+            } else {
+                Span::styled(
+                    format!("      note: {}", note),
+                    Style::default().fg(self.ui.theme.secondary),
+                )
+            };
+            lines.push(Line::from(note_span));
+        }
+        f.render_widget(Paragraph::new(lines), rows[0]);
+        let help = if panel.editing {
+            "Type the note \u{b7} Enter: save \u{b7} Esc: discard"
+        } else {
+            "\u{2191}\u{2193}: segment \u{b7} e: edit note \u{b7} r: run chain \u{b7} Esc: close"
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                help,
+                Style::default().fg(self.ui.theme.border),
+            )),
+            rows[1],
+        );
+    }
+
     /// Create the project directory + git repo + env, save to DB.
     async fn create_new_project(&mut self) {
         let parent = self
@@ -9837,6 +10103,65 @@ mod tests {
         assert_eq!(app.visible_ssh_hosts().len(), 3);
     }
 
+    /// Scenario: `i` on a chain entity opens the segment-info popup and
+    /// edited notes persist into metadata_json (US-CMD chains).
+    #[tokio::test]
+    async fn given_chain_entity_when_i_pressed_then_info_opens_and_notes_persist() {
+        let mut app = test_app_db().await;
+        app.ui.state = AppState::Knowledge;
+        let created = repository::create_entity(
+            &*app.pool,
+            &CreateEntity {
+                name: "dirty mem".into(),
+                description: Some("show dirty pages".into()),
+                content: Some("cat /proc/meminfo | grep Dirt".into()),
+                type_id: "chain".into(),
+                project_id: None,
+                tags: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        app.fetch_knowledge().await.unwrap();
+        app.kb_filter = KbFilter::Chain;
+        app.fetch_knowledge().await.unwrap();
+        app.commands_list.selected = 0;
+        assert_eq!(
+            app.commands_list.get_selected().unwrap().type_id,
+            "chain",
+            "chain filter must show the chain"
+        );
+
+        // `i` opens the info popup with both segments
+        app.handle_key(key(KeyCode::Char('i'))).await;
+        let panel = app.chain_info.as_ref().expect("chain info opens");
+        assert_eq!(panel.segments.len(), 2);
+        assert_eq!(panel.segments[0].text, "cat /proc/meminfo");
+        assert_eq!(panel.segments[1].joiner, '|');
+        assert_eq!(panel.segments[1].text, "grep Dirt");
+
+        // Edit the second segment's note and save (Enter)
+        app.handle_key(key(KeyCode::Down)).await;
+        app.handle_key(key(KeyCode::Char('e'))).await;
+        for c in "filter dirty pages".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Enter)).await;
+
+        // Popup stays open; the stored entity carries the note
+        assert!(app.chain_info.is_some());
+        let stored = repository::get_entity(&*app.pool, &created.id)
+            .await
+            .unwrap();
+        let notes = crate::workflow::chain_notes(stored.metadata_json.as_ref(), 2);
+        assert_eq!(notes[1], "filter dirty pages");
+
+        // `r` runs the chain through the shell; Esc closes
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert!(app.chain_info.is_none());
+    }
+
     // ── Settings screen (US-APP-01/02/06) ───────────────────────────────────
 
     /// Scenario: the selected row in the visual builder shows a cursor
@@ -11102,11 +11427,14 @@ mod knowledge_picker_tests {
         assert_eq!(KbFilter::All.next(), KbFilter::Cmd);
         assert_eq!(KbFilter::Cmd.next(), KbFilter::App);
         assert_eq!(KbFilter::App.next(), KbFilter::Script);
-        assert_eq!(KbFilter::Script.next(), KbFilter::All);
+        assert_eq!(KbFilter::Script.next(), KbFilter::Chain);
+        assert_eq!(KbFilter::Chain.next(), KbFilter::All);
         assert_eq!(KbFilter::All.form_type_index(), 0);
         assert_eq!(KbFilter::App.form_type_index(), 2);
         assert_eq!(KbFilter::Script.form_type_index(), 1);
-        assert_eq!(KbFilter::All.type_ids().len(), 3);
+        assert_eq!(KbFilter::Chain.form_type_index(), 3);
+        assert_eq!(KbFilter::All.type_ids().len(), 4);
+        assert_eq!(KbFilter::Chain.type_ids(), &["chain"]);
     }
 
     #[test]

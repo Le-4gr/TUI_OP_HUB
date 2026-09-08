@@ -458,6 +458,95 @@ fn md_as_str(s: &str) -> &str {
 ///   shell text
 /// - `app` is spawned detached (no captured output)
 /// - `wf` returns `None` — workflows go through the engine instead
+/// One segment of a command chain (US-CMD chains): `joiner` is the operator
+/// that connects this segment to the previous one (`' '` for the first).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainSegment {
+    pub joiner: char,
+    pub text: String,
+}
+
+/// Split a command chain into segments at top-level `|` and `;` separators.
+/// Quotes (single/double) protect separators; nested `$(...)`/backticks are
+/// treated opaquely (separators inside them are respected at the top level
+/// only — good enough for display/info purposes).
+pub fn parse_chain(content: &str) -> Vec<ChainSegment> {
+    let mut segments: Vec<ChainSegment> = Vec::new();
+    let mut current = String::new();
+    let mut joiner = ' ';
+    let mut quote: Option<char> = None;
+    for ch in content.chars() {
+        match quote {
+            Some(q) => {
+                current.push(ch);
+                if ch == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if ch == '"' || ch == '\'' {
+                    quote = Some(ch);
+                    current.push(ch);
+                } else if ch == '|' || ch == ';' {
+                    segments.push(ChainSegment {
+                        joiner,
+                        text: current.trim().to_string(),
+                    });
+                    current = String::new();
+                    joiner = ch;
+                } else {
+                    current.push(ch);
+                }
+            }
+        }
+    }
+    let tail = current.trim().to_string();
+    if !tail.is_empty() || segments.is_empty() {
+        segments.push(ChainSegment { joiner, text: tail });
+    }
+    segments
+}
+
+/// Read per-segment notes from an entity's `metadata_json`
+/// (`{"segment_notes": ["…", …]}`); missing entries become empty strings.
+pub fn chain_notes(metadata_json: Option<&String>, segment_count: usize) -> Vec<String> {
+    let mut notes = vec![String::new(); segment_count];
+    if let Some(raw) = metadata_json {
+        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(raw) {
+            if let Some(serde_json::Value::Array(arr)) = map.get("segment_notes") {
+                for (i, v) in arr.iter().enumerate().take(segment_count) {
+                    if let Some(txt) = v.as_str() {
+                        notes[i] = txt.to_string();
+                    }
+                }
+            }
+        }
+    }
+    notes
+}
+
+/// Merge per-segment notes back into an entity's `metadata_json`, preserving
+/// any other top-level keys (e.g. `{"file": …}` for file-backed entities).
+pub fn chain_notes_to_metadata(metadata_json: Option<&String>, notes: &[String]) -> Option<String> {
+    let mut map = match metadata_json {
+        Some(raw) => match serde_json::from_str::<serde_json::Value>(raw) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        },
+        None => serde_json::Map::new(),
+    };
+    map.insert(
+        "segment_notes".to_string(),
+        serde_json::Value::Array(
+            notes
+                .iter()
+                .map(|n| serde_json::Value::String(n.clone()))
+                .collect(),
+        ),
+    );
+    Some(serde_json::to_string(&serde_json::Value::Object(map)).ok()?)
+}
+
 pub fn build_run_plan(entity: &Entity) -> Option<RunPlan> {
     // 1. File-backed entities run from their file, in any language
     if let Some(path) = metadata_file(entity) {
@@ -486,7 +575,7 @@ pub fn build_run_plan(entity: &Entity) -> Option<RunPlan> {
             }
             Some(RunPlan::Shell(content.clone()))
         }
-        "cmd" | "script_" | "" => Some(RunPlan::Shell(content.clone())),
+        "cmd" | "script_" | "" | "chain" => Some(RunPlan::Shell(content.clone())),
         // workflows and other typed entities are not "run" this way
         _ => None,
     }
@@ -724,6 +813,77 @@ mod tests {
         let mut entity = entity_with_content("empty", "x");
         entity.content = None;
         assert!(WorkflowDefinition::from_entity(&entity).is_err());
+    }
+
+    // ── Command chains (US-CMD) ─────────────────────────────────────────────
+
+    #[test]
+    fn given_chain_when_parsed_then_segments_split_on_pipes_and_semicolons() {
+        let segs = parse_chain("cat /proc/meminfo | grep Dirt;");
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].joiner, ' ');
+        assert_eq!(segs[0].text, "cat /proc/meminfo");
+        assert_eq!(segs[1].joiner, '|');
+        assert_eq!(segs[1].text, "grep Dirt");
+
+        // Semicolons are segment boundaries too; every `|` stage is its own
+        // segment with its joiner recorded (df -h → ; free -m → | head -2)
+        let segs = parse_chain("df -h; free -m | head -2");
+        assert_eq!(segs.len(), 3);
+        assert_eq!(segs[1].joiner, ';');
+        assert_eq!(segs[1].text, "free -m");
+        assert_eq!(segs[2].joiner, '|');
+        assert_eq!(segs[2].text, "head -2");
+    }
+
+    #[test]
+    fn given_quoted_separator_when_parsed_then_not_split() {
+        let segs = parse_chain("echo \"a|b\" | grep x");
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].text, "echo \"a|b\"");
+        assert_eq!(segs[1].text, "grep x");
+    }
+
+    #[test]
+    fn given_chain_entity_when_run_plan_built_then_runs_via_shell() {
+        let e = Entity {
+            id: "c1".into(),
+            name: "dirty mem".into(),
+            description: None,
+            content: Some("cat /proc/meminfo | grep Dirt".into()),
+            type_id: "chain".into(),
+            project_id: None,
+            metadata_json: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+            parent_id: None,
+        };
+        match build_run_plan(&e) {
+            Some(RunPlan::Shell(cmd)) => {
+                assert!(cmd.contains("cat /proc/meminfo"));
+                assert!(cmd.contains("grep Dirt"));
+            }
+            other => panic!("chain must run via shell, got {:?}", other.is_some()),
+        }
+    }
+
+    #[test]
+    fn given_notes_when_round_tripped_through_metadata_then_preserved() {
+        let existing = Some(r##"{"file": "x.lua"}"##.to_string());
+        let meta = chain_notes_to_metadata(
+            existing.as_ref(),
+            &["first".to_string(), "second".to_string()],
+        );
+        assert!(
+            meta.as_ref().unwrap().contains("\"file\""),
+            "other keys kept"
+        );
+        let notes = chain_notes(meta.as_ref(), 2);
+        assert_eq!(notes, vec!["first".to_string(), "second".to_string()]);
+        // Missing notes default to empty, never panic on short arrays
+        let notes = chain_notes(Some(&r#"{"segment_notes": ["only"]}"#.to_string()), 3);
+        assert_eq!(notes[0], "only");
+        assert_eq!(notes[1], "");
     }
 
     /// Scenario: a JSON workflow executes all steps in order

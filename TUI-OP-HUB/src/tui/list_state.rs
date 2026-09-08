@@ -124,9 +124,10 @@ pub struct CommandFormState {
     pub error_message: Option<String>,
 }
 
-/// Base entity types selectable in the command form (US-CMD-01, US-CMD-06)
-pub const ENTITY_TYPE_IDS: [&str; 3] = ["cmd", "script", "app"];
-pub const ENTITY_TYPE_NAMES: [&str; 3] = ["Command", "Script", "App"];
+/// Base entity types selectable in the command form (US-CMD-01, US-CMD-06,
+/// `chain` = pipe/semicolon command chains, US-CMD chains)
+pub const ENTITY_TYPE_IDS: [&str; 4] = ["cmd", "script", "app", "chain"];
+pub const ENTITY_TYPE_NAMES: [&str; 4] = ["Command", "Script", "App", "Chain"];
 /// Fields: Name, Type, Description, Content, Tags
 pub const COMMAND_FORM_FIELDS: usize = 5;
 
@@ -1143,7 +1144,7 @@ mod tests {
     #[test]
     fn entity_type_constants_match_seed_ids() {
         // 0001_init.sql seeds these exact type ids
-        assert_eq!(ENTITY_TYPE_IDS, ["cmd", "script", "app"]);
+        assert_eq!(ENTITY_TYPE_IDS, ["cmd", "script", "app", "chain"]);
         assert_eq!(ENTITY_TYPE_IDS.len(), ENTITY_TYPE_NAMES.len());
         assert_eq!(COMMAND_FORM_FIELDS, 5);
         assert_eq!(PROJECT_FORM_FIELDS, 2);

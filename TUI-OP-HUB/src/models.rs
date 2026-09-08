@@ -198,6 +198,7 @@ impl std::fmt::Display for Entity {
             "cmd" => "\u{1f4bb} ",
             "app" => "\u{1f680} ",
             "script" => "\u{1f4dc} ",
+            "chain" => "\u{26d3}\u{fe0f} ",
             "wf" => "\u{2699}\u{fe0f} ",
             "opt" => "\u{1f518} ",
             _ => "",
