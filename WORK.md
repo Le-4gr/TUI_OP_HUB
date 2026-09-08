@@ -3,6 +3,20 @@
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
 ## 🎯 Session 29: info + options in ONE Enter view (completed)
+## 🎯 Session 30: detail popup contrast (fix)
+
+User: "not so readable in the Nord theme, the text color is not too different".
+
+- Labels (description:/tags:/created/updated) are now dim `border` color while
+  their VALUES render in bright `fg` — clear label/value hierarchy.
+- The **selected option highlights the entire row** (marker + flag + composed
+  command + description) with the highlight background and dark text — high
+  contrast on every theme including Nord. Unselected rows: accent flag, dim
+  composed command, bright description — three distinct visual levels.
+
+264 total (216 lib + 48 BDD), clippy 0, build ok.
+
+
 
 User: pressing Enter on a command with options opened a cramped options-only popup
 without the command's description — "i want the info + options".
