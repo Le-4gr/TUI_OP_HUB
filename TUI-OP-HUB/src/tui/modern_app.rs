@@ -3009,33 +3009,9 @@ log:
                     self.git_commit_configs().await;
                     return;
                 }
-                // Numpad navigation (NumLock on): 2/8 move, 4/6 cycle mode,
-                // 7/9 home/end (US-APP-06)
-                KeyCode::Char('2') | KeyCode::Char('8') if !self.configs_list.items.is_empty() => {
-                    let d = if key.code == KeyCode::Char('2') {
-                        1
-                    } else {
-                        -1
-                    };
-                    let len = self.configs_list.items.len();
-                    let cur = self.configs_list.selected as isize;
-                    self.configs_list.selected = ((cur + d).rem_euclid(len as isize)) as usize;
-                    return;
-                }
-                KeyCode::Char('4') | KeyCode::Char('6') => {
-                    self.cycle_config_deploy_mode().await;
-                    return;
-                }
-                KeyCode::Char('7') => {
-                    self.configs_list.selected = 0;
-                    return;
-                }
-                KeyCode::Char('9') => {
-                    if !self.configs_list.items.is_empty() {
-                        self.configs_list.selected = self.configs_list.items.len() - 1;
-                    }
-                    return;
-                }
+                // Digits are NOT intercepted here: 1-9/0 always switch tabs,
+                // consistent with every other page (user feedback). List
+                // navigation uses arrows/Home/End; mode cycles with `m`.
                 _ => {}
             }
         }
@@ -4507,8 +4483,6 @@ log:
             ],
             AppState::Configs => vec![
                 ("\u{2191}\u{2193}", "Navigate"),
-                ("2/8", "Numpad nav"),
-                ("4/6", "Numpad mode"),
                 ("n", "Register"),
                 ("t", "Add target"),
                 ("m", "Mode"),
@@ -11072,9 +11046,8 @@ mod knowledge_nav_tests {
         assert_eq!(app.ui.state, AppState::Secrets);
         app.handle_key(key(KeyCode::Char('6'))).await;
         assert_eq!(app.ui.state, AppState::Configs);
-        // From Configs, 7 is numpad-home; leave with 0 first
-        app.handle_key(key(KeyCode::Char('0'))).await;
-        assert_eq!(app.ui.state, AppState::Settings);
+        // From Configs, 7 now jumps straight to Plugins (digits are never
+        // intercepted on Configs anymore)
         app.handle_key(key(KeyCode::Char('7'))).await;
         assert_eq!(app.ui.state, AppState::Plugins);
         app.handle_key(key(KeyCode::Char('1'))).await;
@@ -11470,47 +11443,39 @@ mod configs_tab_tests {
         // `t` on empty list -> status, not hang
         app.handle_key(key(KeyCode::Char('t'))).await;
 
-        // 0 -> Settings from Configs (7 is numpad-home here now)
+        // 0 -> Settings from Configs
         app.handle_key(key(KeyCode::Char('0'))).await;
         assert_eq!(app.ui.state, AppState::Settings);
     }
 
     #[tokio::test]
-    async fn given_configs_tab_when_numpad_digits_pressed_then_navigate_and_cycle() {
+    async fn given_configs_tab_when_digits_pressed_then_tabs_switch_consistently() {
+        // User feedback: digits must switch tabs on Configs like everywhere
+        // else (the old numpad interception made 4/7 feel broken).
         let mut app = test_app().await;
-        let dir = tmp("numpad");
+        let dir = tmp("digits");
         app.config_store_dir = dir.join("store");
-        for (i, name) in ["a.conf", "b.conf", "c.conf"].iter().enumerate() {
-            let src = dir.join(name);
-            std::fs::write(&src, format!("{}", i)).unwrap();
-            app.ui.state = AppState::Configs;
-            app.fetch_configs().await.unwrap();
-            app.handle_key(key(KeyCode::Char('n'))).await;
-            for c in src.to_string_lossy().chars() {
-                app.handle_key(key(KeyCode::Char(c))).await;
-            }
-            app.handle_key(key(KeyCode::Enter)).await;
+        let src = dir.join("a.conf");
+        std::fs::write(&src, "x").unwrap();
+        app.ui.state = AppState::Configs;
+        app.fetch_configs().await.unwrap();
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        for c in src.to_string_lossy().chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
         }
+        app.handle_key(key(KeyCode::Enter)).await;
         app.ui.state = AppState::Configs;
         app.fetch_configs().await.unwrap();
 
-        // Numpad 2 = down, 8 = up (NumLock on)
-        app.handle_key(key(KeyCode::Char('2'))).await;
-        assert_eq!(app.configs_list.selected, 1);
-        app.handle_key(key(KeyCode::Char('8'))).await;
-        assert_eq!(app.configs_list.selected, 0);
-        // Numpad 9 = end, 7 = home
-        app.handle_key(key(KeyCode::Char('9'))).await;
-        assert_eq!(app.configs_list.selected, 2);
+        // 7 -> Plugins, 4 -> Workflows, 1 -> Dashboard straight from Configs
         app.handle_key(key(KeyCode::Char('7'))).await;
-        assert_eq!(app.configs_list.selected, 0);
-        // Numpad 4 = previous mode in the cycle (symlink <- copy)
-        app.configs_list.items[0].deploy_mode = crate::config_manager::DeployMode::Copy;
+        assert_eq!(app.ui.state, AppState::Plugins);
         app.handle_key(key(KeyCode::Char('4'))).await;
-        assert_eq!(
-            app.configs_list.items[0].deploy_mode,
-            crate::config_manager::DeployMode::HardLink
-        );
+        assert_eq!(app.ui.state, AppState::Workflows);
+        app.handle_key(key(KeyCode::Char('6'))).await;
+        assert_eq!(app.ui.state, AppState::Configs);
+        app.handle_key(key(KeyCode::Char('1'))).await;
+        assert_eq!(app.ui.state, AppState::Dashboard);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
