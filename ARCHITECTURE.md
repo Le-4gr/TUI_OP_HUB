@@ -82,19 +82,21 @@ TUI-OP-HUB is a terminal-based operations hub built with Rust, designed to provi
 
 **Key Functions**:
 - `init_pool(database_path)`: Create SQLite pool with WAL mode
-- `run_migrations(pool)`: Execute 0001_init.sql migration
+- `run_migrations(pool)`: Execute the embedded migrations (`0001`–`0008`: core
+  schema, user auth, phase-2 tables, tooling, project paths, plugin tables,
+  secret groups, SSH host tags)
 
 **Schema Highlights**:
 - **entities**: Core CRUD entities with FTS indexing
-- **projects**: Grouping container for entities
+- **projects**: Grouping container for entities (+ stored workspace path)
 - **tags**: Flexible categorization
 - **types**: Entity type definitions
 - **workflow_runs**: Execution history with duration/output/error
-- **secrets**: Encrypted values with user_id
+- **secrets**: Encrypted values with user_id (+ groups, metadata, passphrase layer, ssh-agent flag)
 - **user_profiles**: Multi-user support
 - **user_keys**: Per-user encryption keys
 - **plugins**: Plugin definitions with manifest
-- **ssh_hosts**: SSH host configurations
+- **ssh_hosts**: SSH host configurations (+ `tags` for grouping, US-SSH-04)
 - **scheduled_tasks**: Cron-based task scheduling
 
 ### 3. Models Module (`src/models.rs`)
@@ -167,34 +169,35 @@ async fn handler(State(state): State<AppState>, Json(req): Json<Req>) -> Result<
 
 **Responsibility**: Terminal user interface with interactive navigation
 
-**State Management**:
-- `App` struct: Tab, Mode, selection, forms, loaded data
-- `Tab` enum: Dashboard, Commands, Projects, Tags, Search, Workflows, Secrets
-- `Mode` enum: Normal, Search, Filter, Detail, CreateEntity, EditEntity, CreateProject, CreateSecret, ConfirmDelete, Help
+**Structure** (`modern_app.rs` ~10k lines + `modern_ui.rs` theme/login/dashboard,
+`list_state.rs` reusable list/form/node state, `helpers.rs`):
+- `ModernApp` struct: tab state (`AppState` — Dashboard, Knowledge, Projects,
+  Workflows, Secrets, Configs, Plugins, Settings), all popup/panel states,
+  selections and loaded data; single async `handle_key` dispatcher routes
+  keypresses through the overlay stack (sudo popup → file browser → panels →
+  forms → tab handlers)
+- Overlays render on top of the base screen in `render()`; popups include the
+  visual workflow builder (+ logic-node editor, command picker, template
+  preview), config register/target forms, file browser, SSH panel, plugin
+  actions, keybinds overlay and delete confirmations
+- Reusable state types live in `list_state.rs` (pagination, forms,
+  `VisualStep`/`VisualNodeKind` + logic-node compilation)
 
-**Key Components**:
-- **Forms**: `EntityForm` (6 fields), `ProjectForm` (2 fields), `SecretForm` (2 fields)
-- **Rendering**: Tab bar, main content (list/form/detail), input area, status bar, help overlay
-- **Event Loop**: Poll for key events, handle based on mode, refresh data, redraw
+**Selected rows** show an explicit `❯` cursor marker in addition to the
+highlight background, so selection is theme-independent (US-APP-01).
 
-**Key Handlers**:
-- `handle_key`: Route keypresses to mode-specific handlers
-- `handle_entity_form`: Build/submit entity form
-- `handle_project_form`: Build/submit project form
-- `handle_secret_form`: Build/submit secret form with encryption
-- `refresh_data`: Load data for current tab (async)
-
-**Secrets Tab Features**:
-- List secrets by name (encrypted values not shown)
-- Create with `n` key (form with 2 fields: name, value)
-- View value with `v` key (decrypts on demand, shows in message)
-- Delete with `d` key (confirmation)
-
-**Workflows Tab Features**:
-- List workflows (type_id="wf") with descriptions
-- Filter by tags (press `f`)
-- Detail view shows recent run history (timestamp, status, output preview)
-- Execute with `r` key (spawns blocking task, persists run, updates history)
+**Tab features** (highlights):
+- **Knowledge (2)**: one list for commands/scripts/apps with type filter (`f`)
+- **Projects (3)**: workspace creation with plugin-template picker + preview
+  (`N`), register existing dir (`n`), delete with optional folder removal
+  (`d` + `f` toggle), plugin UI actions (`a`), editor/shell open (`O`/`E`)
+- **Configs (6)**: register/target forms with `Ctrl+O` built-in file browser
+  (create files/folders inline) and `Ctrl+P` external picker, deploy/update/git
+  actions, tag-less list navigation — digits always switch tabs
+- **Secrets (5)** → `H`: SSH host panel with tags + live filter (`f`) and
+  connection test (`t`)
+- Digits `1-9`/`0` switch tabs from any screen; `Tab` follows
+  `[tui].tab_order`
 
 ### 7. Secrets Module (`src/secrets/mod.rs`)
 
@@ -234,7 +237,8 @@ pub async fn decrypt_for_user(pool: &SqlitePool, user_id: &str, value_enc_b64: &
 
 ### 8. Workflow Module (`src/workflow.rs`)
 
-**Responsibility**: Lua-based workflow engine with Host functions
+**Responsibility**: Lua-based workflow engine with Host functions, plus the
+visual-builder compilation target (US-WF, US-FUT-07)
 
 **Engine**: mlua (Lua 5.4, vendored, Send-compatible)
 
@@ -244,21 +248,19 @@ pub async fn decrypt_for_user(pool: &SqlitePool, user_id: &str, value_enc_b64: &
 - `emit_event(event_type, data)`: Log event
 - `log(message)`: Print log message
 
-**Execution Flow**:
-```rust
-pub async fn execute_workflow_by_id(
-    pool: Arc<SqlitePool>,
-    workflow_id: &str,
-    variables: Option<HashMap<String, String>>,
-) -> WorkflowResult {
-    // 1. Fetch workflow entity (type_id="wf")
-    // 2. Parse workflow manifest (YAML or Lua)
-    // 3. Create mlua context with host functions
-    // 4. Register host functions that can call repository
-    // 5. Execute Lua script
-    // 6. Return WorkflowResult { success, output, error, duration_ms }
-}
-```
+**Execution Model**:
+- Steps run in definition order; the Lua engine is shared across steps
+- Every step's **return value is captured** into the global `results` table
+  (`results["<step name>"]`; `nil`/`false` → `false`) so later steps can
+  reference earlier outputs (US-FUT-07)
+- `WorkflowStep.run_when` (optional Lua expression) gates a step: skipped
+  (reported as "◌ skipped") when falsy; a broken condition fails the run
+- The cooperative cancel flag is checked before every step (US-WF-09)
+
+**Logic nodes** (visual builder, US-FUT-07): AND/OR/NOT/XOR/Compare/IfElse
+nodes compile to Lua expressions over `results[...]` in
+`list_state::build_workflow_definition`; inputs must reference earlier steps
+(linear DAG order) and arity is enforced (XOR=2, NOT=1).
 
 **Result Structure**:
 ```rust
@@ -266,7 +268,8 @@ pub struct WorkflowResult {
     pub success: bool,
     pub output: String,
     pub error: Option<String>,
-    pub duration_ms: Option<i64>,
+    pub duration_ms: u64,
+    pub steps_completed: usize,
 }
 ```
 

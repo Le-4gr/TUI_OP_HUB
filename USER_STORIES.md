@@ -62,7 +62,7 @@
 **Remaining Phase 2 work**:
 - ✅ `US-PLG-05`, `US-PLG-06`: Plugin manifest + capability approval (Plugins tab, DB-enforced)
 - ✅ `US-PLG-07`, `US-PLG-10`: Lua mod loading, event hooks, Plugins tab (list/approve/enable)
-- ✅ `US-SSH-01`..`03`, `06`: SSH host manager panel (Secrets → `H`) — CRUD + quick-connect; host grouping/tags still open
+- ✅ `US-SSH-01`..`06`: SSH host manager panel (Secrets → `H`) — CRUD, quick-connect, tags + filter, connection test
 - ✅ `US-WF-09`: background workflow runs with `X` cancel (TUI) + `POST /runs/{id}/cancel` (API)
 - ✅ `US-DEP-04`: Systemd integration (user service, `--install-service`, `--headless` daemon mode)
 - 🔄 Admin user management TUI panel (backend + API done)

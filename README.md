@@ -60,24 +60,34 @@ secure secret storage — local-first, single binary, keyboard-driven.
   (yazi → nnn → ranger → lf → zenity → kdialog)
 - **New terminal window**: `` ` `` spawns your terminal emulator running the shell
   (`$TERMINAL` override, 11-emulator fallback)
-### Phase 3 🔄 Planned (requirements captured)
+### Phase 3 ✅ Complete
 
-- **Navigation restructure** (US-TUI-11/12): Commands, Apps and Scripts become
-  subpages of a "Knowledge Base" parent page that describes each of them;
-  Settings moves to the last tab; tab order configurable
-- **Config Management page** (US-CFG-09..12): register existing files/folders or
-  create new configs, deploy them as symlink / hard link / copy with update + drift
-  actions, and per-config git integration (init / commit / diff / push-pull)
-- **Plugin UI actions** (US-PLG-13): plugins register on-screen buttons (e.g. a
-  "Create starting files" button on a project) — label and target defined in plugin code
-- **Project scaffold templates** (US-PLG-14/15, US-PROJ-08): opt-in templates
-  (files, folders, repo, post-create commands) shipped by plugins — e.g. a Python
-  starter that creates a venv, README, pyproject and a git repo; preview +
-  customize before applying; never applied by default
+- **Navigation restructure** (US-TUI-11/12): digits `1-9`/`0` switch tabs from any
+  screen (0 = Settings); `Tab` cycles in a configurable order (`[tui].tab_order`);
+  the **Knowledge Base** (2) is ONE tab with a type filter
+- **Config management page** (US-CFG-09..12): the Configs tab (6) — register existing
+  config files with a full form (path with **built-in file browser** `Ctrl+O`, name,
+  description, tags, deploy targets, mode) or `Ctrl+P` for the external picker;
+  deploy targets can live anywhere (even in not-yet-existing folders); deploy as
+  symlink / hard link / copy (`l`), update + drift fix (`u`), git commit (`g`)
+- **Plugin UI actions** (US-PLG-13): plugins declare labeled `[[actions]]` in their
+  manifest; `a` on the Projects tab runs them against the selected project —
+  capability-gated twice (declaration subset + loaded/approved plugin)
+- **Project scaffold templates** (US-PLG-14/15, US-PROJ-08): plugins ship starters
+  as inert data in `<plugin>/templates/*.toml` (files with `{{project_name}}`
+  placeholders, git init, post-create commands); optional template picker in the
+  New Project Workspace form (default none) with a preview popup — include/exclude
+  files, edit contents — before anything is written
 - **Logic gates for visual scripting** (US-FUT-07): AND / OR / NOT / XOR /
-  comparison / if-else nodes with typed boolean ports in the DAG builder
-- **Visible search bar**: `/` replaces the footer with the live query + hints
-- **Digits 1-9 switch tabs from any screen** (Settings included)
+  comparison / if-else nodes with typed boolean ports; the engine captures every
+  step's return into `results["<step>"]` and `run_when` expressions gate any step
+- **SSH host tags + connection test** (US-SSH-04/05): tag hosts in the SSH panel
+  (`H` on Secrets), filter live with `f`, verify reachability with `t`
+  (non-interactive probe with bounded timeout)
+- **Project folder options** (US-PROJ): deleting a project can also remove its
+  workspace folder (explicit toggle, default off); creating a workspace into an
+  existing folder merges instead of failing (`Ctrl+O`)
+- **Visible search bar** and **selection cursor markers** (`❯`) on every list
 
 ## Quick Start
 
@@ -173,16 +183,17 @@ The Settings screen (`8`) previews live and `a` opens the visual color editor.
 
 | Key | Action |
 |:----|:-------|
-| 1-7, 0 | Switch tab (from any screen) — 1 Dashboard, 2 Knowledge Base, 3 Projects, 4 Workflows, 5 Secrets, 6 Configs, 7 Plugins, 0 Settings |
+| 1-9, 0 | Switch tab (from any screen) — 1 Dashboard, 2 Knowledge Base, 3 Projects, 4 Workflows, 5 Secrets, 6 Configs, 7 Plugins, 0 Settings |
 | Tab | Cycle tabs (order from `[tui].tab_order` in config.conf; Settings last by default) |
 | f | Knowledge tab: cycle the type filter (All, Commands, Apps, Scripts) |
-| n / t / m / l / u / g | Configs tab: register file, add deploy target, cycle mode (symlink/hard link/copy), deploy, update (drift fix), git commit |
+| n / t / m / l / u / g | Configs tab: register file (form), add deploy target, cycle mode (symlink/hard link/copy), deploy, update (drift fix), git commit |
+| Ctrl+O / Ctrl+P | Configs register form & target input: built-in file browser (create files/folders inline) / external picker |
 | Up/Down | Navigate items |
 | Enter | Select / open project detail |
 | n | Create new |
-| N | Create project workspace (Projects tab) |
+| N | Create project workspace (Projects tab) — optional plugin template with preview |
 | e | Edit selected |
-| d | Delete (with confirm) |
+| d | Delete (with confirm; projects offer an `f` toggle to also delete the folder) |
 | / | Search (visible bar) |
 | c | Copy content |
 | o | Open in external editor |
@@ -190,14 +201,15 @@ The Settings screen (`8`) previews live and `a` opens the visual color editor.
 | R | Run with sudo/doas/su |
 | s | Schedule workflow (Workflows tab) |
 | X | Cancel the running background workflow (Workflows tab) |
-| v | Visual workflow builder |
+| v | Visual workflow builder (`l` adds a logic node, `o` edits it — AND/OR/NOT/XOR/compare/if-else with `run_when` gates) |
+| a | Projects tab: run plugin UI actions · Plugins tab: approve plugin |
 | S | Load SSH keys into ssh-agent (Secrets tab) |
-| t | Open SSH terminal (Secrets tab) |
+| t | Open SSH terminal (Secrets tab) · SSH panel: test connection |
+| f | SSH panel: live tag/name filter |
 | k | Keygen (Secrets tab) |
-| H | SSH host manager — CRUD + quick connect (Secrets tab) |
+| H | SSH host manager — CRUD, tags, connection test, quick connect (Secrets tab) |
 | u | Admin: manage users (Settings tab) |
 | x / I | Export / Import knowledge base |
-| a | Approve plugin (Plugins tab) |
 | g/d/k/n | Quick launch lazygit/lazydocker/k9s/lazynpm (Dashboard) |
 | ` | Open a new terminal window |
 | ? | Keybind helper |
@@ -251,7 +263,7 @@ Base: `http://127.0.0.1:3001` (configurable via `api.bind_addr`)
 
 ```bash
 cd TUI-OP-HUB
-cargo test          # unit + BDD scenarios (195 tests)
+cargo test          # unit + BDD scenarios (257 tests)
 ```
 
 **Developer mode** — active automatically in debug builds (`cargo run`, `cargo test`)
@@ -291,8 +303,8 @@ TUI-OP-HUB/
         ├── api.rs             # REST API (axum)
         ├── auth.rs            # Argon2 auth, per-user keys
         ├── config.rs          # Configuration (themes, keybindings)
-        ├── config_manager.rs  # Config file storage/versions (Phase 3 stub)
-        ├── db/                # SQLite pool + migrations/ (0001..0007)
+        ├── config_manager.rs  # Managed-config store/registry (Configs tab)
+        ├── db/                # SQLite pool + migrations/ (0001..0008)
         ├── environment.rs     # Env var management (Phase 3 stub)
         ├── filepicker.rs      # yazi/nnn/ranger/lf/zenity/kdialog chain
         ├── fuzzy.rs           # Fuzzy matcher
@@ -335,10 +347,10 @@ TUI-OP-HUB/
 ## Status
 
 **Version**: 0.2.0
-**Phase 1 & 2**: ✅ Complete
-**Phase 3**: 🔄 Planned — process TUI, package management, environments, config
-management (link/copy + git), plugin UI actions & project templates, visual-scripting
-logic gates, navigation restructure; see [`USER_STORIES.md`](USER_STORIES.md) §22.
+**Phase 1, 2 & 3**: ✅ Complete
+**Remaining backlog** (see [`WORK.md`](WORK.md)): plugin approval workflow for
+headless service runs; P3 parked areas (process manager via known tools, package
+management, environments, backups, multi-DB) — see [`USER_STORIES.md`](USER_STORIES.md).
 
 ## License
 

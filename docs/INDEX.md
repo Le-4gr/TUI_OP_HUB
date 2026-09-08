@@ -10,7 +10,7 @@
 | [`INSTALL.md`](../INSTALL.md) | **Quick install instructions** (repo root): script install, service enable, TUI launch, update/uninstall, file paths |
 | [`docs/INSTALL.md`](INSTALL.md) | **Release & installation deep-dive**: `./install.sh`, background systemd service + TUI coexistence, secrets key handling, non-systemd inits, making a release |
 | [`docs/IMPORT_EXPORT.md`](IMPORT_EXPORT.md) | **Knowledge import/export**: bundle JSON schema, the copy-paste LLM prompt for generating commands/scripts/apps, duplicate strategies (skip/overwrite/rename), file pickers, cron scheduling, headless setup |
-| [`docs/PLUGINS.md`](PLUGINS.md) | **Plugin/mod API**: Lua mods with manifests + capabilities, event hooks (`project_created` for git automation), TUI management, security model |
+| [`docs/PLUGINS.md`](PLUGINS.md) | **Plugin/mod API**: Lua mods with manifests + capabilities, event hooks (`project_created` for git automation), **UI actions** (`[[actions]]` → buttons on the Projects tab), **project scaffold templates** (`templates/*.toml` with preview/customize), TUI management, security model |
 
 ## 🤖 For AI agents & contributors
 

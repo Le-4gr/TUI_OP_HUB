@@ -1,8 +1,9 @@
 # 🧩 Plugin / Mod API
 
-> Write mods (Lua scripts + a manifest) that load into TUI-OP-HUB and react to
-> app events — e.g. wire up a git repository automatically whenever a new
-> project workspace is created.
+> Write mods (Lua scripts + a manifest) that load into TUI-OP-HUB, react to
+> app events, contribute UI actions and ship project scaffold templates —
+> e.g. wire up a git repository automatically whenever a new project workspace
+> is created.
 
 ---
 
@@ -10,11 +11,12 @@
 
 ```text
 ~/.config/tui-op-hub/plugins/<plugin-id>/
-├── plugin.toml    # manifest: identity + requested capabilities
-└── main.lua       # the script (any file name; referenced by entry_point)
+├── plugin.toml    # manifest: identity + capabilities + UI actions
+├── main.lua       # the script (any file name; referenced by entry_point)
+└── templates/     # optional: project scaffold templates (*.toml, US-PLG-14)
 ```
 
-Create the folder, write the two files, and open the **Plugins tab** (`9`) in
+Create the folder, write the files, and open the **Plugins tab** (`9`) in
 the TUI: the mod appears immediately. Mods load on app startup once approved.
 
 ## 2. The manifest (`plugin.toml`)
@@ -104,26 +106,92 @@ Open the **Plugins tab** (`9`):
 Each row shows `name vX.Y.Z [approved|unapproved] [lua]`. On the next startup,
 approved + enabled mods load automatically and begin receiving events.
 
-## 5. Writing automation ideas
+## 5. UI actions (US-PLG-13)
+
+Mods can register **labeled on-screen actions** in their manifest. Actions on
+the `project` surface appear on the **Projects tab**: press `a` on a selected
+project and pick one.
+
+```toml
+[[actions]]
+id = 'starter-files'
+label = 'Create starting files'
+command = 'create_starting_files'   # Lua function to call
+surface = 'project'                 # where the action shows
+requires = ['filesystem_write']     # capability subset check
+```
+
+```lua
+-- args = [project_name, project_path]
+function create_starting_files(args)
+    local out = run_command('mkdir -p ' .. args[2] .. '/src')
+    assert(out.success)
+    return 'created src/'
+end
+```
+
+**Gating (two layers)**: `requires` must be a subset of the plugin's declared
+capabilities (checked at discovery AND at run time), and only actions from
+**loaded** (approved) plugins are offered. The result string is shown in the
+actions popup and the status bar.
+
+## 6. Project scaffold templates (US-PLG-14/15)
+
+Ship project starters as **inert data** — no plugin code runs when one is
+applied. Place `templates/*.toml` in your plugin folder:
+
+```toml
+[template]
+name = "Python dev"
+description = "venv starter with README and pyproject"
+git_init = true            # optional: run `git init` in the new project
+
+[[files]]
+path = "README.md"
+content = "# {{project_name}}"
+
+[[files]]
+path = "src/main.py"
+content = "print('hello from {{project_name}}')"
+
+[[commands]]
+run = "python3 -m venv .venv"   # optional post-create commands (sh -c, cwd = project)
+```
+
+- `{{project_name}}` is substituted in paths, contents and commands
+- Applied via the **New Project Workspace** form (`N` on Projects): the
+  **Template** field cycles through discovered templates (default `(none)`),
+  `Enter` opens a **preview** where you can exclude files (`x`) and edit
+  contents (`e`) before creating
+- Existing files are **never overwritten** (reported as skipped); missing
+  target folders are created
+- Application runs off the UI thread and reports
+  `N file(s) written, M skipped, git initialized, K command(s) run`
+
+## 7. Writing automation ideas
 
 - **Git automation** (above): init + remote + first commit on project creation.
-- **Scaffolding**: write language-specific starter files into `event.path`.
+- **Scaffolding**: ship a template (section 6) or write language-specific
+  starter files into `event.path`.
 - **Notifications**: run a `notify-send` or `curl` command when projects are
   created (requires `execute_commands`).
 - **Housekeeping**: `on_entity_created` style hooks as the event set grows.
 
-## 6. Security model
+## 8. Security model
 
-1. Mods run in a fresh mlua sandbox per hook invocation (no shared state, no
-   lingering references).
+1. Mods run in a fresh mlua sandbox per hook/command invocation (no shared
+   state, no lingering references).
 2. Only the capability-gated host functions exist — no `io`, `os.execute` or
    other stdlib access beyond what the host provides.
 3. Capabilities require explicit user approval per mod (stored in
    `plugin_approvals`); unapproved mods fail to load and are clearly marked in
-   the Plugins tab.
-4. Hook failures are logged and surfaced as a status message — they never
+   the Plugins tab. UI actions additionally re-check their `requires` subset
+   at run time.
+4. Templates are inert data materialized by core — applying one never runs
+   plugin code.
+5. Hook failures are logged and surfaced as a status message — they never
    break project creation or the TUI loop.
 
 ---
 
-*Implementation: `TUI-OP-HUB/src/plugin/mod.rs`. Schema: migration `0006`.*
+*Implementation: `TUI-OP-HUB/src/plugin.rs`. Schema: migration `0006`.*

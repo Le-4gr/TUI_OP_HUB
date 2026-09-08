@@ -22,10 +22,23 @@ developer's/power-user's daily tooling into one keyboard-driven app:
 - **Cron scheduling** — workflows run on cron expressions via the built-in scheduler daemon
 - **Background service** — systemd user service (or cron/any init) runs the hub headless
   (`--headless`: scheduler + API); the TUI runs on demand and coexists with the service
-- **Modern TUI** — ratatui + crossterm UI with login screen and 7 tabs (Dashboard, Knowledge Base — the ONE tab for commands/apps/scripts with a type filter — Projects, Workflows, Secrets, Plugins, Settings last; tab order configurable via `[tui].tab_order`)
-  (Dashboard, Commands, Apps, Scripts, Projects, Workflows, Secrets, Settings);
-  number keys 1-8, `Enter` on a project opens its detail view, `` ` `` opens a new
-  terminal window, `/` search with a visible search bar, `I`/`x` import/export
+- **Modern TUI** — ratatui + crossterm UI with login screen and 8 main tabs
+  (Dashboard, Knowledge Base — the ONE tab for commands/apps/scripts with a type
+  filter — Projects, Workflows, Secrets, Configs, Plugins, Settings last; tab order
+  configurable via `[tui].tab_order`); digits 1-9/0 switch tabs from any screen,
+  `Enter` on a project opens its detail view, `` ` `` opens a new terminal window,
+  `/` search with a visible search bar, `I`/`x` import/export, selected rows show
+  a `❯` cursor marker
+- **Configs management** — register existing config files (form with file browser,
+  metadata, multiple deploy targets), deploy as symlink/hard link/copy, update +
+  drift fix, git-versioned store
+- **Plugin system** — Lua mods with capability approval, event hooks, **UI
+  actions** (`[[actions]]` → `a` on Projects) and **project scaffold templates**
+  (`templates/*.toml` + preview/customize in the workspace form)
+- **Visual workflow builder** — compose workflows from saved commands plus logic
+  nodes (AND/OR/NOT/XOR/compare/if-else) with `results` flow and `run_when` gates
+- **SSH host manager** — tags + live filter, connection test, quick-connect in a
+  new terminal window
 
 **Long-term vision** (see `bp.md`): a unified "system control center" that will also cover
 process monitoring, package management, environment/config management, SSH host management,
@@ -75,8 +88,8 @@ TUI-OP-HUB/                       # repo root (docs live here)
         │                         # schedules, export/import)
         ├── auth.rs               # Argon2 password auth, per-user EncryptionKey (zeroized)
         ├── config.rs             # AppConfig — Hyprland-style config.conf (themes, keybindings)
-        ├── config_manager.rs     # config file storage/versions (US-CFG, Phase 3 stub)
-        ├── db/                   # SQLite pool (WAL) + migrations/ (0001..0007)
+        ├── config_manager.rs     # Managed-config store/registry (Configs tab, US-CFG)
+        ├── db/                   # SQLite pool (WAL) + migrations/ (0001..0008)
         ├── environment.rs        # env var management (Phase 3 stub)
         ├── filepicker.rs         # yazi/nnn/ranger/lf/zenity/kdialog chooser chain
         ├── fuzzy.rs              # fuzzy matcher used by list search
@@ -98,7 +111,7 @@ TUI-OP-HUB/                       # repo root (docs live here)
         │   ├── mod.rs            # XChaCha20Poly1305 helpers, passphrase wrap
         │   └── ssh_agent.rs      # ssh-agent spawn + key loading, ssh terminals
         └── tui/                  # ratatui UI layer
-            ├── modern_app.rs     # the application (login, 9 tabs, forms, popups)
+            ├── modern_app.rs     # the application (login, 8 main tabs, forms, popups)
             ├── modern_ui.rs      # theme + login/dashboard rendering
             ├── list_state.rs     # reusable list/form state + entity types
             └── helpers.rs        # free helpers (paths, formatting, terminal spawn)
@@ -222,31 +235,39 @@ Environment variables:
 
 ### ✅ Phase 1 — Complete (v0.2.0)
 Entity CRUD, projects, tags, FTS5 search, Lua workflows + run history, encrypted secrets,
-user profiles, REST API, modern TUI (login + 7 tabs incl. the single Knowledge Base tab with type filter, Settings last), Argon2-based auth (migration 0002),
+user profiles, REST API, modern TUI (login + tabs incl. the single Knowledge Base tab
+with type filter, Settings last), Argon2-based auth (migration 0002),
 config/theming/keybindings.
 
-### 🔄 Phase 2 — Foundation ready, integration pending (the active TODO list)
-Models, schema, DB functions, and module skeletons exist; **TUI/API integration is missing**:
+### ✅ Phase 2 — Complete
+Scheduler (US-WF-07), systemd/cron integration (US-DEP-04), knowledge import/export
+(US-CMD-01), project detail view (US-PROJ-07), plugin manifest/approval/loading/events
+(US-PLG-05/06/07/10), SSH host manager (US-SSH-01..03/06), workflow stop/cancel
+(US-WF-09), secrets v2, admin users, config-management foundation (US-CFG-01..08).
 
-- [x] **Scheduler** (`src/scheduler/`): daemon wired into `main.rs`; cron validation with
-      5-field normalization; API `POST /workflows/{id}/schedule`, `GET/DELETE /schedules`;
-      TUI `s` key on Workflows (US-WF-07 ✅)
-- [x] **Systemd integration**: `src/service/` + `--install-service`/`--headless`; enabled by
-      `./install.sh`; TUI coexists with the service (US-DEP-04 ✅)
-- [x] **Knowledge import/export** with lenient formats + path popup (`I`) and API
-      `GET /export` / `POST /import` (US-CMD-01)
-- [x] **Project detail view** (`Enter` on Projects tab) — US-PROJ-07
-- [ ] **Plugins** (`src/plugin/`): implement approval workflow UI + enforcement (US-PLG-05/06),
-      plugin command registration + TUI listing (US-PLG-07/10)
-- [ ] **SSH host manager**: TUI + quick-connect over existing models/DB functions
-      (US-SSH-01..06); SSH key storage + ssh-agent integration (US-SEC-01/05)
-- [ ] **Workflow stop/cancel** for running workflows (US-WF-09)
+### ✅ Phase 3 — Complete (TUI expansion)
+- [x] **Navigation restructure** (US-TUI-11/12): Knowledge Base parent tab (2),
+      digits 1-9/0 switch tabs from any screen, `[tui].tab_order` cycle
+- [x] **Configs management page** (US-CFG-09..12): register form (path + name +
+      description + tags + deploy targets + mode) with `Ctrl+O` built-in file
+      browser / `Ctrl+P` external picker, deploy `l`, update+drift `u`, git `g`
+- [x] **Plugin UI actions** (US-PLG-13): manifest `[[actions]]`, `a` on Projects,
+      capability-gated at discovery + run time
+- [x] **Project scaffold templates** (US-PLG-14/15, US-PROJ-08):
+      `<plugin>/templates/*.toml`, optional picker + preview/customize, applied
+      off-thread, never overwrites
+- [x] **Logic gates** (US-FUT-07): AND/OR/NOT/XOR/Compare/IfElse nodes, `results`
+      capture in the engine, `run_when` gates
+- [x] **SSH tags + connection test** (US-SSH-04/05): migration 0008, live filter,
+      non-interactive probe
+- [x] Project folder options (delete-with-folder toggle, merge-into-existing),
+      selection cursor markers, consistent digit behavior
 
-### 🟢 Phase 3+ — Not started (future)
-- Process management TUI (`src/process/` backend exists via sysinfo) — US-PROC-01..07
-- Package manager integration (apt/pacman/nix) — US-PKG-01..09
+### 🟢 Phase 4+ — Remaining (future)
+- Plugin approval workflow for headless service runs (leftover)
+- Process manager (prefer btop/htop) — US-PROC-01..07 (parked)
+- Package manager integration — US-PKG-01..09
 - Environment/venv management — US-ENV-01..08
-- Config file management — US-CFG-01..08 (module stub exists in `config_manager/`)
 - Multi-database / multi-context support — US-DB-01..06
 - Web UI — US-WEB-01..04
 - Cross-machine sync — US-SYNC-01..04
