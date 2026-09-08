@@ -378,7 +378,7 @@ Style::default().fg(theme.success)  // For success
 
 Status (updated):
 
-- [x] **Themes** - 6 presets + custom themes + visual color editor (Settings > a)
+- [x] **Themes** - 8 presets (dark, light, nord, dracula, gruvbox, solarized, catppuccin, catppuccin-latte) + custom themes + visual color editor (Settings > a)
 - [x] **Modal Dialogs** - delete confirm (with project-folder toggle), sudo password, cron input, import/export path, project detail, run result, keybind overlay, SSH panel, plugin actions, config register/target forms, file browser, template preview, logic-node editor
 - [x] **Tabs** - 8 main tabs (Dashboard, Knowledge Base, Projects, Workflows, Secrets, Configs, Plugins, Settings), keys 1-9/0 from any screen; Knowledge Base holds commands/scripts/apps with a type filter; selected rows show a `❯` cursor marker
 - [x] **Charts** - Dashboard mini-btop: CPU per-core bars, RAM/swap gauges, network rates, temperatures, GPU stats (auto-refresh 2s)

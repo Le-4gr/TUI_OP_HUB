@@ -132,7 +132,7 @@ fn default_page_size() -> usize {
 /// Theme configuration (US-APP-01).
 ///
 /// `name` selects a built-in preset (`dark`, `light`, `nord`, `dracula`,
-/// `gruvbox`). Any other name is a **custom theme**: the palette is then built
+/// `gruvbox`, `solarized`, `catppuccin`, `catppuccin-latte`). Any other name is a **custom theme**: the palette is then built
 /// from the color values below (falling back to the default theme for colors
 /// that are not set). The optional `primary`…`highlight` fields can also be
 /// used to *override* individual colors of a preset.

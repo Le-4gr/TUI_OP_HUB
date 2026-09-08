@@ -49,7 +49,16 @@ impl Default for ModernTheme {
 
 impl ModernTheme {
     /// Theme preset names selectable in the Settings screen (US-APP-01).
-    pub const PRESETS: [&'static str; 5] = ["dark", "light", "nord", "dracula", "gruvbox"];
+    pub const PRESETS: [&'static str; 8] = [
+        "dark",
+        "light",
+        "nord",
+        "dracula",
+        "gruvbox",
+        "solarized",
+        "catppuccin",
+        "catppuccin-latte",
+    ];
 
     /// Look up a theme preset by name.
     pub fn preset(name: &str) -> Option<ModernTheme> {
@@ -102,6 +111,44 @@ impl ModernTheme {
                 fg: Color::Rgb(235, 219, 178),
                 border: Color::Rgb(146, 131, 116),
                 highlight: Color::Rgb(131, 165, 152),
+            }),
+            "solarized" => Some(Self {
+                primary: Color::Rgb(38, 139, 210),    // blue
+                secondary: Color::Rgb(42, 161, 152),  // cyan
+                accent: Color::Rgb(108, 113, 196),    // violet
+                success: Color::Rgb(133, 153, 0),     // green
+                warning: Color::Rgb(181, 137, 0),     // yellow
+                error: Color::Rgb(220, 50, 47),       // red
+                bg: Color::Rgb(0, 43, 54),            // base03
+                fg: Color::Rgb(131, 148, 150),        // base00
+                border: Color::Rgb(88, 110, 117),     // base01
+                highlight: Color::Rgb(147, 161, 161), // base1
+            }),
+            // Catppuccin Mocha (US-APP-01)
+            "catppuccin" => Some(Self {
+                primary: Color::Rgb(137, 180, 250),   // blue
+                secondary: Color::Rgb(203, 166, 247), // mauve
+                accent: Color::Rgb(245, 194, 231),    // pink
+                success: Color::Rgb(166, 227, 161),   // green
+                warning: Color::Rgb(249, 226, 175),   // yellow
+                error: Color::Rgb(243, 139, 168),     // red
+                bg: Color::Rgb(30, 30, 46),           // base
+                fg: Color::Rgb(205, 214, 244),        // text
+                border: Color::Rgb(69, 71, 90),       // surface1
+                highlight: Color::Rgb(180, 190, 254), // lavender
+            }),
+            // Catppuccin Latte (light variant)
+            "catppuccin-latte" => Some(Self {
+                primary: Color::Rgb(30, 102, 245),   // blue
+                secondary: Color::Rgb(136, 57, 239), // mauve
+                accent: Color::Rgb(234, 118, 203),   // pink
+                success: Color::Rgb(64, 160, 43),    // green
+                warning: Color::Rgb(223, 142, 29),   // yellow
+                error: Color::Rgb(210, 15, 57),      // red
+                bg: Color::Rgb(239, 241, 245),       // base
+                fg: Color::Rgb(76, 79, 105),         // text
+                border: Color::Rgb(188, 192, 204),   // surface1
+                highlight: Color::Rgb(114, 135, 253), // lavender
             }),
             _ => None,
         }
