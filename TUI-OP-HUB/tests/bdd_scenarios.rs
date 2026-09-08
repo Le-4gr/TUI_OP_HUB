@@ -1769,6 +1769,7 @@ async fn given_ssh_host_when_managed_then_crud_round_trips() {
         22,
         Some("ops"),
         Some("~/.ssh/id_ed25519"),
+        Some("bastion, prod"),
     )
     .await
     .unwrap();
