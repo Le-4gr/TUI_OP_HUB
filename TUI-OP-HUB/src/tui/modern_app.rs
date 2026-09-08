@@ -213,6 +213,25 @@ impl OptionsForm {
 /// \"invisible chain\" — each one is a runnable child command, shown only
 /// when the user asks for them (`i`/Enter on the parent).
 
+/// Run-mode chooser (US-CMD-09): how should this command run?
+#[derive(Debug, Clone)]
+struct RunDialog {
+    name: String,
+    plan: crate::workflow::RunPlan,
+}
+
+/// A tracked background/nohup process launched from the hub.
+#[derive(Debug)]
+struct BgJob {
+    name: String,
+    pid: u32,
+    /// "background" or "nohup"
+    kind: &'static str,
+    started: String,
+    /// Present for background jobs; nohup processes are detached.
+    child: Option<tokio::process::Child>,
+}
+
 /// Chain info popup (US-CMD chains): shows a parsed pipe/semicolon chain
 /// segment-by-segment with editable per-segment notes; `r` runs the chain.
 #[derive(Debug, Clone)]
@@ -630,6 +649,12 @@ pub struct ModernApp {
     chain_info: Option<ChainInfoPanel>,
     /// Read-only detail view of the selected Knowledge item (US-CMD-07)
     entity_detail: Option<EntityDetail>,
+    /// Run-mode chooser (terminal/foreground/background/nohup)
+    run_dialog: Option<RunDialog>,
+    /// Background + nohup processes launched from the hub
+    background_jobs: Vec<BgJob>,
+    /// Jobs panel open? Some(selected index)
+    jobs_panel: Option<usize>,
     // Login-screen dev user manager (cargo run only)
     dev_user_manager: bool,
     dev_user_list: Vec<crate::models::UserProfile>,
@@ -828,6 +853,9 @@ impl ModernApp {
             project_actions: None,
             chain_info: None,
             entity_detail: None,
+            run_dialog: None,
+            background_jobs: Vec::new(),
+            jobs_panel: None,
             keybinds_overlay: false,
             wants_terminal: false,
             needs_full_redraw: true,
@@ -1796,6 +1824,14 @@ log:
         if self.entity_detail.is_some() {
             self.render_entity_detail(f);
         }
+        // Run-mode chooser renders on top (US-CMD-09)
+        if self.run_dialog.is_some() {
+            self.render_run_dialog(f);
+        }
+        // Jobs panel renders on top
+        if self.jobs_panel.is_some() {
+            self.render_jobs_panel(f);
+        }
         // Template preview renders on top of the workspace form (US-PLG-15)
         if self.template_preview.is_some() {
             self.render_template_preview(f);
@@ -2556,6 +2592,16 @@ log:
         // Read-only entity detail popup is topmost when open (US-CMD-07)
         if self.entity_detail.is_some() {
             self.handle_entity_detail_key(key).await;
+            return;
+        }
+        // Run-mode chooser is topmost when open
+        if self.run_dialog.is_some() {
+            self.handle_run_dialog_key(key).await;
+            return;
+        }
+        // Jobs panel is topmost when open
+        if self.jobs_panel.is_some() {
+            self.handle_jobs_panel_key(key).await;
             return;
         }
         if self.keybinds_overlay {
@@ -3564,6 +3610,11 @@ log:
                 if self.ui.state == AppState::Projects {
                     self.start_project_shell().await;
                 }
+            }
+            KeyCode::Char('j') => {
+                // Jobs panel: running background/nohup things + workflows
+                self.refresh_background_jobs().await;
+                self.jobs_panel = Some(0);
             }
             KeyCode::Char('N') => {
                 // Create a new project workspace (US-PROJ)
@@ -5713,34 +5764,14 @@ log:
                     self.status_message = Some("Nothing selected".to_string());
                     return;
                 };
+                // Open the run-mode chooser (US-CMD-09): terminal window /
+                // foreground / background / nohup instead of running directly.
                 match workflow::build_run_plan(&entity) {
-                    Some(workflow::RunPlan::App(command)) => {
-                        // Apps run detached: no captured output, fire and forget
-                        match tokio::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(&command)
-                            .spawn()
-                        {
-                            Ok(_) => {
-                                self.status_message =
-                                    Some(format!("\u{2713} Launched app '{}'", entity.name))
-                            }
-                            Err(e) => {
-                                self.status_message = Some(format!("\u{2717} Launch failed: {}", e))
-                            }
-                        }
-                    }
-                    Some(workflow::RunPlan::Interpreter { program, args }) => {
-                        let mut cmd = tokio::process::Command::new(&program);
-                        for arg in &args {
-                            cmd.arg(arg);
-                        }
-                        self.run_invoke(cmd, &entity.name, &program).await;
-                    }
-                    Some(workflow::RunPlan::Shell(command)) => {
-                        let mut cmd = tokio::process::Command::new("sh");
-                        cmd.arg("-c").arg(&command);
-                        self.run_invoke(cmd, &entity.name, &command).await;
+                    Some(plan) => {
+                        self.run_dialog = Some(RunDialog {
+                            name: entity.name.clone(),
+                            plan,
+                        });
                     }
                     None => {
                         self.status_message =
@@ -7827,13 +7858,14 @@ log:
                 panel.editing = true;
             }
             KeyCode::Char('r') => {
-                // Run the whole chain via the shell (like a plain command)
+                // Run the whole chain: open the run-mode chooser
                 let chain = panel.chain_text();
                 let name = panel.entity.name.clone();
                 self.chain_info = None;
-                let mut cmd = tokio::process::Command::new("sh");
-                cmd.arg("-c").arg(&chain);
-                self.run_invoke(cmd, &name, &chain).await;
+                self.run_dialog = Some(RunDialog {
+                    name,
+                    plan: crate::workflow::RunPlan::Shell(chain),
+                });
             }
             _ => {}
         }
@@ -8012,7 +8044,7 @@ log:
                 }
             }
             KeyCode::Char('r') => {
-                // Run the selected option (its content is the composed command)
+                // Run the selected option: open the run-mode chooser
                 if let Some(o) = selected {
                     let content = o.content.clone().unwrap_or_default();
                     if content.trim().is_empty() {
@@ -8021,10 +8053,10 @@ log:
                         }
                         return;
                     }
-                    self.entity_detail = None;
-                    let mut cmd = tokio::process::Command::new("sh");
-                    cmd.arg("-c").arg(&content);
-                    self.run_invoke(cmd, &o.name, &content).await;
+                    self.run_dialog = Some(RunDialog {
+                        name: o.name.clone(),
+                        plan: crate::workflow::RunPlan::Shell(content),
+                    });
                 }
             }
             KeyCode::Char('c') => {
@@ -8443,6 +8475,396 @@ log:
             );
             f.render_widget(help, chunks[3]);
         }
+    }
+
+    /// Run the dialog's plan in FOREGROUND mode: captured output popup.
+    async fn run_dialog_foreground(&mut self) {
+        let Some(dialog) = self.run_dialog.take() else {
+            return;
+        };
+        match dialog.plan {
+            crate::workflow::RunPlan::Shell(command) => {
+                let mut cmd = tokio::process::Command::new("sh");
+                cmd.arg("-c").arg(&command);
+                self.run_invoke(cmd, &dialog.name, &command).await;
+            }
+            crate::workflow::RunPlan::Interpreter { program, args } => {
+                let mut cmd = tokio::process::Command::new(&program);
+                for arg in &args {
+                    cmd.arg(arg);
+                }
+                self.run_invoke(cmd, &dialog.name, &program).await;
+            }
+            crate::workflow::RunPlan::App(command) => {
+                let mut cmd = tokio::process::Command::new("sh");
+                cmd.arg("-c").arg(&command);
+                self.run_invoke(cmd, &dialog.name, &command).await;
+            }
+        }
+    }
+
+    /// Spawn a background job (tracked, stoppable from the jobs panel).
+    async fn run_dialog_background(&mut self) {
+        let Some(dialog) = self.run_dialog.take() else {
+            return;
+        };
+        let command = match &dialog.plan {
+            crate::workflow::RunPlan::Shell(c) | crate::workflow::RunPlan::App(c) => c.clone(),
+            crate::workflow::RunPlan::Interpreter { program, args } => {
+                format!("{} {}", program, args.join(" "))
+            }
+        };
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(&command);
+        cmd.stdin(std::process::Stdio::null());
+        match cmd.spawn() {
+            Ok(child) => {
+                let pid = child.id().unwrap_or(0);
+                let started = chrono::Local::now().format("%H:%M:%S").to_string();
+                self.background_jobs.push(BgJob {
+                    name: dialog.name.clone(),
+                    pid,
+                    kind: "background",
+                    started,
+                    child: Some(child),
+                });
+                self.status_message = Some(format!(
+                    "\u{2713} '{}' running in background (pid {}) \u{2014} j: jobs",
+                    dialog.name, pid
+                ));
+            }
+            Err(e) => {
+                self.status_message = Some(format!("\u{2717} Background spawn failed: {}", e))
+            }
+        }
+    }
+
+    /// Spawn a nohup-style job: detached, survives the hub, output to a log.
+    async fn run_dialog_nohup(&mut self) {
+        let Some(dialog) = self.run_dialog.take() else {
+            return;
+        };
+        let command = match &dialog.plan {
+            crate::workflow::RunPlan::Shell(c) | crate::workflow::RunPlan::App(c) => c.clone(),
+            crate::workflow::RunPlan::Interpreter { program, args } => {
+                format!("{} {}", program, args.join(" "))
+            }
+        };
+        let log_dir = std::env::temp_dir().join("tui-op-hub-logs");
+        let _ = std::fs::create_dir_all(&log_dir);
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+        let safe: String = dialog
+            .name
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let log_path = log_dir.join(format!("{}-{}.log", safe, stamp));
+        let log_file = std::fs::File::create(&log_path).ok();
+        let mut cmd = tokio::process::Command::new("nohup");
+        cmd.arg("sh").arg("-c").arg(&command);
+        {
+            use std::process::Stdio;
+            let stdout_io = log_file.as_ref().and_then(|f| f.try_clone().ok());
+            let stderr_io = log_file.as_ref().and_then(|f| f.try_clone().ok());
+            let out_std: std::process::Stdio = match stdout_io {
+                Some(f) => Stdio::from(f),
+                None => Stdio::null(),
+            };
+            let err_std: std::process::Stdio = match stderr_io {
+                Some(f) => Stdio::from(f),
+                None => Stdio::null(),
+            };
+            cmd.stdout(out_std);
+            cmd.stderr(err_std);
+        }
+        cmd.stdin(std::process::Stdio::null());
+        match cmd.spawn() {
+            Ok(child) => {
+                let pid = child.id().unwrap_or(0);
+                let started = chrono::Local::now().format("%H:%M:%S").to_string();
+                self.background_jobs.push(BgJob {
+                    name: dialog.name.clone(),
+                    pid,
+                    kind: "nohup",
+                    started,
+                    child: Some(child),
+                });
+                self.status_message = Some(format!(
+                    "\u{2713} '{}' running via nohup (pid {}, log {}) \u{2014} j: jobs",
+                    dialog.name,
+                    pid,
+                    log_path.display()
+                ));
+            }
+            Err(e) => self.status_message = Some(format!("\u{2717} nohup spawn failed: {}", e)),
+        }
+    }
+
+    /// Keys for the run-mode chooser.
+    async fn handle_run_dialog_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.run_dialog = None,
+            KeyCode::Enter | KeyCode::Char('t') => {
+                // Open in a NEW terminal window (interactive commands)
+                let Some(dialog) = self.run_dialog.take() else {
+                    return;
+                };
+                let command = match &dialog.plan {
+                    crate::workflow::RunPlan::Shell(c) | crate::workflow::RunPlan::App(c) => {
+                        c.clone()
+                    }
+                    crate::workflow::RunPlan::Interpreter { program, args } => {
+                        format!("{} {}", program, args.join(" "))
+                    }
+                };
+                self.wants_terminal_cmd =
+                    Some((command, dirs_home().to_string_lossy().to_string()));
+                self.status_message = Some(format!(
+                    "\u{2713} '{}' opened in a new terminal",
+                    dialog.name
+                ));
+            }
+            KeyCode::Char('f') => self.run_dialog_foreground().await,
+            KeyCode::Char('b') => self.run_dialog_background().await,
+            KeyCode::Char('n') => self.run_dialog_nohup().await,
+            _ => {}
+        }
+    }
+
+    /// Finished background jobs are pruned on demand.
+    async fn refresh_background_jobs(&mut self) {
+        for job in self.background_jobs.iter_mut() {
+            if let Some(child) = job.child.as_mut() {
+                if let Ok(Some(_)) = child.try_wait() {
+                    job.child = None;
+                }
+            }
+        }
+        // Finished jobs (polled above) are pruned; running ones stay.
+        self.background_jobs.retain(|j| j.child.is_some());
+    }
+
+    /// Keys for the jobs panel (stop/kill running things).
+    async fn handle_jobs_panel_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('j') => {
+                self.jobs_panel = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(sel) = self.jobs_panel.as_mut() {
+                    *sel = sel.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(sel) = self.jobs_panel.as_mut() {
+                    let count = self.background_jobs.len()
+                        + if self.running_workflow.is_some() {
+                            1
+                        } else {
+                            0
+                        };
+                    if *sel + 1 < count {
+                        *sel += 1;
+                    }
+                }
+            }
+            KeyCode::Char('r') => self.refresh_background_jobs().await,
+            KeyCode::Char('s') | KeyCode::Char('K') => {
+                // Stop (SIGTERM / cancel) or force-kill the selected entry
+                let idx = self.jobs_panel.unwrap_or(0);
+                let force = key.code == KeyCode::Char('K');
+                let wf_count = if self.running_workflow.is_some() {
+                    1
+                } else {
+                    0
+                };
+                if idx < wf_count {
+                    // Running workflow: cooperative cancel (US-WF-09)
+                    if let Some(rw) = &self.running_workflow {
+                        let run_id = rw.run_id.clone();
+                        let name = rw.name.clone();
+                        let stopped = crate::workflow::cancel_run(&run_id);
+                        self.status_message = Some(if stopped {
+                            format!("\u{2713} Stop requested for workflow '{}'", name)
+                        } else {
+                            format!("\u{2717} Could not stop workflow '{}'", name)
+                        });
+                    }
+                } else {
+                    let job_idx = idx - wf_count;
+                    if let Some(job) = self.background_jobs.get(job_idx) {
+                        let pid = job.pid;
+                        let name = job.name.clone();
+                        let sig = if force { "-KILL" } else { "-TERM" };
+                        let out = tokio::process::Command::new("kill")
+                            .args([sig, &pid.to_string()])
+                            .output()
+                            .await;
+                        self.status_message = Some(match out {
+                            Ok(o) if o.status.success() => format!(
+                                "\u{2713} {} signal sent to '{}' (pid {})",
+                                if force { "KILL" } else { "TERM" },
+                                name,
+                                pid
+                            ),
+                            _ => format!("\u{2717} Could not signal pid {}", pid),
+                        });
+                        if let Some(job) = self.background_jobs.get_mut(job_idx) {
+                            if let Some(child) = job.child.as_mut() {
+                                let _ = child.start_kill();
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Render the run-mode chooser popup.
+    fn render_run_dialog(&self, f: &mut Frame) {
+        let Some(dialog) = &self.run_dialog else {
+            return;
+        };
+        let area = self.centered_rect(72, 16, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .title(format!(" \u{25b6} Run: {} ", dialog.name))
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.success))
+            .style(Style::default().bg(self.ui.theme.bg));
+        f.render_widget(block, area);
+        let inner = area.inner(Margin::new(1, 1));
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2), // command preview
+                Constraint::Length(1),
+                Constraint::Length(7), // options
+                Constraint::Length(1),
+            ])
+            .split(inner);
+        let cmd_text = match &dialog.plan {
+            crate::workflow::RunPlan::Shell(c) | crate::workflow::RunPlan::App(c) => c.clone(),
+            crate::workflow::RunPlan::Interpreter { program, args } => {
+                format!("{} {}", program, args.join(" "))
+            }
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("command: ", Style::default().fg(self.ui.theme.border)),
+                Span::styled(
+                    cmd_text.chars().take(80).collect::<String>(),
+                    Style::default().fg(self.ui.theme.fg),
+                ),
+            ])),
+            rows[0],
+        );
+        let opt = |key: &'static str, desc: &'static str| {
+            Line::from(vec![
+                Span::styled(
+                    format!("{:<4}", key),
+                    Style::default()
+                        .fg(self.ui.theme.success)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(desc.to_string(), Style::default().fg(self.ui.theme.fg)),
+            ])
+        };
+        let options = vec![
+            opt("Enter/t", "open in a NEW terminal window (interactive)"),
+            opt("f", "foreground: run here with captured output"),
+            opt("b", "background: detached, tracked in jobs (j)"),
+            opt("n", "nohup: detached, survives the hub, logs to /tmp"),
+            opt("Esc", "cancel"),
+        ];
+        f.render_widget(Paragraph::new(options), rows[2]);
+    }
+
+    /// Render the jobs panel.
+    fn render_jobs_panel(&self, f: &mut Frame) {
+        let Some(sel) = self.jobs_panel else {
+            return;
+        };
+        let area = self.centered_rect(72, 14, f);
+        f.render_widget(Clear, area);
+        let count = self.background_jobs.len()
+            + if self.running_workflow.is_some() {
+                1
+            } else {
+                0
+            };
+        let block = Block::default()
+            .title(format!(
+                " \u{2699} Running things ({}) \u{2014} s: stop \u{b7} K: force kill ",
+                count
+            ))
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.error))
+            .style(Style::default().bg(self.ui.theme.bg));
+        f.render_widget(block, area);
+        let inner = area.inner(Margin::new(1, 1));
+        let mut lines: Vec<Line> = Vec::new();
+        let mut idx = 0usize;
+        if let Some(rw) = &self.running_workflow {
+            let focused = idx == sel;
+            let marker = if focused { "\u{276f} " } else { "  " };
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{}[workflow] {} \u{2014} run {}",
+                    marker, rw.name, rw.run_id
+                ),
+                Style::default().fg(if focused {
+                    self.ui.theme.error
+                } else {
+                    self.ui.theme.fg
+                }),
+            )));
+            idx += 1;
+        }
+        for job in &self.background_jobs {
+            let focused = idx == sel;
+            let marker = if focused { "\u{276f} " } else { "  " };
+            let kind_label = if job.kind == "nohup" {
+                "nohup"
+            } else {
+                "background"
+            };
+            let alive = if job.child.is_some() {
+                "running"
+            } else {
+                "finished"
+            };
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{}[{}] {} \u{2014} pid {} \u{b7} started {} \u{b7} {}",
+                    marker, kind_label, job.name, job.pid, job.started, alive
+                ),
+                Style::default().fg(if focused {
+                    self.ui.theme.error
+                } else {
+                    self.ui.theme.fg
+                }),
+            )));
+            idx += 1;
+        }
+        if idx == 0 {
+            lines.push(Line::from(Span::styled(
+                "Nothing running. Start things with r on a command.",
+                Style::default().fg(self.ui.theme.border),
+            )));
+        }
+        f.render_widget(Paragraph::new(lines), inner);
     }
 
     /// Create the project directory + git repo + env, save to DB.
@@ -10887,6 +11309,112 @@ mod tests {
         assert_eq!(
             added.description.as_deref(),
             Some("show every container including stopped ones")
+        );
+    }
+
+    /// Scenario: `r` opens the run-mode chooser; `b` tracks a background
+    /// job and `s` in the jobs panel stops it (US-CMD-09).
+    #[tokio::test]
+    async fn given_command_when_r_then_run_dialog_and_background_job_stoppable() {
+        let mut app = test_app_db().await;
+        app.ui.state = AppState::Knowledge;
+        repository::create_entity(
+            &*app.pool,
+            &CreateEntity {
+                name: "sleeper".into(),
+                description: None,
+                content: Some("sleep 30".into()),
+                type_id: "cmd".into(),
+                project_id: None,
+                tags: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        app.fetch_knowledge().await.unwrap();
+        app.commands_list.selected = 0;
+
+        // `r` opens the run dialog with the command preview
+        app.handle_key(key(KeyCode::Char('r'))).await;
+        assert!(app.run_dialog.is_some(), "run dialog opens");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 34)).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("Run: sleeper"), "run dialog drawn");
+        assert!(text.contains("foreground"), "run options drawn");
+
+        // `b` spawns it in the background and tracks the job
+        app.handle_key(key(KeyCode::Char('b'))).await;
+        assert!(app.run_dialog.is_none(), "dialog closes");
+        assert_eq!(app.background_jobs.len(), 1, "job tracked");
+        assert_eq!(app.background_jobs[0].kind, "background");
+
+        // `j` opens the jobs panel showing the job
+        app.handle_key(key(KeyCode::Char('j'))).await;
+        assert!(app.jobs_panel.is_some());
+        terminal.draw(|f| app.render(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("Running things"), "jobs panel drawn");
+        assert!(text.contains("[background] sleeper"), "job listed");
+
+        // `s` stops it (SIGTERM to the sh -c sleep)
+        app.handle_key(key(KeyCode::Char('s'))).await;
+        app.refresh_background_jobs().await;
+        assert!(app.background_jobs.is_empty(), "stopped job must be pruned");
+        // Esc closes the empty panel
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert!(app.jobs_panel.is_none());
+    }
+
+    /// Scenario: nohup jobs are tracked and listed too (US-CMD-09).
+    #[tokio::test]
+    async fn given_run_dialog_when_nohup_then_job_tracked_with_log() {
+        let mut app = test_app_db().await;
+        app.ui.state = AppState::Knowledge;
+        repository::create_entity(
+            &*app.pool,
+            &CreateEntity {
+                name: "logger".into(),
+                description: None,
+                content: Some("echo nohup-test".into()),
+                type_id: "cmd".into(),
+                project_id: None,
+                tags: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        app.fetch_knowledge().await.unwrap();
+        app.commands_list.selected = 0;
+
+        app.handle_key(key(KeyCode::Char('r'))).await;
+        app.handle_key(key(KeyCode::Char('n'))).await; // nohup
+        assert!(app.run_dialog.is_none());
+        assert_eq!(app.background_jobs.len(), 1);
+        assert_eq!(app.background_jobs[0].kind, "nohup");
+        assert!(app.background_jobs[0].pid > 0, "nohup pid captured");
+
+        // The nohup'd echo finishes; refresh prunes it
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        app.refresh_background_jobs().await;
+        assert!(
+            app.background_jobs.is_empty(),
+            "finished nohup jobs must be pruned"
         );
     }
 
