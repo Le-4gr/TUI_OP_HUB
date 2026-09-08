@@ -3,6 +3,21 @@
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
 
+## 🎯 Session 27: read-only detail popup on Knowledge items (completed)
+
+User: "when i press enter on an app command script and so on it should open like
+the edit thing but the fields aren't editable, just for ease of reading".
+
+- `Enter` on a Knowledge item opens a **read-only detail popup**: description,
+  full content (bordered block), tags and created/updated timestamps — same
+  fields as the edit form, nothing editable, title shows `👁 name — type`.
+- Keys inside: `Esc/q` close · `e` jumps straight into the prefilled edit form ·
+  `c` copies the content · `r` runs it (via the normal run plan).
+- Chains keep their segment-info popup on Enter (that's their detail view).
+- Render-visibility test: title + content drawn, edit form NOT opened by Enter,
+  `e` opens it prefilled. 263 total (215 lib + 48 BDD), clippy 0, build ok.
+
+
 ## 🎯 Session 26: command chains (completed)
 
 User: "add support for command chains, not quite scripts but something like
