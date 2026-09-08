@@ -3,6 +3,22 @@
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
 ## 🎯 Session 29: info + options in ONE Enter view (completed)
+## 🎯 Session 31: Catppuccin themes (completed)
+
+User: "can you add catppuccin theme".
+
+- Added **`catppuccin`** (Mocha: base #1e1e2e, text #cdd6f4, blue/mauve/pink
+  accents, lavender highlight) and **`catppuccin-latte`** (the light variant)
+  to the theme presets.
+- Also added **`solarized`**, which the README already claimed but the code
+  never had. Presets are now: dark, light, nord, dracula, gruvbox, solarized,
+  catppuccin, catppuccin-latte (8 total), all selectable in Settings (`a` →
+  theme row, ←/→) and via `theme.name` in config.conf.
+
+264 total (216 lib + 48 BDD), clippy 0, build ok. MODERN_TUI_GUIDE + config
+doc comment updated.
+
+
 ## 🎯 Session 30: detail popup contrast (fix)
 
 User: "not so readable in the Nord theme, the text color is not too different".
