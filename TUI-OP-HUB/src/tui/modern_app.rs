@@ -191,6 +191,38 @@ struct SshForm {
     field: usize,
 }
 
+/// Add/edit form for a command option (US-CMD-01): the description field is
+/// intentionally the largest — options carry the "why/when" documentation.
+#[derive(Debug, Clone, Default)]
+struct OptionsForm {
+    name: String,
+    args: String,
+    description: String,
+    focused: usize,
+}
+
+impl OptionsForm {
+    const FIELDS: usize = 3;
+
+    fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Options manager for a command family (US-CMD-01): the options are an
+/// \"invisible chain\" — each one is a runnable child command, shown only
+/// when the user asks for them (`i`/Enter on the parent).
+#[derive(Debug, Clone)]
+struct OptionsPanel {
+    parent: crate::models::Entity,
+    options: Vec<crate::models::Entity>,
+    selected: usize,
+    form: Option<OptionsForm>,
+    editing_id: Option<String>,
+    confirm_delete: bool,
+    message: Option<String>,
+}
+
 /// Chain info popup (US-CMD chains): shows a parsed pipe/semicolon chain
 /// segment-by-segment with editable per-segment notes; `r` runs the chain.
 #[derive(Debug, Clone)]
@@ -607,7 +639,7 @@ pub struct ModernApp {
     dev_user_selected: usize,
     dev_user_error: Option<String>,
     // Structured options popup for a command family (parent name, options)
-    options_popup: Option<(String, Vec<(String, String)>)>,
+    options_panel: Option<OptionsPanel>,
     // Keybind helper overlay (? key; US-TUI-09)
     keybinds_overlay: bool,
     wants_terminal: bool,
@@ -800,7 +832,7 @@ impl ModernApp {
             project_actions: None,
             chain_info: None,
             entity_detail: None,
-            options_popup: None,
+            options_panel: None,
             keybinds_overlay: false,
             wants_terminal: false,
             needs_full_redraw: true,
@@ -1712,8 +1744,8 @@ log:
         if self.keygen.open {
             self.render_keygen_form(f);
         }
-        if self.options_popup.is_some() {
-            self.render_options_popup(f);
+        if self.options_panel.is_some() {
+            self.render_options_panel(f);
         }
         if let Some(path) = &self.register_input {
             self.render_register_input(f, path);
@@ -2548,10 +2580,8 @@ log:
             self.handle_ssh_panel_key(key).await;
             return;
         }
-        if self.options_popup.is_some() {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
-                self.options_popup = None;
-            }
+        if self.options_panel.is_some() {
+            self.handle_options_panel_key(key).await;
             return;
         }
         if self.keygen.open {
@@ -3543,7 +3573,7 @@ log:
                             self.chain_info = Some(ChainInfoPanel::load(entity));
                         }
                     } else {
-                        self.show_options_popup().await;
+                        self.open_options_panel().await;
                     }
                 }
             }
@@ -7246,26 +7276,314 @@ log:
 
     /// Show the structured options of the selected command family (US-CMD-01):
     /// the `opt` child entities with their descriptions.
-    async fn show_options_popup(&mut self) {
+    /// Open the options manager for the selected command (US-CMD-01).
+    async fn open_options_panel(&mut self) {
         let Some(entity) = self.commands_list.get_selected().cloned() else {
             self.status_message = Some("Nothing selected".to_string());
             return;
         };
         match repository::list_child_entities(&*self.pool, &entity.id).await {
-            Ok(children) if children.is_empty() => {
-                self.status_message = Some(format!("'{}' has no documented options", entity.name));
-            }
-            Ok(children) => {
-                let options = children
-                    .iter()
-                    .map(|c| (c.name.clone(), c.description.clone().unwrap_or_default()))
-                    .collect();
-                self.options_popup = Some((entity.name.clone(), options));
+            Ok(options) => {
+                self.options_panel = Some(OptionsPanel {
+                    parent: entity,
+                    options,
+                    selected: 0,
+                    form: None,
+                    editing_id: None,
+                    confirm_delete: false,
+                    message: None,
+                });
             }
             Err(e) => self.status_message = Some(format!("\u{2717} {}", e)),
         }
     }
 
+    /// Reload the options of the panel's parent (after add/edit/delete).
+    async fn refresh_options_panel(&mut self) {
+        let Some(panel) = &self.options_panel else {
+            return;
+        };
+        let parent_id = panel.parent.id.clone();
+        if let Ok(options) = repository::list_child_entities(&*self.pool, &parent_id).await {
+            if let Some(panel) = self.options_panel.as_mut() {
+                panel.options = options;
+                panel.selected = panel.selected.min(panel.options.len().saturating_sub(1));
+            }
+        }
+    }
+
+    /// Compose the runnable content of an option: `{parent} {flag} {args}`
+    /// (same shape the seed data uses, so seeded and user options behave alike).
+    fn compose_option_content(parent_name: &str, name: &str, args: &str) -> String {
+        let mut parts = vec![parent_name.to_string(), name.to_string()];
+        if !args.trim().is_empty() {
+            parts.push(args.trim().to_string());
+        }
+        parts.join(" ")
+    }
+
+    /// Keys for the options panel (US-CMD-01).
+    async fn handle_options_panel_key(&mut self, key: KeyEvent) {
+        // The option form is topmost inside the panel
+        if self.options_panel.as_ref().map(|p| p.form.is_some()) == Some(true) {
+            match key.code {
+                KeyCode::Esc => {
+                    if let Some(p) = &mut self.options_panel {
+                        p.form = None;
+                        p.editing_id = None;
+                    }
+                }
+                KeyCode::Tab | KeyCode::Down => {
+                    if let Some(p) = &mut self.options_panel {
+                        if let Some(f) = p.form.as_mut() {
+                            f.focused = (f.focused + 1) % OptionsForm::FIELDS;
+                        }
+                    }
+                }
+                KeyCode::BackTab | KeyCode::Up => {
+                    if let Some(p) = &mut self.options_panel {
+                        if let Some(f) = p.form.as_mut() {
+                            f.focused = (f.focused + OptionsForm::FIELDS - 1) % OptionsForm::FIELDS;
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Some(p) = &mut self.options_panel {
+                        if let Some(f) = p.form.as_mut() {
+                            match f.focused {
+                                0 => f.name.pop(),
+                                1 => f.args.pop(),
+                                _ => f.description.pop(),
+                            };
+                        }
+                    }
+                }
+                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.save_option().await;
+                }
+                KeyCode::Char(c) => {
+                    if let Some(p) = &mut self.options_panel {
+                        if let Some(f) = p.form.as_mut() {
+                            match f.focused {
+                                0 => f.name.push(c),
+                                1 => f.args.push(c),
+                                _ => f.description.push(c),
+                            };
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+        let Some(panel) = &mut self.options_panel else {
+            return;
+        };
+        let selected = panel.options.get(panel.selected).cloned();
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.options_panel = None,
+            KeyCode::Up | KeyCode::Char('k') => {
+                panel.confirm_delete = false;
+                panel.selected = panel.selected.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                panel.confirm_delete = false;
+                if panel.selected + 1 < panel.options.len() {
+                    panel.selected += 1;
+                }
+            }
+            KeyCode::Char('n') => {
+                if let Some(p) = &mut self.options_panel {
+                    p.form = Some(OptionsForm::new());
+                    p.editing_id = None;
+                }
+            }
+            KeyCode::Char('e') => {
+                if let Some(o) = selected {
+                    if let Some(p) = &mut self.options_panel {
+                        // Pre-fill args by stripping the composed prefix
+                        let prefix = format!("{} {}", p.parent.name, o.name);
+                        let args = o
+                            .content
+                            .as_deref()
+                            .and_then(|c| c.strip_prefix(&prefix))
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        p.form = Some(OptionsForm {
+                            name: o.name.clone(),
+                            args,
+                            description: o.description.clone().unwrap_or_default(),
+                            focused: 0,
+                        });
+                        p.editing_id = Some(o.id.clone());
+                    }
+                }
+            }
+            KeyCode::Char('d') => {
+                panel.confirm_delete = !panel.confirm_delete;
+                panel.message = panel
+                    .confirm_delete
+                    .then(|| "Enter to confirm delete".into());
+            }
+            KeyCode::Enter | KeyCode::Char('c') => {
+                // Confirmed delete takes priority
+                if panel.confirm_delete {
+                    if let Some(o) = selected {
+                        match repository::delete_entity(&*self.pool, &o.id).await {
+                            Ok(()) => {
+                                self.refresh_options_panel().await;
+                                if let Some(p) = &mut self.options_panel {
+                                    p.message = Some(format!("Deleted {}", o.name));
+                                    p.confirm_delete = false;
+                                }
+                            }
+                            Err(e) => {
+                                if let Some(p) = &mut self.options_panel {
+                                    p.message = Some(format!("Delete failed: {}", e));
+                                }
+                            }
+                        }
+                    }
+                    return;
+                }
+                // Copy the option's runnable content
+                if let Some(o) = selected {
+                    let text = o.content.clone().unwrap_or_default();
+                    match arboard::Clipboard::new() {
+                        Ok(mut clipboard) => match clipboard.set_text(text) {
+                            Ok(()) => {
+                                if let Some(p) = &mut self.options_panel {
+                                    p.message = Some("\u{2713} Copied".to_string());
+                                }
+                            }
+                            Err(e) => {
+                                if let Some(p) = &mut self.options_panel {
+                                    p.message = Some(format!("\u{2717} Copy failed: {}", e))
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            if let Some(p) = &mut self.options_panel {
+                                p.message = Some(format!("\u{2717} Clipboard unavailable: {}", e))
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('r') => {
+                // Run the option: its content is the composed full command
+                if let Some(o) = selected {
+                    let content = o.content.clone().unwrap_or_default();
+                    if content.trim().is_empty() {
+                        if let Some(p) = &mut self.options_panel {
+                            p.message = Some("Option has no runnable content".to_string());
+                        }
+                        return;
+                    }
+                    self.options_panel = None;
+                    let mut cmd = tokio::process::Command::new("sh");
+                    cmd.arg("-c").arg(&content);
+                    self.run_invoke(cmd, &o.name, &content).await;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Validate + persist the option form (US-CMD-01).
+    async fn save_option(&mut self) {
+        let Some(panel) = self.options_panel.as_ref() else {
+            return;
+        };
+        let Some(form) = panel.form.clone() else {
+            return;
+        };
+        if form.name.trim().is_empty() {
+            if let Some(p) = self.options_panel.as_mut() {
+                p.form.as_mut().unwrap().focused = 0;
+                p.message = Some("Flag/name is required".to_string());
+            }
+            return;
+        }
+        let parent_name = panel.parent.name.clone();
+        let parent_id = panel.parent.id.clone();
+        let editing_id = panel.editing_id.clone();
+        let content =
+            Self::compose_option_content(&parent_name, form.name.trim(), form.args.trim());
+        let result = match &editing_id {
+            Some(id) => {
+                // Load the child, update fields, persist
+                match repository::get_entity(&*self.pool, id).await {
+                    Ok(child) => {
+                        repository::update_entity(
+                            &*self.pool,
+                            &child.id,
+                            &CreateEntity {
+                                name: form.name.trim().to_string(),
+                                description: if form.description.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(form.description.trim().to_string())
+                                },
+                                content: Some(content),
+                                type_id: child.type_id.clone(),
+                                project_id: child.project_id.clone(),
+                                tags: None,
+                                metadata_json: child.metadata_json.clone(),
+                            },
+                        )
+                        .await
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            None => {
+                repository::create_entity(
+                    &*self.pool,
+                    &CreateEntity {
+                        name: form.name.trim().to_string(),
+                        description: if form.description.trim().is_empty() {
+                            None
+                        } else {
+                            Some(form.description.trim().to_string())
+                        },
+                        content: Some(content),
+                        type_id: "opt".to_string(),
+                        project_id: None,
+                        tags: None,
+                        metadata_json: None,
+                    },
+                )
+                .await
+            }
+        };
+        match result {
+            Ok(child) => {
+                // Ensure parent linkage for freshly created options
+                if editing_id.is_none() {
+                    let _ = sqlx::query("UPDATE entities SET parent_id = ? WHERE id = ?")
+                        .bind(&parent_id)
+                        .bind(&child.id)
+                        .execute(&*self.pool)
+                        .await;
+                }
+                self.refresh_options_panel().await;
+                if let Some(p) = self.options_panel.as_mut() {
+                    p.form = None;
+                    p.editing_id = None;
+                    p.message = Some("\u{2713} Option saved".to_string());
+                }
+            }
+            Err(e) => {
+                if let Some(p) = self.options_panel.as_mut() {
+                    p.message = Some(format!("\u{2717} Save failed: {}", e));
+                }
+            }
+        }
+    }
+
+    /// Create the project directory + git repo + env, save to DB.
     /// System fetch panel (US-PROC/US-NF): hostname, OS, kernel, init system,
     /// CPU/memory/swap/uptime — like fastfetch, built from sysinfo.
     async fn run_fetch(&mut self) {
@@ -7854,6 +8172,25 @@ log:
         if entity.type_id == "chain" {
             self.chain_info = Some(ChainInfoPanel::load(entity));
             return;
+        }
+        // Commands with options open the options manager (the "invisible
+        // chain" view, US-CMD-01) instead of the plain detail
+        if entity.type_id == "cmd" {
+            let children = repository::list_child_entities(&*self.pool, &entity.id)
+                .await
+                .unwrap_or_default();
+            if !children.is_empty() {
+                self.options_panel = Some(OptionsPanel {
+                    parent: entity,
+                    options: children,
+                    selected: 0,
+                    form: None,
+                    editing_id: None,
+                    confirm_delete: false,
+                    message: None,
+                });
+                return;
+            }
         }
         let tags = repository::get_entity_tags(&*self.pool, &entity.id)
             .await
@@ -8706,15 +9043,95 @@ log:
 
     /// Settings input: navigate rows, edit values, capture keybindings, save.
     /// Structured options popup for a command family (US-CMD-01).
-    fn render_options_popup(&self, f: &mut Frame) {
-        let Some((family, options)) = &self.options_popup else {
+    fn render_options_panel(&self, f: &mut Frame) {
+        let Some(panel) = &self.options_panel else {
             return;
         };
-        let height = (options.len() as u16 + 6).clamp(8, 24);
-        let area = self.centered_rect(70, height, f);
+        let area = self.centered_rect(72, 24, f);
+        f.render_widget(Clear, area);
+        if let Some(form) = &panel.form {
+            let block = Block::default()
+                .title(if panel.editing_id.is_some() {
+                    " \u{270f}\u{fe0f} Edit option "
+                } else {
+                    " \u{2795} New option "
+                })
+                .title_alignment(Alignment::Center)
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(self.ui.theme.warning))
+                .style(Style::default().bg(self.ui.theme.bg));
+            f.render_widget(block, area);
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(2),
+                    Constraint::Length(2),
+                    Constraint::Min(4),
+                    Constraint::Length(1),
+                ])
+                .split(area.inner(Margin::new(1, 1)));
+            let field = |f: &mut Frame, area: Rect, label: &str, value: &str, focused: bool| {
+                let (marker, style) = if focused {
+                    (
+                        "\u{276f} ",
+                        Style::default()
+                            .fg(self.ui.theme.secondary)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    ("  ", Style::default().fg(self.ui.theme.border))
+                };
+                let cursor = if focused { "\u{2588}" } else { "" };
+                f.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(format!("{}{}: ", marker, label), style),
+                        Span::styled(
+                            format!("{}{}", value, cursor),
+                            Style::default().fg(self.ui.theme.fg),
+                        ),
+                    ])),
+                    area,
+                );
+            };
+            field(f, chunks[0], "Flag / name", &form.name, form.focused == 0);
+            field(f, chunks[1], "Extra args", &form.args, form.focused == 1);
+            let desc_block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(if form.focused == 2 {
+                    self.ui.theme.secondary
+                } else {
+                    self.ui.theme.border
+                }))
+                .title(" Description (what it does, when to use it) ");
+            f.render_widget(
+                Paragraph::new(if form.focused == 2 {
+                    format!("{}\u{2588}", form.description)
+                } else {
+                    form.description.clone()
+                })
+                .style(Style::default().fg(self.ui.theme.fg))
+                .block(desc_block),
+                chunks[2],
+            );
+            let help = self.form_help_line(
+                None,
+                "Tab/arrows: field \u{b7} Ctrl+S: save \u{b7} Esc: cancel",
+            );
+            f.render_widget(help, chunks[3]);
+            return;
+        }
+
+        let height = (panel.options.len() as u16 + 9).clamp(12, 26);
+        let area = self.centered_rect(74, height, f);
         f.render_widget(Clear, area);
         let block = Block::default()
-            .title(format!(" \u{1f4d6} Options: {} ", family))
+            .title(format!(
+                " \u{1f4d6} Options: {} ({}) ",
+                panel.parent.name,
+                panel.options.len()
+            ))
             .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -8722,42 +9139,69 @@ log:
             .style(Style::default().bg(self.ui.theme.bg));
         let inner = block.inner(area);
         f.render_widget(block, area);
-
-        let chunks = Layout::default()
+        let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(inner);
 
-        let lines: Vec<Line> = options
-            .iter()
-            .map(|(flag, description)| {
-                Line::from(vec![
-                    Span::styled(
-                        format!("{:<12}", flag),
-                        Style::default()
-                            .fg(self.ui.theme.accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(description.clone(), Style::default().fg(self.ui.theme.fg)),
-                ])
-            })
-            .collect();
-        f.render_widget(Paragraph::new(lines), chunks[0]);
-
+        let mut lines: Vec<Line> = Vec::new();
+        if panel.options.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No options yet — press n to add one",
+                Style::default().fg(self.ui.theme.border),
+            )));
+        }
+        for (i, o) in panel.options.iter().enumerate() {
+            let focused = i == panel.selected;
+            let marker = if focused { "\u{276f} " } else { "  " };
+            let flag_style = if focused {
+                Style::default()
+                    .fg(self.ui.theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(self.ui.theme.accent)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(marker, flag_style),
+                Span::styled(format!("{:<12}", o.name), flag_style),
+                Span::styled(
+                    o.content.as_deref().unwrap_or("").to_string(),
+                    Style::default().fg(self.ui.theme.border),
+                ),
+            ]));
+            let desc = o.description.as_deref().unwrap_or("");
+            for dline in desc.lines() {
+                lines.push(Line::from(Span::styled(
+                    format!("     {}", dline),
+                    Style::default().fg(self.ui.theme.fg),
+                )));
+            }
+            if panel.confirm_delete && focused {
+                lines.push(Line::from(Span::styled(
+                    "     \u{26a0} Enter to confirm delete",
+                    Style::default()
+                        .fg(self.ui.theme.error)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
+        }
+        if let Some(msg) = &panel.message {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                msg.clone(),
+                Style::default().fg(self.ui.theme.success),
+            )));
+        }
+        f.render_widget(Paragraph::new(lines), rows[0]);
         f.render_widget(
             Paragraph::new(Span::styled(
-                "Esc: close",
+                "\u{2191}\u{2193}: option \u{b7} n: add \u{b7} e: edit \u{b7} d: delete \u{b7} r: run \u{b7} Enter/c: copy \u{b7} Esc: close",
                 Style::default().fg(self.ui.theme.border),
-            ))
-            .alignment(Alignment::Center),
-            chunks[1],
+            )),
+            rows[1],
         );
     }
 
-    // ── Login-screen dev user manager (US-NF, cargo run only) ──────────────
-
-    /// Open the dev user manager (login screen, dev mode only): `u` lists
-    /// users and lets you delete them or reset their password without login.
     fn open_login_user_manager(&mut self) {
         self.dev_user_manager = true;
         self.dev_user_list = Vec::new();
@@ -10449,6 +10893,73 @@ mod tests {
         );
         assert_eq!(app.command_form.content, "df -h");
         assert_eq!(app.command_form.mode, Some(FormMode::Edit));
+    }
+
+    /// Scenario: the options manager adds an option to a command family and
+    /// lists it (US-CMD-01) — the "invisible chain" becomes editable.
+    #[tokio::test]
+    async fn given_command_with_options_panel_when_option_added_then_child_persisted() {
+        let mut app = test_app_db().await;
+        app.ui.state = AppState::Knowledge;
+        let parent = repository::create_entity(
+            &*app.pool,
+            &CreateEntity {
+                name: "docker ps".into(),
+                description: Some("list containers".into()),
+                content: Some("docker ps".into()),
+                type_id: "cmd".into(),
+                project_id: None,
+                tags: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        app.fetch_knowledge().await.unwrap();
+        app.commands_list.selected = 0;
+
+        // `i` opens the options panel (empty state invites adding)
+        app.handle_key(key(KeyCode::Char('i'))).await;
+        let panel = app.options_panel.as_ref().expect("panel opens");
+        assert_eq!(panel.parent.id, parent.id);
+        assert!(panel.options.is_empty());
+
+        // `n` opens the form; fill it and Ctrl+S
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        assert!(app.options_panel.as_ref().unwrap().form.is_some());
+        for c in "-a".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Tab)).await;
+        for c in "--all".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(key(KeyCode::Tab)).await;
+        for c in "show every container including stopped ones".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL))
+            .await;
+
+        // The child option is persisted, linked to the parent, content composed
+        let children = repository::list_child_entities(&*app.pool, &parent.id)
+            .await
+            .unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].name, "-a");
+        assert_eq!(children[0].type_id, "opt");
+        assert_eq!(
+            children[0].content.as_deref(),
+            Some("docker ps -a --all"),
+            "content composes parent + flag + args"
+        );
+        assert_eq!(
+            children[0].description.as_deref(),
+            Some("show every container including stopped ones")
+        );
+        // Form closed, panel still open showing the option
+        assert!(app.options_panel.as_ref().unwrap().form.is_none());
+        assert_eq!(app.options_panel.as_ref().unwrap().options.len(), 1);
     }
 
     // ── Settings screen (US-APP-01/02/06) ───────────────────────────────────
