@@ -3,6 +3,18 @@
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
 
+## 🎯 Session 23b: visible selection cursor (fix)
+
+User: "i can't easily see which i select". Selection was color-only (bold + bg
+highlight) — hard to spot on some themes/terminals.
+
+Added an explicit `❯ ` cursor marker on the selected row of: all main tab lists
+(render_list), the visual builder steps list, and the command picker inside it.
+Popups (actions, node editor, preview, pickers) already had ▶ markers.
+Render-visibility test asserts the marker appears on the selected row and not on
+others. 253 total (205 lib + 48 BDD), clippy 0, build ok.
+
+
 ## 🎯 Session 23: Visual-scripting logic gates — US-FUT-07 (completed)
 
 Continued the story backlog (item 5). The visual builder can now express conditions
