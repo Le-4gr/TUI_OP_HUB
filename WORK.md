@@ -3,6 +3,18 @@
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
 
+## 🎯 Session 25: digits switch tabs on Configs again (fix)
+
+User: "in configs keys 7 and 4 don't change the tab". Cause: the numpad
+experiment (Session 19c) intercepted 2/8/4/6/7/9 on Configs as list navigation /
+mode cycling — inconsistent with every other tab.
+
+Removed the interception entirely: **1-9/0 always switch tabs on Configs**, same
+as everywhere else. Navigation: arrows/Home/End; deploy mode: `m`. Hints updated;
+tests rewritten (7 → Plugins, 4 → Workflows straight from Configs; numpad tests
+removed). 257 total (209 lib + 48 BDD), clippy 0, build ok.
+
+
 ## 🎯 Session 24: SSH host tags + connection test — US-SSH-04/05 (completed)
 
 Continued the backlog leftovers (item 7, SSH part).
