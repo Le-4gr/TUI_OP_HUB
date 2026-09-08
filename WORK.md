@@ -2,6 +2,26 @@
 
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
+## 🎯 Session 29: info + options in ONE Enter view (completed)
+
+User: pressing Enter on a command with options opened a cramped options-only popup
+without the command's description — "i want the info + options".
+
+- **Enter (and `i`) on any command now opens ONE unified detail popup**:
+  description, runnable content, tags/timestamps at the top — and the command's
+  **options listed below** (flag + full description, highlighted selection,
+  scroll window keeps the selected option visible). Chains still open their
+  segment-info popup.
+- **Options are managed right there**: `n` add, `e` edit selected (big
+  description field), `d` delete (Enter confirms), `r` run the option's composed
+  command, `c`/`Enter` copy it. `E` (shift) edits the command itself.
+- The separate options-only panel was removed (single unified view).
+
+Tests: detail shows info + existing options in the framebuffer; adding via `n`
+persists a linked `opt` child with composed content + description; `E` opens the
+edit form. 264 total (216 lib + 48 BDD), clippy 0, build ok.
+
+
 
 ## 🎯 Session 28: options manager for command families (completed)
 
