@@ -5289,7 +5289,9 @@ log:
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        // Row 0 = Kind selector (←/→), then the kind-specific fields
+        // Row 0 = Kind selector (←/→ cycles; the ACTIVE kind is highlighted
+        // inside the list so you can always see which one is selected), then
+        // the kind-specific fields.
         let mut rows: Vec<(String, String, bool)> = Vec::new();
         rows.push((
             "Kind".to_string(),
@@ -5323,27 +5325,63 @@ log:
             .split(inner);
 
         for (i, (label, value, focused)) in rows.iter().enumerate() {
-            let (marker, style) = if *focused {
+            let (marker, marker_style, value_style, cursor) = if *focused {
                 (
-                    "\u{25b6} ",
+                    "\u{276f} ",
                     Style::default()
                         .fg(self.ui.theme.secondary)
                         .add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(self.ui.theme.fg)
+                        .bg(self.ui.theme.highlight)
+                        .add_modifier(Modifier::BOLD),
+                    "\u{2588}",
                 )
             } else {
-                ("  ", Style::default().fg(self.ui.theme.border))
+                (
+                    "  ",
+                    Style::default().fg(self.ui.theme.border),
+                    Style::default().fg(self.ui.theme.fg),
+                    "",
+                )
             };
-            let cursor = if *focused { "\u{2588}" } else { "" };
-            f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(format!("{}{}: ", marker, label), style),
-                    Span::styled(
-                        format!("{}{}", value, cursor),
-                        Style::default().fg(self.ui.theme.fg),
-                    ),
-                ])),
-                chunks[i],
-            );
+            if i == 0 {
+                // Kind row: draw every kind label, the ACTIVE one with a
+                // highlighted background so the selection is unmistakable.
+                let mut spans = vec![
+                    Span::styled(format!("{}{}: ", marker, label), marker_style),
+                    Span::styled("\u{25c4} ", Style::default().fg(self.ui.theme.border)),
+                ];
+                for k in VisualNodeKind::all() {
+                    if *k == editor.kind {
+                        spans.push(Span::styled(
+                            format!("[{}]", k.label()),
+                            Style::default()
+                                .fg(self.ui.theme.fg)
+                                .bg(self.ui.theme.highlight)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                    } else {
+                        spans.push(Span::styled(
+                            format!(" {} ", k.label()),
+                            Style::default().fg(self.ui.theme.border),
+                        ));
+                    }
+                }
+                spans.push(Span::styled(
+                    " \u{25ba} \u{2190}/\u{2192}",
+                    Style::default().fg(self.ui.theme.border),
+                ));
+                f.render_widget(Paragraph::new(Line::from(spans)), chunks[i]);
+            } else {
+                f.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(format!("{}{}: ", marker, label), marker_style),
+                        Span::styled(format!("{}{}", value, cursor), value_style),
+                    ])),
+                    chunks[i],
+                );
+            }
         }
 
         // Help / error line
@@ -9658,6 +9696,54 @@ mod tests {
         assert!(
             !text.contains("\u{276f} 1. [CMD] first"),
             "unselected row must not show the cursor"
+        );
+    }
+
+    /// Scenario: the node editor shows WHICH kind is active — the active one
+    /// is bracketed inside the kind list (US-FUT-07).
+    #[tokio::test]
+    async fn given_node_editor_when_rendered_then_active_kind_is_bracketed() {
+        let mut app = test_app().await;
+        let mut steps = vec![VisualStep::command("e1", "build", "print('one')")];
+        let mut gate = VisualStep::logic(VisualNodeKind::Or, "gate1");
+        gate.inputs = vec!["build".into()];
+        steps.push(gate);
+        app.visual_form = Some(VisualWorkflowState {
+            focused_field: VisualField::Steps,
+            selected_step: 1,
+            steps,
+            node_editor: Some(LogicNodeEditor::load(
+                1,
+                &VisualStep::logic(VisualNodeKind::Or, "gate1"),
+            )),
+            ..Default::default()
+        });
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(110, 30)).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        // The active kind is bracketed, the others are plain
+        assert!(text.contains("[OR]"), "active kind must be bracketed");
+        assert!(
+            text.contains(" AND ") && text.contains(" XOR "),
+            "other kinds stay visible as plain labels"
+        );
+        assert!(
+            !text.contains("[AND]") && !text.contains("[XOR]"),
+            "only the active kind may be bracketed"
+        );
+        // The focused Kind row also shows the cursor
+        assert!(
+            text.contains('\u{276f}'),
+            "focused row must show the cursor"
         );
     }
 
