@@ -170,9 +170,15 @@ struct SshPanel {
     editing_id: Option<String>,
     confirm_delete: bool,
     message: Option<String>,
+    /// Tag filter (US-SSH-04): Some(text) = filter applied live.
+    tag_filter: Option<String>,
+    /// True while the tag filter is being typed.
+    filter_editing: bool,
+    /// A connection test is running for this host name (US-SSH-05).
+    testing: Option<String>,
 }
 
-/// Create/edit form for an SSH host (US-SSH-02/03).
+/// Create/edit form for an SSH host (US-SSH-02/03, US-SSH-04 tags).
 #[derive(Clone)]
 struct SshForm {
     name: String,
@@ -180,6 +186,8 @@ struct SshForm {
     port: String,
     username: String,
     key_path: String,
+    /// Comma-separated grouping tags (US-SSH-04).
+    tags: String,
     field: usize,
 }
 
@@ -409,7 +417,14 @@ impl FileBrowser {
 }
 
 impl SshForm {
-    const FIELDS: [&'static str; 5] = ["Name", "Hostname", "Port", "Username", "Key path"];
+    const FIELDS: [&'static str; 6] = [
+        "Name",
+        "Hostname",
+        "Port",
+        "Username",
+        "Key path",
+        "Tags (comma-sep)",
+    ];
     fn new() -> Self {
         Self {
             name: String::new(),
@@ -417,6 +432,7 @@ impl SshForm {
             port: "22".to_string(),
             username: String::new(),
             key_path: String::new(),
+            tags: String::new(),
             field: 0,
         }
     }
@@ -5894,9 +5910,38 @@ log:
                     editing_id: None,
                     confirm_delete: false,
                     message: None,
+                    tag_filter: None,
+                    filter_editing: false,
+                    testing: None,
                 });
             }
             Err(e) => self.status_message = Some(format!("Cannot list SSH hosts: {}", e)),
+        }
+    }
+
+    /// Hosts visible under the active tag filter (US-SSH-04): matches tag or
+    /// name substrings, case-insensitive.
+    fn visible_ssh_hosts(&self) -> Vec<crate::models::SshHost> {
+        let Some(panel) = &self.ssh_panel else {
+            return Vec::new();
+        };
+        match panel.tag_filter.as_deref().map(str::trim) {
+            Some(f) if !f.is_empty() => {
+                let needle = f.to_lowercase();
+                panel
+                    .hosts
+                    .iter()
+                    .filter(|h| {
+                        h.name.to_lowercase().contains(&needle)
+                            || h.tags
+                                .as_deref()
+                                .map(|t| t.to_lowercase().contains(&needle))
+                                .unwrap_or(false)
+                    })
+                    .cloned()
+                    .collect()
+            }
+            _ => panel.hosts.clone(),
         }
     }
 
@@ -5907,9 +5952,55 @@ log:
             self.handle_ssh_form_key(key).await;
             return;
         }
+        // A connection test is running: ignore keys until it reports (US-SSH-05)
+        if self.ssh_panel.as_ref().map(|p| p.testing.is_some()) == Some(true) {
+            if let KeyCode::Esc = key.code {
+                if let Some(p) = &mut self.ssh_panel {
+                    p.testing = None;
+                }
+            }
+            return;
+        }
+        // Tag-filter input mode (US-SSH-04): live filter, Esc clears
+        if self.ssh_panel.as_ref().map(|p| p.filter_editing) == Some(true) {
+            let Some(panel) = &mut self.ssh_panel else {
+                return;
+            };
+            match key.code {
+                KeyCode::Esc => {
+                    panel.filter_editing = false;
+                    panel.tag_filter = None;
+                    panel.selected = 0;
+                }
+                KeyCode::Enter => panel.filter_editing = false,
+                KeyCode::Backspace => {
+                    if let Some(f) = panel.tag_filter.as_mut() {
+                        f.pop();
+                    }
+                    panel.selected = 0;
+                }
+                KeyCode::Char(c) => {
+                    if let Some(f) = panel.tag_filter.as_mut() {
+                        f.push(c);
+                    }
+                    panel.selected = 0;
+                }
+                _ => {}
+            }
+            return;
+        }
         let Some(panel) = &mut self.ssh_panel else {
             return;
         };
+        let visible = {
+            // borrow dance: compute the filtered view through &self
+            drop(panel);
+            self.visible_ssh_hosts()
+        };
+        let Some(panel) = &mut self.ssh_panel else {
+            return;
+        };
+        let selected_host = visible.get(panel.selected).cloned();
         match key.code {
             KeyCode::Esc => {
                 self.ssh_panel = None;
@@ -5922,8 +6013,46 @@ log:
             }
             KeyCode::Down => {
                 panel.confirm_delete = false;
-                if panel.selected + 1 < panel.hosts.len() {
+                if panel.selected + 1 < visible.len() {
                     panel.selected += 1;
+                }
+            }
+            KeyCode::Char('f') => {
+                // Tag filter input (US-SSH-04)
+                panel.filter_editing = true;
+                if panel.tag_filter.is_none() {
+                    panel.tag_filter = Some(String::new());
+                }
+            }
+            KeyCode::Char('t') => {
+                // Connection test (US-SSH-05): non-interactive ssh probe
+                let Some(host) = selected_host else {
+                    panel.message = Some("No host selected".to_string());
+                    return;
+                };
+                panel.testing = Some(host.name.clone());
+                panel.message = Some(format!("◌ Testing {}…", host.name));
+                drop(panel);
+                let result = tokio::task::spawn_blocking(move || {
+                    crate::secrets::ssh_agent::run_connection_test(
+                        &host.hostname,
+                        host.port,
+                        host.username.as_deref(),
+                        host.key_path.as_deref(),
+                    )
+                })
+                .await
+                .unwrap_or(crate::secrets::ssh_agent::ConnectionTest {
+                    ok: false,
+                    detail: "test task failed".into(),
+                });
+                if let Some(p) = &mut self.ssh_panel {
+                    p.testing = None;
+                    p.message = Some(if result.ok {
+                        format!("\u{2713} {} reachable: {}", host.name, result.detail)
+                    } else {
+                        format!("\u{2717} {}: {}", host.name, result.detail)
+                    });
                 }
             }
             KeyCode::Char('n') => {
@@ -5933,8 +6062,7 @@ log:
                 }
             }
             KeyCode::Char('e') => {
-                let host = panel.hosts.get(panel.selected).cloned();
-                if let Some(h) = host {
+                if let Some(h) = selected_host {
                     if let Some(p) = &mut self.ssh_panel {
                         p.form = Some(SshForm {
                             name: h.name.clone(),
@@ -5942,6 +6070,7 @@ log:
                             port: h.port.to_string(),
                             username: h.username.clone().unwrap_or_default(),
                             key_path: h.key_path.clone().unwrap_or_default(),
+                            tags: h.tags.clone().unwrap_or_default(),
                             field: 0,
                         });
                         p.editing_id = Some(h.id);
@@ -5957,8 +6086,7 @@ log:
             KeyCode::Enter | KeyCode::Char('c') => {
                 // Confirmed delete takes priority over connect
                 if panel.confirm_delete {
-                    let host = panel.hosts.get(panel.selected).cloned();
-                    if let Some(h) = host {
+                    if let Some(h) = selected_host {
                         match repository::delete_ssh_host(&*self.pool, &h.id).await {
                             Ok(()) => {
                                 self.open_ssh_panel().await;
@@ -5976,8 +6104,7 @@ log:
                     }
                     return;
                 }
-                let host = panel.hosts.get(panel.selected).cloned();
-                if let Some(h) = host {
+                if let Some(h) = selected_host {
                     // Quick connect (US-SSH-05): ssh in a NEW terminal window
                     let user = h.username.unwrap_or_default();
                     let target = if user.is_empty() {
@@ -6047,7 +6174,8 @@ log:
                             1 => &mut f.hostname,
                             2 => &mut f.port,
                             3 => &mut f.username,
-                            _ => &mut f.key_path,
+                            4 => &mut f.key_path,
+                            _ => &mut f.tags,
                         };
                         buf.pop();
                     }
@@ -6064,7 +6192,8 @@ log:
                             1 => &mut f.hostname,
                             2 => &mut f.port,
                             3 => &mut f.username,
-                            _ => &mut f.key_path,
+                            4 => &mut f.key_path,
+                            _ => &mut f.tags,
                         };
                         buf.push(c);
                     }
@@ -6097,6 +6226,7 @@ log:
                     port,
                     username: some_if_not_empty(form.username.trim()),
                     key_path: some_if_not_empty(form.key_path.trim()),
+                    tags: some_if_not_empty(form.tags.trim()),
                     created_at: String::new(),
                     updated_at: String::new(),
                 };
@@ -6110,6 +6240,7 @@ log:
                     port,
                     some_if_not_empty(form.username.trim()).as_deref(),
                     some_if_not_empty(form.key_path.trim()).as_deref(),
+                    some_if_not_empty(form.tags.trim()).as_deref(),
                 )
                 .await
             }
@@ -8932,14 +9063,19 @@ impl ModernApp {
                 } else {
                     format!("{}@{}", user, h.hostname)
                 };
+                let tags = h
+                    .tags
+                    .as_deref()
+                    .map(|t| format!("  [{}]", t))
+                    .unwrap_or_default();
                 let style = if i == panel.selected {
                     Style::default().fg(self.ui.theme.accent)
                 } else {
                     Style::default().fg(self.ui.theme.fg)
                 };
                 Line::from(format!(
-                    "{} {}  {}:{}{}",
-                    marker, h.name, target, h.port, confirm
+                    "{} {}  {}:{}{}{}",
+                    marker, h.name, target, h.port, tags, confirm
                 ))
                 .style(style)
             })
@@ -8948,14 +9084,25 @@ impl ModernApp {
             Paragraph::new(items).style(Style::default().bg(self.ui.theme.bg)),
             chunks[0],
         );
-        let hint = panel.message.clone().unwrap_or_else(|| {
-            if panel.hosts.is_empty() {
-                "n new \u{b7} Esc close".to_string()
-            } else {
-                "\u{2191}\u{2193} select \u{b7} Enter/c connect \u{b7} n new \u{b7} e edit \u{b7} d delete \u{b7} Esc"
-                    .to_string()
-            }
-        });
+        let hint = if let Some(host) = &panel.testing {
+            format!("\u{25cb} Testing {}\u{2026} (Esc cancels)", host)
+        } else if panel.filter_editing {
+            format!(
+                "filter: {}\u{2588} (Enter: apply \u{b7} Esc: clear)",
+                panel.tag_filter.as_deref().unwrap_or("")
+            )
+        } else if let Some(f) = panel.tag_filter.as_deref() {
+            format!("filter: '{}' \u{b7} f: edit \u{b7} Esc(panel): close", f)
+        } else {
+            panel.message.clone().unwrap_or_else(|| {
+                if panel.hosts.is_empty() {
+                    "n new \u{b7} Esc close".to_string()
+                } else {
+                    "\u{2191}\u{2193} select \u{b7} Enter/c connect \u{b7} t test \u{b7} f filter \u{b7} n new \u{b7} e edit \u{b7} d delete \u{b7} Esc"
+                        .to_string()
+                }
+            })
+        };
         f.render_widget(
             Paragraph::new(hint).style(Style::default().fg(self.ui.theme.warning)),
             chunks[1],
@@ -9658,6 +9805,62 @@ mod tests {
 
         let visual = app.visual_form.as_ref().unwrap();
         assert_eq!(visual.error_message.as_deref(), Some("Name is required"));
+    }
+
+    /// Scenario: the SSH panel filters hosts by tag/name (US-SSH-04).
+    #[tokio::test]
+    async fn given_ssh_panel_when_tag_filter_typed_then_hosts_filtered() {
+        let mut app = test_app().await;
+        let mk = |name: &str, tags: Option<&str>| crate::models::SshHost {
+            id: format!("id-{}", name),
+            name: name.to_string(),
+            hostname: format!("{}.example.com", name),
+            port: 22,
+            username: None,
+            key_path: None,
+            tags: tags.map(|t| t.to_string()),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        app.ssh_panel = Some(SshPanel {
+            hosts: vec![
+                mk("web-1", Some("prod, web")),
+                mk("db-1", Some("prod, db")),
+                mk("dev-1", None),
+            ],
+            selected: 0,
+            form: None,
+            editing_id: None,
+            confirm_delete: false,
+            message: None,
+            tag_filter: None,
+            filter_editing: false,
+            testing: None,
+        });
+        app.ui.state = AppState::Secrets;
+
+        // `f` opens the tag filter input
+        app.handle_key(key(KeyCode::Char('f'))).await;
+        assert!(app.ssh_panel.as_ref().unwrap().filter_editing);
+        // Typing "prod" narrows to the two tagged hosts
+        for c in "prod".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        assert_eq!(app.visible_ssh_hosts().len(), 2);
+        // Continuing to "db": clear "prod" then type "db" → 1 host
+        for _ in 0..4 {
+            app.handle_key(key(KeyCode::Backspace)).await;
+        }
+        for c in "db".chars() {
+            app.handle_key(key(KeyCode::Char(c))).await;
+        }
+        let visible = app.visible_ssh_hosts();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].name, "db-1");
+        // Esc clears the filter
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert!(app.ssh_panel.as_ref().unwrap().tag_filter.is_none());
+        assert_eq!(app.visible_ssh_hosts().len(), 3);
     }
 
     // ── Settings screen (US-APP-01/02/06) ───────────────────────────────────

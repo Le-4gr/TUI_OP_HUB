@@ -172,6 +172,8 @@ pub struct SshHost {
     pub port: i32,
     pub username: Option<String>,
     pub key_path: Option<String>,
+    /// Comma-separated grouping tags (US-SSH-04).
+    pub tags: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

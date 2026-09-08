@@ -3,6 +3,85 @@
 
 use crate::error::{AppError, AppResult};
 
+/// Outcome of a connection test (US-SSH-05).
+#[derive(Debug, Clone)]
+pub struct ConnectionTest {
+    pub ok: bool,
+    pub detail: String,
+}
+
+/// Build the non-interactive ssh command used to TEST a host (US-SSH-05):
+/// BatchMode (no password prompt), bounded ConnectTimeout and relaxed host
+/// key checking (reachability is what's being verified). Public for tests.
+pub fn ssh_test_command(
+    hostname: &str,
+    port: i32,
+    username: Option<&str>,
+    key_path: Option<&str>,
+) -> std::process::Command {
+    let target = match username {
+        Some(u) if !u.is_empty() => format!("{}@{}", u, hostname),
+        _ => hostname.to_string(),
+    };
+    let mut cmd = std::process::Command::new("ssh");
+    cmd.args([
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=5",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-p",
+        &port.to_string(),
+    ]);
+    if let Some(key) = key_path {
+        if !key.is_empty() {
+            cmd.args(["-i", key]);
+        }
+    }
+    cmd.args([target, "exit".to_string()]);
+    cmd
+}
+
+/// Run the connection test synchronously (call from spawn_blocking).
+pub fn run_connection_test(
+    hostname: &str,
+    port: i32,
+    username: Option<&str>,
+    key_path: Option<&str>,
+) -> ConnectionTest {
+    if !crate::keygen::which("ssh") {
+        return ConnectionTest {
+            ok: false,
+            detail: "ssh binary not available".to_string(),
+        };
+    }
+    match ssh_test_command(hostname, port, username, key_path).output() {
+        Ok(out) => {
+            if out.status.success() {
+                ConnectionTest {
+                    ok: true,
+                    detail: "connection OK".to_string(),
+                }
+            } else {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let first = stderr
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("connection failed");
+                ConnectionTest {
+                    ok: false,
+                    detail: first.chars().take(120).collect(),
+                }
+            }
+        }
+        Err(e) => ConnectionTest {
+            ok: false,
+            detail: format!("{}", e),
+        },
+    }
+}
+
 /// Ensure an ssh-agent is reachable: if `SSH_AUTH_SOCK` is already set the
 /// running agent is used; otherwise a new agent is started and its
 /// environment is applied to this process so spawned shells inherit it.
@@ -94,5 +173,39 @@ mod tests {
         if crate::keygen::which("ssh-add") {
             assert!(r.is_err());
         }
+    }
+
+    #[test]
+    fn given_host_when_test_command_built_then_flags_and_target_correct() {
+        // US-SSH-05: non-interactive probe with bounded timeout
+        let cmd = ssh_test_command(
+            "prod.example.com",
+            2222,
+            Some("root"),
+            Some("~/.ssh/id_ed25519"),
+        );
+        let program = format!("{:?}", cmd);
+        assert!(program.contains("ssh"));
+        assert!(program.contains("BatchMode=yes"));
+        assert!(program.contains("ConnectTimeout=5"));
+        assert!(program.contains("StrictHostKeyChecking=no"));
+        assert!(program.contains("2222"));
+        assert!(program.contains("~/.ssh/id_ed25519"));
+        assert!(program.contains("root@prod.example.com"));
+        assert!(program.contains("exit"));
+
+        // No username → bare hostname target; no key → no -i flag
+        let cmd = ssh_test_command("host", 22, None, None);
+        let program = format!("{:?}", cmd);
+        assert!(program.contains("\"host\""));
+        assert!(!program.contains("-i"));
+    }
+
+    #[test]
+    fn given_unreachable_host_when_tested_then_reports_failure() {
+        // Port 1 on localhost: connection refused immediately (hermetic)
+        let result = run_connection_test("127.0.0.1", 1, None, None);
+        assert!(!result.ok, "closed port must fail the test");
+        assert!(!result.detail.is_empty());
     }
 }

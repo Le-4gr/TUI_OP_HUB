@@ -219,8 +219,8 @@
 | `US-SSH-01` | As a **User**, I want to manage **SSH host configurations**, so that I can keep connection details organized. | ✅ | 3 |
 | `US-SSH-02` | As a **User**, I want to store **key-based authentication** per host, so that connections are secure and automatic. | ✅ | 3 |
 | `US-SSH-03` | As a **User**, I want a **quick-connect interface**, so that I can open an SSH session with a single action. | ✅ | 3 |
-| `US-SSH-04` | As a **User**, I want to **group hosts** by tags or projects, so that I can find the right server quickly. | 🟡 | 2 |
-| `US-SSH-05` | As a **User**, I want to **test** an SSH connection, so that I can verify reachability before relying on it. | 🟢 | 2 |
+| `US-SSH-04` | As a **User**, I want to **group hosts** by tags or projects, so that I can find the right server quickly. | ✅ | 2 |
+| `US-SSH-05` | As a **User**, I want to **test** an SSH connection, so that I can verify reachability before relying on it. | ✅ | 2 |
 | `US-SSH-06` | As a **User**, I want to **edit host details** (address, port, user, key), so that connection info stays current. | ✅ | 2 |
 
 ---

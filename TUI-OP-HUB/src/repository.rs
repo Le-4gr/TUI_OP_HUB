@@ -641,12 +641,13 @@ pub async fn create_ssh_host(
     port: i32,
     username: Option<&str>,
     key_path: Option<&str>,
+    tags: Option<&str>,
 ) -> AppResult<crate::models::SshHost> {
     let id = Uuid::new_v4().to_string();
     sqlx::query(
-        "INSERT INTO ssh_hosts (id, name, hostname, port, username, key_path) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO ssh_hosts (id, name, hostname, port, username, key_path, tags) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(&id).bind(name).bind(hostname).bind(port).bind(username).bind(key_path)
+    .bind(&id).bind(name).bind(hostname).bind(port).bind(username).bind(key_path).bind(tags)
     .execute(pool).await?;
     sqlx::query_as::<_, crate::models::SshHost>("SELECT * FROM ssh_hosts WHERE id = ?")
         .bind(&id)
@@ -661,7 +662,7 @@ pub async fn update_ssh_host(
     host: &crate::models::SshHost,
 ) -> AppResult<crate::models::SshHost> {
     let result = sqlx::query(
-        "UPDATE ssh_hosts SET name = ?, hostname = ?, port = ?, username = ?, key_path = ?, \
+        "UPDATE ssh_hosts SET name = ?, hostname = ?, port = ?, username = ?, key_path = ?, tags = ?, \
          updated_at = datetime('now') WHERE id = ?",
     )
     .bind(&host.name)
@@ -669,6 +670,7 @@ pub async fn update_ssh_host(
     .bind(host.port)
     .bind(&host.username)
     .bind(&host.key_path)
+    .bind(&host.tags)
     .bind(&host.id)
     .execute(pool)
     .await?;
@@ -1079,19 +1081,30 @@ mod ssh_host_tests {
             .unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
 
-        let created = create_ssh_host(&pool, "srv", "10.0.0.5", 22, Some("root"), None)
-            .await
-            .unwrap();
+        let created = create_ssh_host(
+            &pool,
+            "srv",
+            "10.0.0.5",
+            22,
+            Some("root"),
+            None,
+            Some("prod, web"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(created.tags.as_deref(), Some("prod, web"), "tags stored");
 
         let mut edited = created.clone();
         edited.name = "srv-prod".into();
         edited.hostname = "prod.example.com".into();
         edited.port = 2222;
         edited.key_path = Some("~/.ssh/id_ed25519".into());
+        edited.tags = Some("prod".into());
         let updated = update_ssh_host(&pool, &edited).await.unwrap();
         assert_eq!(updated.name, "srv-prod");
         assert_eq!(updated.hostname, "prod.example.com");
         assert_eq!(updated.port, 2222);
+        assert_eq!(updated.tags.as_deref(), Some("prod"));
         assert_eq!(updated.key_path.as_deref(), Some("~/.ssh/id_ed25519"));
 
         let listed = list_ssh_hosts(&pool).await.unwrap();

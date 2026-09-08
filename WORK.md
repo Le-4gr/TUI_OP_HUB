@@ -3,6 +3,30 @@
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
 
+## 🎯 Session 24: SSH host tags + connection test — US-SSH-04/05 (completed)
+
+Continued the backlog leftovers (item 7, SSH part).
+
+- **US-SSH-04 (tags)**: migration `0008_ssh_host_tags.sql` adds `ssh_hosts.tags`;
+  the host form gains a "Tags (comma-sep)" field and the panel shows `[tags]` per
+  host. `f` opens a live tag/name filter (Enter applies, Esc clears) — the visible
+  host list narrows as you type and the title shows the filtered count.
+- **US-SSH-05 (connection test)**: `t` on a selected host runs a non-interactive
+  probe off-thread: `ssh -o BatchMode=yes -o ConnectTimeout=5 -o
+  StrictHostKeyChecking=no -p port [-i key] user@host exit`. Reports
+  "✓ reachable: connection OK" or "✗ <first stderr line>" in the panel; `Esc`
+  cancels a running test. Helper lives in `secrets/ssh_agent.rs`
+  (`ssh_test_command` / `run_connection_test`).
+- Selection, delete, edit and connect now operate on the FILTERED list (selection
+  clamps when the filter changes).
+
+Tests: repository tags round-trip, ssh_test_command flags/target construction,
+hermetic connection-test failure (localhost closed port), TUI tag-filter flow
+(open → type → narrow → clear). 257 total (209 lib + 48 BDD), clippy 0, build ok.
+USER_STORIES.md: US-SSH-04/05 ✅.
+
+---
+
 ## 🎯 Session 23c: node editor selection visibility (fix)
 
 User: still can't see what's selected — in the node editor the Kind row drew ALL
@@ -85,8 +109,8 @@ P3 parked areas + leftovers.
    earlier steps; arity enforced).
 6. **🟢 P3 — Parked future areas** (backend exists, UI not planned yet): US-PROC
    (process manager — use btop/htop, don't rebuild), US-PKG, US-ENV, US-BAK, US-DB.
-7. **🟡 leftovers**: US-SSH-04 host grouping/tags; US-SSH-05 connection *test* (currently
-   quick-connect only); plugin approval workflow for headless service runs.
+7. **🟡 leftovers**: plugin approval workflow for headless service runs.
+   (US-SSH-04 host grouping/tags and US-SSH-05 connection test: ✅ DONE — Session 24.)
 
 ---
 ## 🎯 Session 22: Plugin UI actions — US-PLG-13 (completed)
