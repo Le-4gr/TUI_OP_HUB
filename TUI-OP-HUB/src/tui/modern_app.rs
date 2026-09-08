@@ -8212,15 +8212,21 @@ log:
             ])
             .split(inner);
 
-        let label = |s: String, color: ratatui::style::Color| {
-            Line::from(Span::styled(s, Style::default().fg(color)))
-        };
+        // Labels dim, values bright — readable on every theme (Nord etc.)
+        let label_style = Style::default().fg(self.ui.theme.border);
+        let value_style = Style::default().fg(self.ui.theme.fg);
+        let label = |s: String| Line::from(vec![Span::styled(s, label_style)]);
+
         let desc = entity.description.as_deref().unwrap_or("(no description)");
         f.render_widget(
-            label(format!("description: {}", desc), self.ui.theme.border),
+            Line::from(vec![
+                Span::styled("description: ", label_style),
+                Span::styled(desc.to_string(), value_style),
+            ]),
             chunks[0],
         );
 
+        // Content in a bordered, non-editable block
         let content = entity.content.as_deref().unwrap_or("(empty)");
         let content_block = Block::default()
             .borders(Borders::ALL)
@@ -8235,20 +8241,18 @@ log:
         );
 
         let tags_text = if panel.tags.trim().is_empty() {
-            "tags: (none)".to_string()
+            "(none)".to_string()
         } else {
-            format!("tags: {}", panel.tags)
+            panel.tags.clone()
         };
         f.render_widget(
-            Paragraph::new(vec![
-                label(tags_text, self.ui.theme.border),
-                label(
-                    format!(
-                        "created {} \u{b7} updated {}",
-                        entity.created_at, entity.updated_at
-                    ),
-                    self.ui.theme.border,
-                ),
+            Line::from(vec![
+                Span::styled("tags: ", label_style),
+                Span::styled(tags_text, value_style),
+                Span::styled("   created ", label_style),
+                Span::styled(entity.created_at.clone(), value_style),
+                Span::styled("   updated ", label_style),
+                Span::styled(entity.updated_at.clone(), value_style),
             ]),
             chunks[2],
         );
@@ -8294,50 +8298,59 @@ log:
             used += block_lines;
             let focused = i == panel.option_selected;
             let marker = if focused { "\u{276f} " } else { "  " };
-            let flag_style = if focused {
-                Style::default()
-                    .fg(self.ui.theme.fg)
-                    .bg(self.ui.theme.highlight)
-                    .add_modifier(Modifier::BOLD)
+            // Selected: the WHOLE row gets the highlight background with
+            // dark text — unmistakable on every theme. Unselected: accent
+            // flag + dim description for clear hierarchy.
+            let (flag_style, content_style, desc_style) = if focused {
+                (
+                    Style::default()
+                        .fg(self.ui.theme.bg)
+                        .bg(self.ui.theme.highlight)
+                        .add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(self.ui.theme.bg)
+                        .bg(self.ui.theme.highlight),
+                    Style::default()
+                        .fg(self.ui.theme.bg)
+                        .bg(self.ui.theme.highlight),
+                )
             } else {
-                Style::default().fg(self.ui.theme.accent)
+                (
+                    Style::default().fg(self.ui.theme.accent),
+                    Style::default().fg(self.ui.theme.border),
+                    Style::default().fg(self.ui.theme.fg),
+                )
             };
             lines.push(Line::from(vec![
                 Span::styled(marker, flag_style),
                 Span::styled(format!("{:<12}", o.name), flag_style),
                 Span::styled(
-                    o.content.as_deref().unwrap_or("").to_string(),
-                    Style::default().fg(self.ui.theme.border),
+                    format!("  {}", o.content.as_deref().unwrap_or("")),
+                    content_style,
                 ),
             ]));
             let desc = o.description.as_deref().unwrap_or("");
             for dline in desc.lines() {
-                lines.push(Line::from(Span::styled(
-                    format!("     {}", dline),
-                    Style::default().fg(if focused {
-                        self.ui.theme.secondary
-                    } else {
-                        self.ui.theme.fg
-                    }),
-                )));
+                lines.push(Line::from(vec![
+                    Span::styled("    ", desc_style),
+                    Span::styled(dline.to_string(), desc_style),
+                ]));
             }
             if focused && panel.option_confirm_delete {
                 lines.push(Line::from(Span::styled(
                     "     \u{26a0} Enter to confirm delete",
                     Style::default()
                         .fg(self.ui.theme.error)
+                        .bg(self.ui.theme.highlight)
                         .add_modifier(Modifier::BOLD),
                 )));
             }
         }
         if skipped > 0 {
-            lines.insert(
-                1,
-                Line::from(Span::styled(
-                    format!("\u{2191} {} more above", skipped),
-                    Style::default().fg(self.ui.theme.border),
-                )),
-            );
+            lines.push(Line::from(Span::styled(
+                format!("\u{2191} {} more above", skipped),
+                Style::default().fg(self.ui.theme.border),
+            )));
         }
         if let Some(msg) = &panel.message {
             lines.push(Line::from(Span::styled(
@@ -8349,7 +8362,7 @@ log:
 
         f.render_widget(
             Paragraph::new(Span::styled(
-                "Esc: close \u{b7} E: edit command \u{b7} r: run selected option \u{b7} Enter: copy option \u{b7} c: copy option",
+                "Esc: close \u{b7} E: edit command \u{b7} n: add option \u{b7} e: edit option \u{b7} r: run option \u{b7} c: copy option",
                 Style::default().fg(self.ui.theme.border),
             )),
             chunks[4],
