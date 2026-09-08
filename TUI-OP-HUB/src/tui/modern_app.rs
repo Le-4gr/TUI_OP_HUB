@@ -234,7 +234,15 @@ impl ChainInfoPanel {
     }
 }
 
-/// Plugin UI actions popup for the selected project (US-PLG-13): lists the
+/// Read-only detail of a Knowledge entity (US-CMD-07): the entity plus its
+/// resolved tags (fetched on open).
+#[derive(Debug, Clone)]
+struct EntityDetail {
+    entity: crate::models::Entity,
+    tags: String,
+}
+
+/// Plugin UI actions popup for the selected project (US-PLG-13): lists the/// Plugin UI actions popup for the selected project (US-PLG-13): lists the
 /// labeled actions contributed by approved plugins and runs the chosen one.
 #[derive(Debug, Clone)]
 struct ProjectActionsPanel {
@@ -591,6 +599,8 @@ pub struct ModernApp {
     project_actions: Option<ProjectActionsPanel>,
     /// Command-chain info popup (US-CMD chains)
     chain_info: Option<ChainInfoPanel>,
+    /// Read-only detail view of the selected Knowledge item (US-CMD-07)
+    entity_detail: Option<EntityDetail>,
     // Login-screen dev user manager (cargo run only)
     dev_user_manager: bool,
     dev_user_list: Vec<crate::models::UserProfile>,
@@ -789,6 +799,7 @@ impl ModernApp {
             template_preview: None,
             project_actions: None,
             chain_info: None,
+            entity_detail: None,
             options_popup: None,
             keybinds_overlay: false,
             wants_terminal: false,
@@ -1757,6 +1768,10 @@ log:
         if self.chain_info.is_some() {
             self.render_chain_info(f);
         }
+        // Read-only entity detail renders on top of the Knowledge list (US-CMD-07)
+        if self.entity_detail.is_some() {
+            self.render_entity_detail(f);
+        }
         // Template preview renders on top of the workspace form (US-PLG-15)
         if self.template_preview.is_some() {
             self.render_template_preview(f);
@@ -2514,6 +2529,11 @@ log:
             self.handle_chain_info_key(key).await;
             return;
         }
+        // Read-only entity detail popup is topmost when open (US-CMD-07)
+        if self.entity_detail.is_some() {
+            self.handle_entity_detail_key(key).await;
+            return;
+        }
         if self.keybinds_overlay {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter) {
                 self.keybinds_overlay = false;
@@ -3113,6 +3133,11 @@ log:
                 // Projects: open the detail view (US-PROJ-07)
                 if self.ui.state == AppState::Projects {
                     self.open_project_detail().await;
+                }
+                // Knowledge: read-only detail view of the selected item
+                // (US-CMD-07); chains open their segment-info popup instead
+                if self.ui.state == AppState::Knowledge {
+                    self.open_entity_detail().await;
                 }
             }
             // Navigation - Number keys (US-TUI-11/12: 0 = Settings last)
@@ -7818,101 +7843,213 @@ log:
         }
     }
 
-    /// Render the chain info popup (US-CMD chains).
-    fn render_chain_info(&self, f: &mut Frame) {
-        let Some(panel) = &self.chain_info else {
+    /// Keys for the read-only entity detail popup (US-CMD-07): Esc closes,
+    /// `e` jumps into the edit form, `c` copies the content, `r` runs it.
+    /// Open the read-only detail popup for the selected Knowledge entity.
+    async fn open_entity_detail(&mut self) {
+        let Some(entity) = self.commands_list.get_selected().cloned() else {
+            self.status_message = Some("Nothing selected".to_string());
             return;
         };
-        let area = self.centered_rect(76, 20, f);
+        if entity.type_id == "chain" {
+            self.chain_info = Some(ChainInfoPanel::load(entity));
+            return;
+        }
+        let tags = repository::get_entity_tags(&*self.pool, &entity.id)
+            .await
+            .map(|tags| {
+                tags.iter()
+                    .map(|t| t.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        self.entity_detail = Some(EntityDetail { entity, tags });
+    }
+
+    /// Keys for the read-only entity detail popup (US-CMD-07): Esc/q close,
+    /// `e` jumps into the edit form, `c` copies the content, `r` runs it.
+    async fn handle_entity_detail_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.entity_detail = None,
+            KeyCode::Char('e') => {
+                let entity = self.entity_detail.take().map(|d| d.entity);
+                if let Some(entity) = entity {
+                    let entity_type = ENTITY_TYPE_IDS
+                        .iter()
+                        .position(|&t| t == entity.type_id.as_str())
+                        .unwrap_or(0);
+                    let tags_text = repository::get_entity_tags(&*self.pool, &entity.id)
+                        .await
+                        .map(|tags| {
+                            tags.iter()
+                                .map(|t| t.name.clone())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
+                    self.command_form = CommandFormState {
+                        mode: Some(FormMode::Edit),
+                        name: entity.name.clone(),
+                        description: entity.description.clone().unwrap_or_default(),
+                        content: entity.content.clone().unwrap_or_default(),
+                        project_id: entity.project_id.clone(),
+                        editing_id: Some(entity.id.clone()),
+                        entity_type,
+                        tags_text,
+                        ..Default::default()
+                    };
+                    self.entity_detail = None;
+                }
+            }
+            KeyCode::Char('c') => {
+                let Some(detail) = self.entity_detail.as_ref() else {
+                    return;
+                };
+                match arboard::Clipboard::new() {
+                    Ok(mut clipboard) => {
+                        let text = detail.entity.content.clone().unwrap_or_default();
+                        match clipboard.set_text(text) {
+                            Ok(()) => {
+                                self.status_message = Some("\u{2713} Content copied".to_string())
+                            }
+                            Err(e) => {
+                                self.status_message =
+                                    Some(format!("\u{2717} Clipboard failed: {}", e))
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("\u{2717} Clipboard unavailable: {}", e))
+                    }
+                }
+            }
+            KeyCode::Char('r') => {
+                let Some(detail) = self.entity_detail.clone() else {
+                    return;
+                };
+                let entity = detail.entity;
+                self.entity_detail = None;
+                match workflow::build_run_plan(&entity) {
+                    Some(workflow::RunPlan::App(command)) => {
+                        match tokio::process::Command::new("sh")
+                            .arg("-c")
+                            .arg(&command)
+                            .spawn()
+                        {
+                            Ok(_) => {
+                                self.status_message =
+                                    Some(format!("\u{2713} Launched app '{}'", entity.name))
+                            }
+                            Err(e) => {
+                                self.status_message = Some(format!("\u{2717} Launch failed: {}", e))
+                            }
+                        }
+                    }
+                    Some(workflow::RunPlan::Interpreter { program, args }) => {
+                        let mut cmd = tokio::process::Command::new(&program);
+                        for arg in &args {
+                            cmd.arg(arg);
+                        }
+                        self.run_invoke(cmd, &entity.name, &program).await;
+                    }
+                    Some(workflow::RunPlan::Shell(command)) => {
+                        let mut cmd = tokio::process::Command::new("sh");
+                        cmd.arg("-c").arg(&command);
+                        self.run_invoke(cmd, &entity.name, &command).await;
+                    }
+                    None => {
+                        self.status_message =
+                            Some("Selected item has no content to run".to_string())
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn render_entity_detail(&self, f: &mut Frame) {
+        let Some(panel) = &self.entity_detail else {
+            return;
+        };
+        let entity = &panel.entity;
+        let area = self.centered_rect(72, 22, f);
         f.render_widget(Clear, area);
+        let type_name = ENTITY_TYPE_NAMES
+            .iter()
+            .zip(ENTITY_TYPE_IDS)
+            .find(|(_, id)| **id == entity.type_id)
+            .map(|(name, _)| *name)
+            .unwrap_or(&entity.type_id);
         let block = Block::default()
-            .title(format!(" \u{26d3}\u{fe0f} Chain: {} ", panel.entity.name))
+            .title(format!(
+                " \u{1f441}\u{fe0f} {} \u{2014} {} ",
+                entity.name, type_name
+            ))
             .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(self.ui.theme.warning))
+            .border_style(Style::default().fg(self.ui.theme.accent))
             .style(Style::default().bg(self.ui.theme.bg));
         let inner = block.inner(area);
         f.render_widget(block, area);
-        let rows = Layout::default()
+        let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .constraints([
+                Constraint::Length(2), // Description (read-only text row)
+                Constraint::Min(3),    // Content
+                Constraint::Length(2), // Tags + timestamps
+                Constraint::Length(1), // Help
+            ])
             .split(inner);
 
-        let mut lines: Vec<Line> = Vec::new();
-        if let Some(desc) = &panel.entity.description {
-            if !desc.trim().is_empty() {
-                lines.push(Line::from(Span::styled(
-                    desc.clone(),
-                    Style::default().fg(self.ui.theme.border),
-                )));
-            }
-        }
-        for (i, seg) in panel.segments.iter().enumerate() {
-            let focused = i == panel.selected;
-            let marker = if focused { "\u{276f} " } else { "  " };
-            let prefix = if i == 0 {
-                String::new()
-            } else {
-                format!("{} ", seg.joiner)
-            };
-            let marker_style = if focused {
-                Style::default()
-                    .fg(self.ui.theme.secondary)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(self.ui.theme.border)
-            };
-            let text_style = if focused {
-                Style::default()
-                    .fg(self.ui.theme.fg)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(self.ui.theme.fg)
-            };
-            lines.push(Line::from(vec![
-                Span::styled(marker, marker_style),
-                Span::styled(format!("{}. ", i + 1), marker_style),
-                Span::styled(prefix, Style::default().fg(self.ui.theme.warning)),
-                Span::styled(seg.text.clone(), text_style),
-            ]));
-            let note = if panel.editing && focused {
-                format!("{}\u{2588}", panel.edit_buf)
-            } else {
-                panel.notes.get(i).cloned().unwrap_or_default()
-            };
-            let note_span = if focused && panel.editing {
-                Span::styled(
-                    format!("      note: {}", note),
-                    Style::default()
-                        .fg(self.ui.theme.success)
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else if note.is_empty() {
-                Span::styled(
-                    "      note: (e to add)",
-                    Style::default().fg(self.ui.theme.border),
-                )
-            } else {
-                Span::styled(
-                    format!("      note: {}", note),
-                    Style::default().fg(self.ui.theme.secondary),
-                )
-            };
-            lines.push(Line::from(note_span));
-        }
-        f.render_widget(Paragraph::new(lines), rows[0]);
-        let help = if panel.editing {
-            "Type the note \u{b7} Enter: save \u{b7} Esc: discard"
+        let label = |s: String, color: ratatui::style::Color| {
+            Line::from(Span::styled(s, Style::default().fg(color)))
+        };
+        let desc = entity.description.as_deref().unwrap_or("(no description)");
+        f.render_widget(
+            label(format!("description: {}", desc), self.ui.theme.border),
+            chunks[0],
+        );
+
+        // Content in a bordered, non-editable block
+        let content = entity.content.as_deref().unwrap_or("(empty)");
+        let content_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.border))
+            .title(" content ");
+        f.render_widget(
+            Paragraph::new(content)
+                .style(Style::default().fg(self.ui.theme.fg))
+                .block(content_block),
+            chunks[1],
+        );
+
+        let tags_text = if panel.tags.trim().is_empty() {
+            "tags: (none)".to_string()
         } else {
-            "\u{2191}\u{2193}: segment \u{b7} e: edit note \u{b7} r: run chain \u{b7} Esc: close"
+            format!("tags: {}", panel.tags)
         };
         f.render_widget(
+            Paragraph::new(vec![
+                label(tags_text, self.ui.theme.border),
+                label(
+                    format!(
+                        "created {} \u{b7} updated {}",
+                        entity.created_at, entity.updated_at
+                    ),
+                    self.ui.theme.border,
+                ),
+            ]),
+            chunks[2],
+        );
+        f.render_widget(
             Paragraph::new(Span::styled(
-                help,
+                "Esc: close \u{b7} e: edit \u{b7} c: copy content \u{b7} r: run",
                 Style::default().fg(self.ui.theme.border),
             )),
-            rows[1],
+            chunks[3],
         );
     }
 
@@ -8276,6 +8413,104 @@ log:
 
     /// Plugin UI actions popup (US-PLG-13): labeled entries contributed by
     /// approved plugins, run against the selected project.
+    /// Render the chain info popup (US-CMD chains).
+    fn render_chain_info(&self, f: &mut Frame) {
+        let Some(panel) = &self.chain_info else {
+            return;
+        };
+        let area = self.centered_rect(76, 20, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .title(format!(" \u{26d3}\u{fe0f} Chain: {} ", panel.entity.name))
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.warning))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+
+        let mut lines: Vec<Line> = Vec::new();
+        if let Some(desc) = &panel.entity.description {
+            if !desc.trim().is_empty() {
+                lines.push(Line::from(Span::styled(
+                    desc.clone(),
+                    Style::default().fg(self.ui.theme.border),
+                )));
+            }
+        }
+        for (i, seg) in panel.segments.iter().enumerate() {
+            let focused = i == panel.selected;
+            let marker = if focused { "\u{276f} " } else { "  " };
+            let prefix = if i == 0 {
+                String::new()
+            } else {
+                format!("{} ", seg.joiner)
+            };
+            let marker_style = if focused {
+                Style::default()
+                    .fg(self.ui.theme.secondary)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(self.ui.theme.border)
+            };
+            let text_style = if focused {
+                Style::default()
+                    .fg(self.ui.theme.fg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(self.ui.theme.fg)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(marker, marker_style),
+                Span::styled(format!("{}. ", i + 1), marker_style),
+                Span::styled(prefix, Style::default().fg(self.ui.theme.warning)),
+                Span::styled(seg.text.clone(), text_style),
+            ]));
+            let note = if panel.editing && focused {
+                format!("{}\u{2588}", panel.edit_buf)
+            } else {
+                panel.notes.get(i).cloned().unwrap_or_default()
+            };
+            let note_span = if focused && panel.editing {
+                Span::styled(
+                    format!("      note: {}", note),
+                    Style::default()
+                        .fg(self.ui.theme.success)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else if note.is_empty() {
+                Span::styled(
+                    "      note: (e to add)",
+                    Style::default().fg(self.ui.theme.border),
+                )
+            } else {
+                Span::styled(
+                    format!("      note: {}", note),
+                    Style::default().fg(self.ui.theme.secondary),
+                )
+            };
+            lines.push(Line::from(note_span));
+        }
+        f.render_widget(Paragraph::new(lines), rows[0]);
+        let help = if panel.editing {
+            "Type the note \u{b7} Enter: save \u{b7} Esc: discard"
+        } else {
+            "\u{2191}\u{2193}: segment \u{b7} e: edit note \u{b7} r: run chain \u{b7} Esc: close"
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                help,
+                Style::default().fg(self.ui.theme.border),
+            )),
+            rows[1],
+        );
+    }
+
     fn render_project_actions(&self, f: &mut Frame) {
         let Some(panel) = &self.project_actions else {
             return;
@@ -10160,6 +10395,60 @@ mod tests {
         // `r` runs the chain through the shell; Esc closes
         app.handle_key(key(KeyCode::Esc)).await;
         assert!(app.chain_info.is_none());
+    }
+
+    /// Scenario: Enter on a command opens the READ-ONLY detail popup; `e`
+    /// jumps into the prefilled edit form (US-CMD-07).
+    #[tokio::test]
+    async fn given_command_entity_when_enter_then_readonly_detail_opens_and_edit_shortcut_works() {
+        let mut app = test_app_db().await;
+        app.ui.state = AppState::Knowledge;
+        let created = repository::create_entity(
+            &*app.pool,
+            &CreateEntity {
+                name: "disk usage".into(),
+                description: Some("shows disk usage".into()),
+                content: Some("df -h".into()),
+                type_id: "cmd".into(),
+                project_id: None,
+                tags: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        app.fetch_knowledge().await.unwrap();
+        app.commands_list.selected = 0;
+
+        // Enter opens the read-only detail (NOT the edit form)
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert!(app.entity_detail.is_some(), "detail opens");
+        assert!(app.command_form.mode.is_none(), "form stays closed");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            text.contains("disk usage — Command"),
+            "detail title with name + type must be drawn"
+        );
+        assert!(text.contains("df -h"), "content must be drawn");
+
+        // `e` jumps into the prefilled edit form; detail closes
+        app.handle_key(key(KeyCode::Char('e'))).await;
+        assert!(app.entity_detail.is_none(), "detail closed");
+        assert!(
+            app.command_form.editing_id.as_deref() == Some(created.id.as_str()),
+            "edit form opened for the entity"
+        );
+        assert_eq!(app.command_form.content, "df -h");
+        assert_eq!(app.command_form.mode, Some(FormMode::Edit));
     }
 
     // ── Settings screen (US-APP-01/02/06) ───────────────────────────────────
