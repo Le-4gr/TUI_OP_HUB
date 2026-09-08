@@ -4298,7 +4298,10 @@ log:
                 .iter()
                 .enumerate()
                 .map(|(i, item)| {
-                    let content = format!("{}", item);
+                    // Explicit cursor marker: color alone is hard to see on
+                    // some themes/terminals (US-APP-01)
+                    let marker = if i == selected { "\u{276f} " } else { "  " };
+                    let content = format!("{}{}", marker, item);
                     let style = if i == selected {
                         Style::default()
                             .fg(color)
@@ -6778,14 +6781,18 @@ log:
                 .map(|(i, step)| {
                     // Logic nodes show their expression summary (US-FUT-07)
                     let first_line = step.summary().lines().next().unwrap_or("").to_string();
+                    // Explicit cursor marker for the selected step (US-APP-01)
+                    let selected = v.focused_field == VisualField::Steps && i == v.selected_step;
+                    let marker = if selected { "❯ " } else { "  " };
                     let content = format!(
-                        "{}. [{}] {}  →  {}",
+                        "{}{}. [{}] {}  →  {}",
+                        marker,
                         i + 1,
                         step.kind.label(),
                         step.name,
                         first_line
                     );
-                    let style = if v.focused_field == VisualField::Steps && i == v.selected_step {
+                    let style = if selected {
                         Style::default()
                             .fg(self.ui.theme.accent)
                             .add_modifier(Modifier::BOLD)
@@ -6855,8 +6862,15 @@ log:
                         .and_then(|c| c.lines().next())
                         .unwrap_or("")
                         .to_string();
-                    let content =
-                        format!("[{}] {}  →  {}", entity.type_id, entity.name, first_line);
+                    let marker = if i == picker.selected {
+                        "\u{276f} "
+                    } else {
+                        "  "
+                    };
+                    let content = format!(
+                        "{}[{}] {}  \u{2192}  {}",
+                        marker, entity.type_id, entity.name, first_line
+                    );
                     let style = if i == picker.selected {
                         Style::default()
                             .fg(self.ui.theme.highlight)
@@ -9609,6 +9623,43 @@ mod tests {
     }
 
     // ── Settings screen (US-APP-01/02/06) ───────────────────────────────────
+
+    /// Scenario: the selected row in the visual builder shows a cursor
+    /// marker, so selection is visible regardless of theme colors (US-APP-01).
+    #[tokio::test]
+    async fn given_visual_builder_when_rendered_then_selected_step_has_cursor_marker() {
+        let mut app = test_app().await;
+        app.visual_form = Some(VisualWorkflowState {
+            focused_field: VisualField::Steps,
+            selected_step: 1,
+            steps: vec![
+                VisualStep::command("e1", "first", "print('one')"),
+                VisualStep::command("e2", "second", "print('two')"),
+            ],
+            ..Default::default()
+        });
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        // The selected step is prefixed with the cursor, the other is not
+        assert!(
+            text.contains("\u{276f} 2. [CMD] second"),
+            "selected row must show the cursor marker"
+        );
+        assert!(
+            !text.contains("\u{276f} 1. [CMD] first"),
+            "unselected row must not show the cursor"
+        );
+    }
 
     /// Scenario: navigate the Settings rows
     /// Given the Settings screen, when arrow keys are pressed, then the
