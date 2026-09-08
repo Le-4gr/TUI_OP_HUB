@@ -87,6 +87,10 @@ secure secret storage — local-first, single binary, keyboard-driven.
 - **Project folder options** (US-PROJ): deleting a project can also remove its
   workspace folder (explicit toggle, default off); creating a workspace into an
   existing folder merges instead of failing (`Ctrl+O`)
+- **Command chains** (`chain` entities): pipe/semicolon one-liners like
+  `cat /proc/meminfo | grep Dirt` — filter with `f` (Chains), `i` shows the chain
+  parsed segment-by-segment with editable per-segment notes, `r` runs the whole
+  chain through the shell
 - **Visible search bar** and **selection cursor markers** (`❯`) on every list
 
 ## Quick Start

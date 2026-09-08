@@ -3,6 +3,28 @@
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
 
+## 🎯 Session 26: command chains (completed)
+
+User: "add support for command chains, not quite scripts but something like
+`cat /proc/meminfo | grep Dirt;` with info and runnable".
+
+- **New entity type `chain`** (migration `0009_command_chains.sql`): a
+  Knowledge-base entity whose content is the raw chain — pipes and semicolons
+  included — runnable exactly like a plain command (`sh -c`).
+- **Knowledge filter** gained "Chains" (`f` cycles All → Commands → Apps →
+  Scripts → Chains); `n` presets the form type; list shows a ⛓️ icon.
+- **`i` on a chain opens the segment-info popup**: `parse_chain` splits the
+  content at top-level `|`/`;` (quote-aware) into numbered segments with their
+  joiners; each segment has an editable **note** persisted into
+  `metadata_json.segment_notes` (other metadata keys preserved). `r` in the
+  popup runs the whole chain; Esc closes.
+
+Tests: parse_chain (pipes/semicolons/quote-protection), notes round-trip
+through metadata (other keys preserved), build_run_plan chain → Shell, TUI flow
+(filter → popup → edit note → persisted). 262 total (214 lib + 48 BDD),
+clippy 0, build ok.
+
+
 ## 🎯 Session 25: digits switch tabs on Configs again (fix)
 
 User: "in configs keys 7 and 4 don't change the tab". Cause: the numpad

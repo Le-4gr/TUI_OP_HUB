@@ -16,6 +16,9 @@
 
 **Core Features Implemented**:
 - ✅ `US-CMD-01` through `US-CMD-09`: Full command/script storage and management (CRUD, copy, run)
+- ✅ **Command chains** (extends US-CMD-02/09): `chain` entities for pipe/semicolon
+  one-liners (`cat /proc/meminfo | grep Dirt`) — own Knowledge filter, segment-by-segment
+  info popup with editable notes, runs through the shell like plain commands
 - ✅ `US-PROJ-01` through `US-PROJ-07`: Project grouping and context switching
 - ✅ `US-SRCH-01` through `US-SRCH-04`: Full-text search (FTS5) and filtering by tags/type/project
 - ✅ `US-TUI-01` through `US-TUI-10`: Complete TUI with 7 tabs, keyboard navigation, help overlay, theming
