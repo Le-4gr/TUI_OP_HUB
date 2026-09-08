@@ -3,6 +3,18 @@
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
 
+## 🎯 Session 23c: node editor selection visibility (fix)
+
+User: still can't see what's selected — in the node editor the Kind row drew ALL
+kinds identically, so the active one was indistinguishable.
+
+- Kind row now renders every kind with the ACTIVE one bracketed and highlighted
+  (`[OR]` with bg + bold); others dim. Kind row also shows the ❯ cursor.
+- Focused text rows get a highlighted background + bold + ❯ marker (was color-only).
+- Render test asserts the active kind is bracketed and others are not.
+254 total (206 lib + 48 BDD), clippy 0, build ok.
+
+
 ## 🎯 Session 23b: visible selection cursor (fix)
 
 User: "i can't easily see which i select". Selection was color-only (bold + bg
