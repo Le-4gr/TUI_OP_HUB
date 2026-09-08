@@ -3,6 +3,29 @@
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
 
+## 🎯 Session 28: options manager for command families (completed)
+
+User: "add a way to add options to commands, also a bigger description to options,
+also show the options when you press enter on them; options are some kind of chain
+but just invisible unless i want the options or the big info view".
+
+- The old read-only options popup is now a full **options manager panel**:
+  `n` adds an option (flag/name, extra args, and a **big description** field),
+  `e` edits, `d` deletes (Enter confirms), `r` runs the option's composed command,
+  `Enter`/`c` copies it. The list shows each option with its full runnable command
+  and its description beneath (wrapped, multi-line).
+- **Enter on a command with options opens this panel** (the invisible chain made
+  visible); Enter on a command without options still opens the read-only detail.
+  `i` always opens the panel — even empty, inviting `n`.
+- Options persist as `opt` child entities linked via `parent_id` (same structure
+  as seeded families); content composes `parent flag args` exactly like seed data,
+  so user options run identically to seeded ones.
+
+Tests: TUI end-to-end (open panel → add option via form → child entity persisted
+with composed content + description, form closes). 264 total (216 lib + 48 BDD),
+clippy 0, build ok.
+
+
 ## 🎯 Session 27: read-only detail popup on Knowledge items (completed)
 
 User: "when i press enter on an app command script and so on it should open like
