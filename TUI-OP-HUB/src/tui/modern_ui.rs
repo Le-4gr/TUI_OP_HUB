@@ -139,15 +139,15 @@ impl ModernTheme {
             }),
             // Catppuccin Latte (light variant)
             "catppuccin-latte" => Some(Self {
-                primary: Color::Rgb(30, 102, 245),   // blue
-                secondary: Color::Rgb(136, 57, 239), // mauve
-                accent: Color::Rgb(234, 118, 203),   // pink
-                success: Color::Rgb(64, 160, 43),    // green
-                warning: Color::Rgb(223, 142, 29),   // yellow
-                error: Color::Rgb(210, 15, 57),      // red
-                bg: Color::Rgb(239, 241, 245),       // base
-                fg: Color::Rgb(76, 79, 105),         // text
-                border: Color::Rgb(188, 192, 204),   // surface1
+                primary: Color::Rgb(30, 102, 245),    // blue
+                secondary: Color::Rgb(136, 57, 239),  // mauve
+                accent: Color::Rgb(234, 118, 203),    // pink
+                success: Color::Rgb(64, 160, 43),     // green
+                warning: Color::Rgb(223, 142, 29),    // yellow
+                error: Color::Rgb(210, 15, 57),       // red
+                bg: Color::Rgb(239, 241, 245),        // base
+                fg: Color::Rgb(76, 79, 105),          // text
+                border: Color::Rgb(188, 192, 204),    // surface1
                 highlight: Color::Rgb(114, 135, 253), // lavender
             }),
             _ => None,

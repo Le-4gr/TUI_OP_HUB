@@ -206,6 +206,8 @@ The Settings screen (`8`) previews live and `a` opens the visual color editor.
 | s | Schedule workflow (Workflows tab) |
 | X | Cancel the running background workflow (Workflows tab) |
 | v | Visual workflow builder (`l` adds a logic node, `o` edits it — AND/OR/NOT/XOR/compare/if-else with `run_when` gates) |
+| r | Opens the run-mode chooser: `Enter/t` new terminal window · `f` foreground (captured output) · `b` background (tracked) · `n` nohup (survives the hub, logged) |
+| j | Jobs panel — all running things (background/nohup processes + running workflows); `s` stop, `K` force kill |
 | a | Projects tab: run plugin UI actions · Plugins tab: approve plugin |
 | S | Load SSH keys into ssh-agent (Secrets tab) |
 | t | Open SSH terminal (Secrets tab) · SSH panel: test connection |
