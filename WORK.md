@@ -3,6 +3,29 @@
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
 ## 🎯 Session 29: info + options in ONE Enter view (completed)
+## 🎯 Session 32: run modes + jobs panel (completed)
+
+User: "i cant run the commands — make it open a terminal but for everything; add
+buttons for background foreground nohup and so on too; and add a window with all
+running things so i can easily stop them".
+
+- **Run-mode chooser**: `r` (and `r` inside options/chain/detail popups) no longer
+  runs blindly — it opens a chooser with the command preview and five modes:
+  `Enter/t` opens a NEW terminal window (interactive commands finally work),
+  `f` foreground with captured output, `b` background (tracked, stoppable),
+  `n` nohup (detached, survives the hub, stdout/stderr logged to
+  /tmp/tui-op-hub-logs/), Esc cancel.
+- **Jobs panel (`j` on Dashboard)**: lists running workflows + background/nohup
+  processes with pid/kind/started/status. `s` stops (workflow: cooperative
+  cancel; process: SIGTERM), `K` force-kills (SIGKILL), `r` refreshes (finished
+  jobs pruned), Esc closes.
+- Interactive TUI commands (nvim, htop…) now work via the terminal mode.
+
+Tests: run dialog opens with preview, background spawn + stop prunes the job,
+nohup job tracked with pid and pruned after finish, jobs panel renders. 266
+total (218 lib + 48 BDD), clippy 0, build ok.
+
+
 ## 🎯 Session 31: Catppuccin themes (completed)
 
 User: "can you add catppuccin theme".
