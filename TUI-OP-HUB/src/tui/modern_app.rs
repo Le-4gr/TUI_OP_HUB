@@ -8720,6 +8720,19 @@ log:
                                 let _ = child.start_kill();
                             }
                         }
+                        // The kill signal is in flight and try_wait may not
+                        // report it immediately — remove the entry now so the
+                        // panel reflects "stopped" right away (US-CMD-09).
+                        self.background_jobs.remove(job_idx);
+                        if let Some(sel) = self.jobs_panel.as_mut() {
+                            let count = self.background_jobs.len()
+                                + if self.running_workflow.is_some() {
+                                    1
+                                } else {
+                                    0
+                                };
+                            *sel = (*sel).min(count.saturating_sub(1));
+                        }
                     }
                 }
             }
