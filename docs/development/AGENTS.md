@@ -52,7 +52,7 @@ dependencies, Hyprland-style config (`~/.config/tui-op-hub/config.conf`).
 ## 2. Repository Layout
 
 ```
-TUI-OP-HUB/                       # repo root
+../                        # repo root (docs/, README.md, install.sh)
 ├── README.md                     # user-facing readme (features, config, API)
 ├── INSTALL.md                    # quick install instructions (repo root)
 ├── install.sh                    # release installer: build + install binary + enable service
@@ -159,10 +159,10 @@ Release profile: `opt-level = 3`, `lto = true`, `codegen-units = 1`, `strip = tr
 
 ## 4. Build, Run, Test Commands
 
-All cargo commands run from the `TUI-OP-HUB/TUI-OP-HUB/` directory (the crate root):
+All cargo commands run from the `TUI-OP-HUB/` directory (the crate root):
 
 ```bash
-cd TUI-OP-HUB          # from repo root
+cd TUI-OP-HUB          # into the crate root
 cargo build            # debug build
 cargo build --release  # optimized build (recommended for running)
 cargo check            # fast type-check without codegen
@@ -327,7 +327,7 @@ When working on this repo, follow this loop:
       For DB-backed TUI tests use the `test_app_db()` helper (pool + migrations);
       remember the app starts in the `Login` state — set `app.ui.state` before
       driving keys, and note service/TUI coexistence rules (§5 rule 9).
-11. Run from `TUI-OP-HUB/TUI-OP-HUB/` — all four must pass before you are done:
+11. Run from `TUI-OP-HUB/` — all four must pass before you are done:
     ```bash
     cargo fmt
     cargo clippy --all-targets 2>&1 | grep -c '^error'   # must be 0
