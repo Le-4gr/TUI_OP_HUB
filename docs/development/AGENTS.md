@@ -52,28 +52,31 @@ dependencies, Hyprland-style config (`~/.config/tui-op-hub/config.conf`).
 ## 2. Repository Layout
 
 ```
-TUI-OP-HUB/                       # repo root (docs live here)
-├── AGENTS.md                     # ← this file
-├── WORK.md                       # live work log for AI agents (ongoing tasks, what/how)
+TUI-OP-HUB/                       # repo root
 ├── README.md                     # user-facing readme (features, config, API)
 ├── INSTALL.md                    # quick install instructions (repo root)
 ├── install.sh                    # release installer: build + install binary + enable service
-├── docs/                         # documentation (start at docs/INDEX.md)
+├── docs/                         # ALL documentation lives here (start at docs/INDEX.md)
 │   ├── INDEX.md                  # map of all documentation
 │   ├── INSTALL.md                # service/TUI coexistence, secrets key, non-systemd inits
 │   ├── IMPORT_EXPORT.md          # knowledge bundle schema, AI prompt template, cron workflows
-│   ├── PLUGINS.md                # Lua mod API: manifest, capabilities, event hooks
-│   └── business/                 # business structure
-│       ├── VISION.md             # product vision & personas
-│       ├── ROADMAP.md            # phase plan
-│       └── GOVERNANCE.md         # roles, branching, definition of done
-├── bp.md                         # business plan / product vision (source of truth for scope)
-├── ARCHITECTURE.md               # system architecture, module responsibilities, data flow
-├── USER_STORIES.md               # user stories with IDs (US-XXX-NN), priorities, phase status
-├── STACK_AND_TOOLS_GUIDE.md      # rationale for Rust/Lua/Python layering and DB choices
-├── MODERN_TUI_GUIDE.md           # TUI design guide (colors, layout, login/dashboard)
-├── DB/LOGICAL.drawio             # database design diagram (draw.io)
-├── SKETCHES/                     # UI/UX sketches (Figma SVG exports)
+│   ├── PLUGINS.md                # Lua mod API: capabilities, actions, templates, headless trust
+│   ├── reference/                # deep-dive references
+│   │   ├── ARCHITECTURE.md       # system architecture, module responsibilities, data flow
+│   │   ├── USER_STORIES.md       # user stories with IDs (US-XXX-NN), priorities, phase status
+│   │   ├── STACK_AND_TOOLS_GUIDE.md  # rationale for the Rust/Lua/SQLite layering
+│   │   └── MODERN_TUI_GUIDE.md   # TUI design guide (colors, layout, login/dashboard)
+│   ├── development/              # for AI agents & contributors
+│   │   ├── AGENTS.md             # ← this file
+│   │   └── WORK.md               # live work log / changelog (backlog at the top)
+│   ├── business/                 # business structure
+│   │   ├── bp.md                 # business plan (source of truth for scope)
+│   │   ├── VISION.md             # product vision & personas
+│   │   ├── ROADMAP.md            # phase plan
+│   │   └── GOVERNANCE.md         # roles, branching, definition of done
+│   └── design/                   # design assets
+│       ├── DB_LOGICAL.drawio     # database design diagram (draw.io)
+│       └── FIGMA/                # UI/UX sketches (Figma SVG exports)
 └── TUI-OP-HUB/                   # the Rust application (cargo crate root)
     ├── Cargo.toml                # dependencies & release profile
     ├── tests/
@@ -287,7 +290,7 @@ When working on this repo, follow this loop:
 
 ### Step 1 — Understand
 1. Read this file fully.
-2. **Read `WORK.md`** — the live work log. It lists what is currently being changed, how,
+2. **Read `WORK.md`** (this folder) — the live work log. It lists what is currently being changed, how,
    and what is next. Append your session to it when you finish (what you did, what broke,
    what's next).
 3. Identify the relevant user story ID(s) in `USER_STORIES.md` and read the story.

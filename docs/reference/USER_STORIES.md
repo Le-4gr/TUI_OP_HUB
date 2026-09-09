@@ -1,6 +1,6 @@
 # 🎛️ TUI-OP-HUB — User Stories
 
-> 📌 **Source:** `bp.md` · `STACK_AND_TOOLS_GUIDE.md` · `DB/LOGICAL.drawio` · `TUI-OP-HUB/src/main.rs`
+> 📌 **Source:** `docs/business/bp.md` · `docs/reference/STACK_AND_TOOLS_GUIDE.md` · `docs/design/DB_LOGICAL.drawio` · `TUI-OP-HUB/src/main.rs`
 >
 > 📝 **Format:** `As a <role>, I want to <action>, so that <value>.`
 >
