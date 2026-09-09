@@ -1,7 +1,7 @@
 # Roadmap — TUI-OP-HUB
 
-> Authoritative story list with priorities: [`USER_STORIES.md`](../../USER_STORIES.md)
-> Live status: [`WORK.md`](../../WORK.md)
+> Authoritative story list with priorities: [`USER_STORIES.md`](../reference/USER_STORIES.md)
+> Live status: [`WORK.md`](../development/WORK.md)
 
 ## ✅ Phase 1 — Core hub (v0.2.0, shipped)
 Entity CRUD (commands/scripts/apps), projects, tags, FTS5 search, Lua workflows with run
@@ -38,4 +38,4 @@ stop/cancel (US-WF-09), systemd/cron integration (US-DEP-04), secrets v2
 
 ## Release cadence
 Patch releases for fixes; minor versions per completed phase milestone; the
-[`WORK.md`](../../WORK.md) log doubles as the changelog source.
+[`WORK.md`](../development/WORK.md) log doubles as the changelog source.

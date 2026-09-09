@@ -1,6 +1,6 @@
 # Vision — TUI-OP-HUB
 
-> Full product plan: [`bp.md`](../../bp.md) · Implementation status: [`USER_STORIES.md`](../../USER_STORIES.md)
+> Full product plan: [`bp.md`](bp.md) · Implementation status: [`USER_STORIES.md`](../reference/USER_STORIES.md)
 
 ## One-liner
 
