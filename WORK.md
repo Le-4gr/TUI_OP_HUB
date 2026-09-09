@@ -2,7 +2,46 @@
 
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
-## 🎯 Session 29: info + options in ONE Enter view (completed)
+
+---
+
+## 📋 Story Backlog — priority order (say "continue stories" to work the next item)
+
+1. **✅ DONE (Session 18) — Navigation restructure (US-TUI-11/12)**: Knowledge Base parent
+   page (key 2) with live counts; digits now 1-9 + 0 (0 = Settings); Tab cycle configurable
+   via `[tui].tab_order` in config.conf, Settings last by default.
+2. **✅ DONE (Session 19) — Config management page (US-CFG-09..12)**: Configs tab (key 6) — register via `n`, deploy targets via `t`, mode cycle via `m`, deploy `l`, update+drift `u`, git `g`.
+3. **✅ DONE (Session 20) — Plugin project templates (US-PLG-14/15, US-PROJ-08)**: plugins ship
+   scaffold templates as inert data in `<plugin>/templates/*.toml` (files with
+   `{{project_name}}` placeholders, git_init flag, post-create commands); optional
+   template picker in the New Project Workspace form (default none, ←/→ cycle);
+   preview popup with file include/exclude (`x`) and inline content editing (`e`);
+   application runs off-thread on create, never overwrites existing files, reports
+   written/skipped/git/commands in the status bar.
+4. **✅ DONE (Session 22) — Plugin UI actions (US-PLG-13)**: plugins declare labeled
+   `[[actions]]` in their manifest (id/label/command/surface/requires); `a` on the
+   Projects tab opens the actions popup for the selected project (only actions from
+   loaded/approved plugins, `requires` capability subset enforced at discovery AND at
+   run time); Enter runs the action's Lua fn with [project_name, project_path]; result
+   shown in the popup + status bar.
+5. **✅ DONE (Session 23) — Visual-scripting logic gates (US-FUT-07)**: logic nodes
+   (AND/OR/NOT/XOR/Compare/IfElse) in the visual builder with a node editor popup;
+   engine captures each step's return into `results["<step>"]`, `run_when` gates skip
+   steps; logic nodes compile to Lua over typed boolean ports (inputs must reference
+   earlier steps; arity enforced).
+6. **✅ DONE (Sessions 24-32) — UX batch**: SSH host tags + connection test
+   (US-SSH-04/05); command chains (`chain` entities with segment info + notes);
+   read-only detail popup on Enter (`E` edits, `c` copies, `r` runs); options
+   manager (add/edit/delete options with big descriptions, run/copy composed
+   commands — shown with the info on Enter); run-mode chooser (`r` → terminal /
+   foreground / background / nohup) and the jobs panel (`j`: stop/kill running
+   things); visible selection cursor; Catppuccin + Solarized themes.
+7. **🟢 P3 — Parked future areas** (backend exists, UI not planned yet): US-PROC
+   (process manager — use btop/htop, don't rebuild), US-PKG, US-ENV, US-BAK, US-DB.
+8. **🟡 leftovers**: plugin approval workflow for headless service runs.
+
+---
+
 ## 🎯 Session 32: run modes + jobs panel (completed)
 
 User: "i cant run the commands — make it open a terminal but for everything; add
@@ -57,6 +96,8 @@ User: "not so readable in the Nord theme, the text color is not too different".
 
 
 
+## 🎯 Session 29: info + options in ONE Enter view (completed)
+
 User: pressing Enter on a command with options opened a cramped options-only popup
 without the command's description — "i want the info + options".
 
@@ -75,6 +116,8 @@ persists a linked `opt` child with composed content + description; `E` opens the
 edit form. 264 total (216 lib + 48 BDD), clippy 0, build ok.
 
 
+
+---
 
 ## 🎯 Session 28: options manager for command families (completed)
 
@@ -225,37 +268,6 @@ new VisualStep constructor. 252 total (204 lib + 48 BDD), clippy 0, build ok.
 USER_STORIES.md updated (US-FUT-07 ✅). Backlog: all P2 items done; remaining are
 P3 parked areas + leftovers.
 
-
----
-
-## 📋 Story Backlog — priority order (say "continue stories" to work the next item)
-
-1. **✅ DONE (Session 18) — Navigation restructure (US-TUI-11/12)**: Knowledge Base parent
-   page (key 2) with live counts; digits now 1-9 + 0 (0 = Settings); Tab cycle configurable
-   via `[tui].tab_order` in config.conf, Settings last by default.
-2. **✅ DONE (Session 19) — Config management page (US-CFG-09..12)**: Configs tab (key 6) — register via `n`, deploy targets via `t`, mode cycle via `m`, deploy `l`, update+drift `u`, git `g`.
-3. **✅ DONE (Session 20) — Plugin project templates (US-PLG-14/15, US-PROJ-08)**: plugins ship
-   scaffold templates as inert data in `<plugin>/templates/*.toml` (files with
-   `{{project_name}}` placeholders, git_init flag, post-create commands); optional
-   template picker in the New Project Workspace form (default none, ←/→ cycle);
-   preview popup with file include/exclude (`x`) and inline content editing (`e`);
-   application runs off-thread on create, never overwrites existing files, reports
-   written/skipped/git/commands in the status bar.
-4. **✅ DONE (Session 22) — Plugin UI actions (US-PLG-13)**: plugins declare labeled
-   `[[actions]]` in their manifest (id/label/command/surface/requires); `a` on the
-   Projects tab opens the actions popup for the selected project (only actions from
-   loaded/approved plugins, `requires` capability subset enforced at discovery AND at
-   run time); Enter runs the action's Lua fn with [project_name, project_path]; result
-   shown in the popup + status bar.
-5. **✅ DONE (Session 23) — Visual-scripting logic gates (US-FUT-07)**: logic nodes
-   (AND/OR/NOT/XOR/Compare/IfElse) in the visual builder with a node editor popup;
-   engine captures each step's return into `results["<step>"]`, `run_when` gates skip
-   steps; logic nodes compile to Lua over typed boolean ports (inputs must reference
-   earlier steps; arity enforced).
-6. **🟢 P3 — Parked future areas** (backend exists, UI not planned yet): US-PROC
-   (process manager — use btop/htop, don't rebuild), US-PKG, US-ENV, US-BAK, US-DB.
-7. **🟡 leftovers**: plugin approval workflow for headless service runs.
-   (US-SSH-04 host grouping/tags and US-SSH-05 connection test: ✅ DONE — Session 24.)
 
 ---
 ## 🎯 Session 22: Plugin UI actions — US-PLG-13 (completed)
