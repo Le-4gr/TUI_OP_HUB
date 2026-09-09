@@ -2,6 +2,29 @@
 
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
+## 🎯 Session 33: plugin approval for headless service runs (completed)
+
+The last leftover. Problem: `--headless` had no interactive consent flow, so
+newly added plugins could never be approved for the background service.
+
+- **Migration `0010`**: `plugin_approvals.trusted_headless` column (default 0).
+- **TUI**: `H` on the Plugins tab toggles headless trust for an approved plugin
+  — trust alone never grants approval in TUI mode (enforced: a trusted but
+  unapproved plugin still fails `load_plugin` without `--headless`).
+- **Headless auto-approval**: `PluginManager.set_headless(true)` (wired in
+  `main.rs --headless`); `load_plugin` auto-approves + persists the approval
+  for trusted plugins, logging the auto-approval. Untrusted plugins still fail
+  with Unauthorized — the admin must explicitly mark them in the TUI first.
+- The headless branch now actually loads plugins (it previously skipped
+  plugin loading entirely).
+- Docs: `docs/PLUGINS.md` headless section updated.
+
+Tests: headless trust auto-approval loads a trusted plugin (and persists the
+approval), untrusted plugins still fail with Unauthorized in headless mode,
+and trust does not bypass approval in TUI mode. 269 total (221 lib + 48 BDD),
+clippy 0, build ok.
+
+
 
 ---
 
@@ -38,7 +61,8 @@
    things); visible selection cursor; Catppuccin + Solarized themes.
 7. **🟢 P3 — Parked future areas** (backend exists, UI not planned yet): US-PROC
    (process manager — use btop/htop, don't rebuild), US-PKG, US-ENV, US-BAK, US-DB.
-8. **🟡 leftovers**: plugin approval workflow for headless service runs.
+8. **🟡 leftovers**: none — plugin approval workflow for headless service runs:
+   ✅ DONE (Session 33).
 
 ---
 

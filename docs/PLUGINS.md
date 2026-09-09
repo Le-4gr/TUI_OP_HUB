@@ -177,7 +177,20 @@ run = "python3 -m venv .venv"   # optional post-create commands (sh -c, cwd = pr
   created (requires `execute_commands`).
 - **Housekeeping**: `on_entity_created` style hooks as the event set grows.
 
-## 8. Security model
+## 8. Headless service runs
+
+The background service (`--headless`) cannot show the approval prompt.
+Workflow:
+
+1. Install the mod, open the Plugins tab in the TUI, approve it with `a`.
+2. Press `H` to mark it **trusted for headless** (shows in the plugin list).
+3. On the next `--headless` startup the mod auto-approves and loads
+   (persisted in the DB, visible in the Plugins tab).
+
+Untrusted mods still fail to load in headless mode — trust is an explicit,
+per-mod admin decision.
+
+## 9. Security model
 
 1. Mods run in a fresh mlua sandbox per hook/command invocation (no shared
    state, no lingering references).
