@@ -141,6 +141,15 @@ async fn main() -> anyhow::Result<()> {
         let mut app = ModernApp::new(pool, config);
         app.run().await?;
     } else {
+        // Headless service: load plugins. Admin-trusted plugins
+        // (trusted_headless) auto-approve here — the background service has
+        // no interactive consent flow (US-PLG leftover).
+        let mut pm = tui_op_hub::plugin::PluginManager::new(
+            pool.clone(),
+            tui_op_hub::plugin::PluginManager::default_dir(),
+        );
+        pm.set_headless(true);
+        pm.load_all_plugins().await?;
         tracing::info!("TUI disabled, running headless. Press Ctrl+C to shut down.");
         tokio::signal::ctrl_c().await?;
     }

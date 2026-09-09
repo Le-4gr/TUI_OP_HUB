@@ -698,6 +698,8 @@ struct PluginEntry {
     manifest: crate::plugin::PluginManifest,
     approved: bool,
     enabled: bool,
+    /// Trusted for headless service runs (US-PLG leftover).
+    trusted_headless: bool,
 }
 
 impl std::fmt::Display for PluginEntry {
@@ -1110,10 +1112,16 @@ impl ModernApp {
                 .is_plugin_enabled(&manifest.id)
                 .await
                 .unwrap_or(false);
+            let trusted_headless = self
+                .plugins
+                .is_plugin_trusted_headless(&manifest.id)
+                .await
+                .unwrap_or(false);
             entries.push(PluginEntry {
                 manifest,
                 approved,
                 enabled,
+                trusted_headless,
             });
         }
         let total = entries.len();
@@ -3553,6 +3561,34 @@ log:
                 // Projects: plugin UI actions on the selected project (US-PLG-13)
                 if self.ui.state == AppState::Projects {
                     self.open_project_actions().await;
+                }
+            }
+            KeyCode::Char('H') => {
+                // Plugins: toggle headless trust (US-PLG leftover) — trusted
+                // plugins auto-approve on headless service startup.
+                if self.ui.state == AppState::Plugins {
+                    if let Some(entry) = self.plugins_list.get_selected().cloned() {
+                        let new_trust = !entry.trusted_headless;
+                        match self
+                            .plugins
+                            .set_trusted_headless(&entry.manifest.id, new_trust)
+                            .await
+                        {
+                            Ok(()) => {
+                                let mark = if new_trust {
+                                    "\u{2713} Enabled"
+                                } else {
+                                    "\u{2713} Disabled"
+                                };
+                                self.status_message = Some(format!(
+                                    "{} headless trust for {}",
+                                    mark, entry.manifest.id
+                                ));
+                                self.fetch_plugins().await;
+                            }
+                            Err(e) => self.status_message = Some(format!("{}", e)),
+                        }
+                    }
                 }
             }
             KeyCode::Char('e') => {

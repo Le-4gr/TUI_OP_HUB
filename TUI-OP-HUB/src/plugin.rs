@@ -440,11 +440,15 @@ pub struct PluginManager {
     pool: Arc<SqlitePool>,
     plugins: Arc<RwLock<HashMap<String, LuaPlugin>>>,
     plugin_dir: PathBuf,
+    /// Headless service mode: trusted_headless plugins auto-approve on
+    /// startup without interactive consent (US-PLG leftover).
+    headless: bool,
 }
 
 impl PluginManager {
     pub fn new(pool: Arc<SqlitePool>, plugin_dir: PathBuf) -> Self {
         Self {
+            headless: false,
             pool,
             plugins: Arc::new(RwLock::new(HashMap::new())),
             plugin_dir,
@@ -460,12 +464,25 @@ impl PluginManager {
         let manifest: PluginManifest = toml::from_str(&manifest_str)
             .map_err(|e| AppError::Other(format!("Invalid plugin manifest: {}", e)))?;
 
-        // Check if plugin is approved (US-PLG-06) and enabled (US-PLG-10)
+        // Check if plugin is approved (US-PLG-06) and enabled (US-PLG-10).
+        // In headless service mode a plugin the admin explicitly marked
+        // trusted_headless auto-approves (US-PLG leftover): no interactive
+        // consent is possible in a background service.
         if !self.is_plugin_approved(&manifest.id).await? {
-            return Err(AppError::Unauthorized(format!(
-                "Plugin '{}' is not approved",
-                manifest.id
-            )));
+            let trusted = self.headless && self.is_plugin_trusted_headless(&manifest.id).await?;
+            if !trusted {
+                return Err(AppError::Unauthorized(format!(
+                    "Plugin '{}' is not approved",
+                    manifest.id
+                )));
+            }
+            // Headless auto-approval: persist the approval so the run is
+            // reflected in the DB and the Plugins tab.
+            self.approve_plugin(&manifest.id, "headless-trust").await?;
+            tracing::info!(
+                plugin_id = %manifest.id,
+                "headless: plugin auto-approved via headless trust"
+            );
         }
         if !self.is_plugin_enabled(&manifest.id).await? {
             return Err(AppError::Other(format!(
@@ -515,6 +532,57 @@ impl PluginManager {
     }
 
     /// Check if a plugin is approved
+    /// Enable/disable headless service mode (set from `main.rs` on
+    /// `--headless`): trusted plugins auto-approve on load.
+    pub fn set_headless(&mut self, headless: bool) {
+        self.headless = headless;
+    }
+
+    /// Check if a plugin is explicitly trusted for headless service runs.
+    pub async fn is_plugin_trusted_headless(&self, plugin_id: &str) -> AppResult<bool> {
+        let row = sqlx::query("SELECT trusted_headless FROM plugin_approvals WHERE plugin_id = ?")
+            .bind(plugin_id)
+            .fetch_optional(&*self.pool)
+            .await?;
+
+        Ok(row
+            .map(|r| r.try_get::<i32, _>("trusted_headless").unwrap_or(0) != 0)
+            .unwrap_or(false))
+    }
+
+    /// Toggle headless trust for a plugin (TUI action on the Plugins tab).
+    /// Works even for not-yet-approved plugins: it creates/updates the
+    /// approval row WITHOUT setting approved — trust alone never grants
+    /// approval in TUI mode, only in headless service runs.
+    pub async fn set_trusted_headless(&self, plugin_id: &str, trusted: bool) -> AppResult<()> {
+        // Ensure the plugin row exists so the FK on approvals holds
+        sqlx::query(
+            "INSERT OR IGNORE INTO plugins (id, name, version, plugin_type, capabilities, enabled) VALUES (?, ?, '0', 'lua', '[]', 1)",
+        )
+        .bind(plugin_id)
+        .bind(plugin_id) // name = id
+        .execute(&*self.pool)
+        .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO plugin_approvals (plugin_id, user_id, approved, trusted_headless) VALUES (?, 'system', 0, ?)",
+        )
+        .bind(plugin_id)
+        .bind(if trusted { 1 } else { 0 })
+        .execute(&*self.pool)
+        .await?;
+        sqlx::query("UPDATE plugin_approvals SET trusted_headless = ? WHERE plugin_id = ?")
+            .bind(if trusted { 1 } else { 0 })
+            .bind(plugin_id)
+            .execute(&*self.pool)
+            .await?;
+        tracing::info!(
+            plugin_id = %plugin_id,
+            trusted = %trusted,
+            "headless trust updated"
+        );
+        Ok(())
+    }
+
     pub async fn is_plugin_approved(&self, plugin_id: &str) -> AppResult<bool> {
         let row = sqlx::query("SELECT approved FROM plugin_approvals WHERE plugin_id = ?")
             .bind(plugin_id)
@@ -1080,6 +1148,96 @@ run = "echo scaffolded > created.txt"
             .unwrap();
         assert_eq!(result, "created starter.txt");
         assert!(marker.exists(), "action must have created the file");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn given_headless_manager_when_trusted_plugin_loaded_then_auto_approved() {
+        // US-PLG leftover: headless service + admin-trusted plugin => loads.
+        let pool = test_pool().await;
+        let tmp = std::env::temp_dir().join(format!("plug-hless-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let mut manager = PluginManager::new(std::sync::Arc::new(pool), tmp.clone());
+        write_plugin(&tmp, "headless.plugin", "log('headless trust works')");
+        manager.set_headless(true);
+
+        // Mark the plugin trusted for headless (admin action in the TUI)
+        manager
+            .approve_plugin("headless.plugin", "admin")
+            .await
+            .unwrap();
+        manager
+            .set_trusted_headless("headless.plugin", true)
+            .await
+            .unwrap();
+        assert!(
+            manager
+                .is_plugin_trusted_headless("headless.plugin")
+                .await
+                .unwrap(),
+            "trust must persist"
+        );
+
+        // Loading succeeds despite the interactive approval flow not running
+        manager
+            .load_plugin(&tmp.join("headless.plugin"))
+            .await
+            .unwrap();
+        let loaded = manager.list_plugins().await;
+        assert!(loaded.contains(&"headless.plugin".to_string()));
+
+        // The headless auto-approval is persisted in the DB
+        assert!(manager.is_plugin_approved("headless.plugin").await.unwrap());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn given_headless_manager_when_not_trusted_then_load_fails() {
+        // Untrusted plugins still require interactive approval in the TUI.
+        let pool = test_pool().await;
+        let tmp = std::env::temp_dir().join(format!("plug-hless2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let mut manager = PluginManager::new(std::sync::Arc::new(pool), tmp.clone());
+        write_plugin(&tmp, "distrusted.plugin", "log('nope')");
+        manager.set_headless(true);
+
+        let err = manager.load_plugin(&tmp.join("distrusted.plugin")).await;
+        assert!(
+            matches!(err, Err(AppError::Unauthorized(_))),
+            "untrusted plugins must not auto-approve in headless mode"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn given_foreground_manager_when_trusted_plugin_loaded_then_still_needs_approval() {
+        // Trust only applies to headless runs; the TUI keeps consent.
+        let pool = test_pool().await;
+        let tmp = std::env::temp_dir().join(format!("plug-fg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let manager = PluginManager::new(std::sync::Arc::new(pool), tmp.clone());
+        write_plugin(&tmp, "fg.plugin", "log('x')");
+        // Simulate an admin pre-trusting the plugin WITHOUT approving it
+        // (set_trusted_headless creates the approval row with approved=0)
+        manager
+            .set_trusted_headless("fg.plugin", true)
+            .await
+            .unwrap();
+        assert!(manager
+            .is_plugin_trusted_headless("fg.plugin")
+            .await
+            .unwrap());
+        assert!(
+            !manager.is_plugin_approved("fg.plugin").await.unwrap(),
+            "trust alone must not grant approval"
+        );
+        // headless flag NOT set — TUI mode
+
+        let err = manager.load_plugin(&tmp.join("fg.plugin")).await;
+        assert!(
+            matches!(err, Err(AppError::Unauthorized(_))),
+            "trust must not bypass approval in TUI mode"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
