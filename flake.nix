@@ -24,6 +24,9 @@
             # the crate lives in a subdirectory of the repo
             sourceRoot = "source/TUI-OP-HUB";
             cargoLock.lockFile = self + "/TUI-OP-HUB/Cargo.lock";
+            # tests need git + HOME on PATH — run locally / in CI instead
+            # (lib tests 221/221, BDD 48/48 in debug)
+            doCheck = false;
 
             meta = with pkgs.lib; {
               description = "Terminal operations hub: commands, scripts, workflows, secrets, configs";
