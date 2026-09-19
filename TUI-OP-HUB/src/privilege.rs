@@ -133,7 +133,16 @@ mod tests {
 
     #[test]
     fn detect_returns_a_tool() {
-        assert!(detect_priv_tool().is_some());
+        // Environment-independent (D97): the Nix build sandbox has no sudo/doas
+        // on PATH — only assert Some when a tool is actually installed.
+        let has_tool = ["sudo", "doas", "su"]
+            .iter()
+            .any(|t| crate::keygen::which(t));
+        if has_tool {
+            assert!(detect_priv_tool().is_some());
+        } else {
+            assert!(detect_priv_tool().is_none());
+        }
     }
 
     #[test]

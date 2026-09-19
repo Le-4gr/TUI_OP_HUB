@@ -5974,10 +5974,27 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 // foreground / background / nohup instead of running directly.
                 match workflow::build_run_plan(&entity) {
                     Some(plan) => {
-                        self.run_dialog = Some(RunDialog {
-                            name: entity.name.clone(),
-                            plan,
-                        });
+                        // D97: `app` entities (installed TUI/CLI apps) launch
+                        // straight into a NEW terminal — same menu, one key.
+                        if matches!(plan, crate::workflow::RunPlan::App(_)) {
+                            let command = match &plan {
+                                crate::workflow::RunPlan::App(c) => c.clone(),
+                                _ => unreachable!(),
+                            };
+                            self.wants_terminal_cmd = Some((
+                                command,
+                                dirs_home().to_string_lossy().to_string(),
+                            ));
+                            self.status_message = Some(format!(
+                                "\u{2713} '{}' launched in a new terminal",
+                                entity.name
+                            ));
+                        } else {
+                            self.run_dialog = Some(RunDialog {
+                                name: entity.name.clone(),
+                                plan,
+                            });
+                        }
                     }
                     None => {
                         self.status_message =
