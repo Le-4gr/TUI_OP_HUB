@@ -936,6 +936,7 @@ impl ModernApp {
             }
             AppState::Knowledge => {
                 let _ = self.fetch_knowledge().await;
+                self.search_state.active = true;
             }
             AppState::Projects => {
                 let _ = self.fetch_projects().await;
@@ -3051,7 +3052,7 @@ log:
                 match key.code {
                     KeyCode::Char('?') | KeyCode::Esc => {
                         // Close help and return to dashboard
-                        self.ui.state = AppState::Dashboard;
+                        self.ui.state = AppState::Knowledge;
                     }
                     KeyCode::Char('q') => {
                         self.should_quit = true;
@@ -3214,9 +3215,8 @@ log:
             }
             // Navigation - Number keys (US-TUI-11/12: 0 = Settings last)
             KeyCode::Char('1') => {
-                self.ui.state = AppState::Dashboard;
-                let _ = self.fetch_stats().await;
-                self.fetch_monitor().await;
+                self.ui.state = AppState::Knowledge;
+                let _ = self.fetch_knowledge().await;
             }
             KeyCode::Char('2') => {
                 self.ui.state = AppState::Knowledge;
@@ -3836,7 +3836,7 @@ log:
                     eprintln!("Warning: Failed to fetch stats: {}", e);
                 }
 
-                self.ui.state = AppState::Dashboard;
+                self.ui.state = AppState::Knowledge;
                 self.fetch_monitor().await;
             }
             Ok(false) => {
