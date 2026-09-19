@@ -7,9 +7,13 @@ TUI-OP-HUB is a terminal-based operations hub built with Rust, designed to provi
 ```
 ┌─────────────────────────────────┐
 │   Terminal UI (ratatui)         │
-│   - 7 Tabs (Dashboard, Cmds,    │
-│     Projects, Tags, Search,     │
-│     Workflows, Secrets)         │
+│   - 8 Tabs (Dashboard,          │
+│     Knowledge*, Projects,       │
+│     Workflows, Secrets,         │
+│     Configs, Plugins, Settings) │
+│   - * Knowledge = default       │
+│     screen after login (launcher│
+│     with auto-focused search)   │
 │   - Forms, Lists, Detail views  │
 └──────────────┬──────────────────┘
                │
@@ -171,8 +175,8 @@ async fn handler(State(state): State<AppState>, Json(req): Json<Req>) -> Result<
 
 **Structure** (`modern_app.rs` ~10k lines + `modern_ui.rs` theme/login/dashboard,
 `list_state.rs` reusable list/form/node state, `helpers.rs`):
-- `ModernApp` struct: tab state (`AppState` — Dashboard, Knowledge, Projects,
-  Workflows, Secrets, Configs, Plugins, Settings), all popup/panel states,
+- `ModernApp` struct: tab state (`AppState` — Knowledge **(default/launcher)**, Dashboard,
+  Projects, Workflows, Secrets, Configs, Plugins, Settings), all popup/panel states,
   selections and loaded data; single async `handle_key` dispatcher routes
   keypresses through the overlay stack (sudo popup → file browser → panels →
   forms → tab handlers)

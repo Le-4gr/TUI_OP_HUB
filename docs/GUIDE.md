@@ -83,6 +83,8 @@ tui-op-hub                            # launch the TUI
 ```
 
 First launch shows the signup screen — the **first user becomes the admin**.
+After login you land on the **Knowledge launcher** (search auto-focused — type
+to filter, `Enter` runs; Dashboard is tab `1`).
 
 ### Day-to-day
 

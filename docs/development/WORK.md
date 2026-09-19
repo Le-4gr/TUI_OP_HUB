@@ -1402,6 +1402,29 @@ functional changes; all tests still pass.**
 
 ---
 
+## 🎯 Session 4: Launcher mode — Knowledge as the default screen (completed)
+
+> Context: MyDesk integration (external `~/.config/nix` repo, D85–D94) wanted the
+> Knowledge tab as the primary landing screen — a type-to-filter launcher instead
+> of the stats Dashboard. On minimal/headless machines the TUI is the whole desktop.
+
+### Changes
+- `modern_app.rs`: post-login state set to `AppState::Knowledge` (was
+  `AppState::Dashboard`) — both the login-success path and the tab-key handlers
+  that returned to the default screen; Knowledge entry now also sets
+  `search_state.active = true` so the search bar is immediately focused
+- Help/Esc return paths updated to land back on Knowledge
+- Dashboard still available as tab `1` (stats, mini-btop, quick launches, jobs)
+
+### Result
+- Boot → login → **Knowledge with search focused**; type to filter (FTS5) across
+  `cmd`/`script`/`app`/`chain`/`opt`/`wf`; `Enter` runs the selection
+- Validated in the MyDesk test VM: 230 entities imported (24 MyDesk actions +
+  36 Nix knowledge + 78 shell reference), health ✅, imports idempotent ✅
+- Deployed binary: `target/release/tui-op-hub` (commit `81be72a` on `dev`)
+
+---
+
 ## 🎯 Session 3: Settings screen — editor, defaults, theming, keybindings (completed)
 
 **Goal: a real Settings screen where the user can change the text editor, defaults,

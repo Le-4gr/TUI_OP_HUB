@@ -23,8 +23,9 @@ developer's/power-user's daily tooling into one keyboard-driven app:
 - **Background service** — systemd user service (or cron/any init) runs the hub headless
   (`--headless`: scheduler + API); the TUI runs on demand and coexists with the service
 - **Modern TUI** — ratatui + crossterm UI with login screen and 8 main tabs
-  (Dashboard, Knowledge Base — the ONE tab for commands/apps/scripts with a type
-  filter — Projects, Workflows, Secrets, Configs, Plugins, Settings last; tab order
+  (Dashboard, Knowledge Base — **the default screen after login: the launcher,
+  with an auto-focused FTS5 search over commands/apps/scripts/chains and a type
+  filter** — Projects, Workflows, Secrets, Configs, Plugins, Settings last; tab order
   configurable via `[tui].tab_order`); digits 1-9/0 switch tabs from any screen,
   `Enter` on a project opens its detail view, `` ` `` opens a new terminal window,
   `/` search with a visible search bar, `I`/`x` import/export, selected rows show
@@ -65,7 +66,7 @@ dependencies, Hyprland-style config (`~/.config/tui-op-hub/config.conf`).
 │   │   ├── ARCHITECTURE.md       # system architecture, module responsibilities, data flow
 │   │   ├── USER_STORIES.md       # user stories with IDs (US-XXX-NN), priorities, phase status
 │   │   ├── STACK_AND_TOOLS_GUIDE.md  # rationale for the Rust/Lua/SQLite layering
-│   │   └── MODERN_TUI_GUIDE.md   # TUI design guide (colors, layout, login/dashboard)
+│   │   └── MODERN_TUI_GUIDE.md   # TUI design guide (colors, layout, login/launcher)
 │   ├── development/              # for AI agents & contributors
 │   │   ├── AGENTS.md             # ← this file
 │   │   └── WORK.md               # live work log / changelog (backlog at the top)

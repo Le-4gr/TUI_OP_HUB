@@ -33,6 +33,17 @@ stop/cancel (US-WF-09), systemd/cron integration (US-DEP-04), secrets v2
 - **Plugin approval for headless runs** (US-PLG leftover): `H` trust toggle,
   auto-approval on `--headless` startup
 
+## ✅ Phase 3.5 — Launcher mode (shipped)
+
+- **Knowledge tab is the default screen after login** (was Dashboard): the TUI
+  opens directly on Knowledge with the search bar auto-focused — type-to-filter
+  (FTS5) across `cmd`/`script`/`app`/`chain`/`opt`/`wf` entities, `Enter` runs
+  the selection. On minimal/headless machines the TUI is the primary desktop.
+- Post-login state transitions, help/Esc returns, and tab navigation updated to
+  match (`AppState::Knowledge` as the landing state).
+- Deployed + VM-verified with the MyDesk integration: 230 entities imported
+  (24 MyDesk actions + 36 Nix knowledge + 78 shell reference).
+
 ## 🟢 Phase 4+ — Planned (future)
 - Process monitor (sysinfo backend exists) — US-PROC-01..07 (deliberately parked:
   prefer btop/htop)

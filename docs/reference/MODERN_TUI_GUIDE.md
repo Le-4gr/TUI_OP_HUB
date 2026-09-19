@@ -5,7 +5,8 @@
 TUI-OP-HUB features a **modern, polished terminal user interface** with:
 
 - ✨ **Beautiful Login Screen** - Centered, professional authentication
-- 🎯 **Modern Dashboard** - Card-based layout with statistics
+- 🚀 **Knowledge Launcher (default screen)** - After login you land on Knowledge with an auto-focused type-to-filter search; Enter runs the selected entity
+- 🎯 **Modern Dashboard** - Card-based layout with statistics (`1` from any screen)
 - 🎨 **Professional Color Scheme** - Indigo, purple, and pink accents
 - 🔄 **Smooth State Transitions** - Between login and main application
 - 📱 **Responsive Design** - Adapts to terminal size
@@ -104,12 +105,24 @@ login_state.start_auth();
 
 // 5. Authentication succeeds
 login_state.auth_success();
-// State transitions to Dashboard
+// State transitions to Knowledge (the launcher — search auto-focused)
 
 // OR authentication fails
 login_state.auth_failed("Invalid credentials".to_string());
 // Error message displayed, password cleared
 ```
+
+---
+
+## 🚀 Launcher (Knowledge — default screen)
+
+After successful login the app lands on the **Knowledge tab**, not the Dashboard:
+
+- search bar is **auto-focused** — start typing to filter (FTS5) across
+  commands, scripts, apps, chains and workflows
+- `Enter` runs / opens the selected entity; `f` cycles the type filter;
+  `1`–`9`/`0` switch tabs as usual
+- on minimal/headless machines this launcher IS the desktop — no compositor needed
 
 ---
 
@@ -159,11 +172,11 @@ pub enum AppState {
 ### State Transitions
 
 ```
-Login ──[auth success]──> Dashboard
+Login ──[auth success]──> Knowledge (launcher, search focused)
   │
   └──[Esc]──> Exit
 
-Dashboard ──[Tab]──> Commands/Projects/etc.
+Knowledge ──[Tab]──> Dashboard/Projects/etc.
   │
   └──[q]──> Exit
 ```
@@ -235,7 +248,7 @@ loop {
                 ui.login_state.start_auth();
                 // ... perform auth ...
                 ui.login_state.auth_success();
-                ui.state = AppState::Dashboard;
+                ui.state = AppState::Knowledge;   // launcher — search auto-focused
             }
             (AppState::Login, KeyCode::Char(c)) => {
                 // Add character to active field
@@ -265,7 +278,7 @@ if ui.login_state.is_authenticating {
     ).await {
         Ok(true) => {
             ui.login_state.auth_success();
-            ui.state = AppState::Dashboard;
+            ui.state = AppState::Knowledge;   // launcher — search auto-focused
         }
         Ok(false) => {
             ui.login_state.auth_failed("Invalid credentials".to_string());
@@ -380,7 +393,7 @@ Status (updated):
 
 - [x] **Themes** - 8 presets (dark, light, nord, dracula, gruvbox, solarized, catppuccin, catppuccin-latte) + custom themes + visual color editor (Settings > a)
 - [x] **Modal Dialogs** - delete confirm (with project-folder toggle), sudo password, cron input, import/export path, project detail, run result, keybind overlay, SSH panel, plugin actions, config register/target forms, file browser, template preview, logic-node editor
-- [x] **Tabs** - 8 main tabs (Dashboard, Knowledge Base, Projects, Workflows, Secrets, Configs, Plugins, Settings), keys 1-9/0 from any screen; Knowledge Base holds commands/scripts/apps with a type filter; selected rows show a `❯` cursor marker
+- [x] **Tabs** - 8 main tabs (Dashboard, Knowledge Base, Projects, Workflows, Secrets, Configs, Plugins, Settings), keys 1-9/0 from any screen; **Knowledge Base is the default screen after login (launcher mode)** and holds commands/scripts/apps/chains with FTS5 search + type filter; selected rows show a `❯` cursor marker
 - [x] **Charts** - Dashboard mini-btop: CPU per-core bars, RAM/swap gauges, network rates, temperatures, GPU stats (auto-refresh 2s)
 - [x] **Search** - per-tab fuzzy search with a visible search bar (`/`)
 - [ ] **Animations** - Smooth transitions between states
