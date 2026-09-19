@@ -143,6 +143,47 @@ struct RunResult {
     text: String,
 }
 
+/// Remove ANSI escape sequences (scripts emit colors for terminal use; the
+/// TUI renders plain text — escapes would show up as garbage glyphs).
+fn strip_ansi(bytes: &[u8]) -> String {
+    let s = String::from_utf8_lossy(bytes).into_owned();
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    for ch in chars.by_ref() {
+                        if ch.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    for ch in chars.by_ref() {
+                        if ch == '\x07' || ch == '\x1b' {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Updates overview popup (D96): pending package changes + distro news,
+/// rendered scrollable; `a` applies via a new terminal window.
+struct UpdatesOverview {
+    text: String,
+    scroll: u16,
+}
+
 /// A workflow running in the background; polled every loop iteration and
 /// cancellable with `X` on the Workflows tab (US-WF-09).
 struct RunningWorkflow {
@@ -669,6 +710,8 @@ pub struct ModernApp {
     visual_form: Option<VisualWorkflowState>,
     confirm_delete: Option<ConfirmDelete>,
     run_result: Option<RunResult>,
+    /// Updates overview popup (D96) — `U` on Dashboard/Knowledge.
+    updates_overview: Option<UpdatesOverview>,
     status_message: Option<String>,
 }
 
@@ -865,6 +908,7 @@ impl ModernApp {
             visual_form: None,
             confirm_delete: None,
             run_result: None,
+            updates_overview: None,
             status_message: None,
         }
     }
@@ -1627,6 +1671,84 @@ log:
         }
     }
 
+    /// `U`: collect the updates overview (D96). Prefers the MyDesk script
+    /// (`~/.config/nix/scripts/mydesk/mydesk-updates.sh`) when present; falls
+    /// back to a built-in detection so the hub stays standalone.
+    async fn show_updates_overview(&mut self) {
+        let script = dirs_home().join(".config/nix/scripts/mydesk/mydesk-updates.sh");
+        let argv: Vec<String> = if script.is_file() {
+            vec![
+                "bash".to_string(),
+                script.to_string_lossy().into_owned(),
+            ]
+        } else {
+            vec![
+                "bash".to_string(),
+                "-c".to_string(),
+                Self::UPDATES_FALLBACK_SCRIPT.to_string(),
+            ]
+        };
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(180),
+            tokio::process::Command::new(&argv[0]).args(&argv[1..]).output(),
+        )
+        .await;
+        let text = match out {
+            Ok(Ok(o)) => {
+                let mut t = strip_ansi(&o.stdout);
+                if !o.stderr.is_empty() {
+                    t.push_str("\n[stderr]\n");
+                    t.push_str(&strip_ansi(&o.stderr));
+                }
+                if t.trim().is_empty() {
+                    "no update information available".to_string()
+                } else {
+                    t
+                }
+            }
+            Ok(Err(e)) => format!("failed to run update overview: {e}"),
+            Err(_) => "update overview timed out".to_string(),
+        };
+        self.updates_overview = Some(UpdatesOverview { text, scroll: 0 });
+    }
+
+    /// `a` in the updates overview: apply in a NEW terminal window (the TUI
+    /// keeps running) — interactive package managers need a real terminal.
+    /// Prefers `mydesk-update` (supervised, cross-stack); falls back to the
+    /// native package manager of the detected distro.
+    fn apply_updates(&mut self) {
+        let apply_cmd = if crate::keygen::which("mydesk-update") {
+            "mydesk-update"
+        } else if crate::keygen::which("paru") {
+            "paru -Syu"
+        } else if crate::keygen::which("emerge") {
+            "emerge --ask --update --newuse --deep @world"
+        } else if std::path::Path::new("/etc/NIXOS").exists() {
+            "nh os switch -- ~/.config/nix"
+        } else {
+            "nh home switch -- ~/.config/nix"
+        };
+        self.updates_overview = None;
+        self.wants_terminal_cmd = Some((
+            apply_cmd.to_string(),
+            dirs_home().to_string_lossy().into_owned(),
+        ));
+    }
+
+    /// Minimal standalone fallback when the MyDesk script is absent.
+    const UPDATES_FALLBACK_SCRIPT: &str = r#"
+if command -v paru >/dev/null 2>&1; then
+  echo "== news =="; paru -Pw 2>/dev/null | head -40
+  echo "== pending (repo+AUR) =="; paru -Qua 2>/dev/null | head -40 || true
+elif command -v emerge >/dev/null 2>&1; then
+  echo "== news =="; eselect news list 2>/dev/null | tail -25 || true
+  echo "== pending =="; emerge --pretend --update --newuse --deep @world 2>/dev/null | grep -E '^\[|Total:' | head -40 || true
+fi
+command -v flatpak >/dev/null 2>&1 && { echo "== flatpak =="; flatpak remote-ls --updates 2>/dev/null | head -15; }
+command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake metadata ~/.config/nix 2>/dev/null | grep -A20 'Locked flake input' | head -20 || true; }
+[[ -f /var/run/reboot-required ]] && echo "REBOOT REQUIRED"
+"#;
+
     /// Resolve the current user's `user_profiles.id` (creates the profile row if
     /// missing). Secrets are keyed by profile id, not by username.
     async fn current_user_profile_id(&self) -> String {
@@ -1772,6 +1894,9 @@ log:
         }
         if self.run_result.is_some() {
             self.render_run_result(f);
+        }
+        if self.updates_overview.is_some() {
+            self.render_updates_overview(f);
         }
         if self.keygen.open {
             self.render_keygen_form(f);
@@ -3002,6 +3127,38 @@ log:
             }
             return;
         }
+        if self.updates_overview.is_some() {
+            // Updates overview popup (D96): scroll / refresh / apply / close
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                    self.updates_overview = None;
+                }
+                KeyCode::Char('r') => self.show_updates_overview().await,
+                KeyCode::Char('a') => self.apply_updates(),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if let Some(o) = self.updates_overview.as_mut() {
+                        o.scroll = o.scroll.saturating_sub(1);
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if let Some(o) = self.updates_overview.as_mut() {
+                        o.scroll = o.scroll.saturating_add(1);
+                    }
+                }
+                KeyCode::PageUp => {
+                    if let Some(o) = self.updates_overview.as_mut() {
+                        o.scroll = o.scroll.saturating_sub(10);
+                    }
+                }
+                KeyCode::PageDown => {
+                    if let Some(o) = self.updates_overview.as_mut() {
+                        o.scroll = o.scroll.saturating_add(10);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         self.status_message = None;
 
         // Keybinds helper is global: `?` toggles it from any screen (US-TUI-09)
@@ -3214,9 +3371,11 @@ log:
                 }
             }
             // Navigation - Number keys (US-TUI-11/12: 0 = Settings last)
+            // 1 = Dashboard, 2 = Knowledge (launcher; also the post-login default, D89)
             KeyCode::Char('1') => {
-                self.ui.state = AppState::Knowledge;
-                let _ = self.fetch_knowledge().await;
+                self.ui.state = AppState::Dashboard;
+                let _ = self.fetch_stats().await;
+                self.fetch_monitor().await;
             }
             KeyCode::Char('2') => {
                 self.ui.state = AppState::Knowledge;
@@ -3517,6 +3676,15 @@ log:
                     } else {
                         self.status_message = Some(format!("{} is not installed", tool));
                     }
+                }
+            }
+            KeyCode::Char('U') => {
+                // Updates overview: pending changes + news, per package manager (D96)
+                if matches!(
+                    self.ui.state,
+                    AppState::Dashboard | AppState::Knowledge
+                ) {
+                    self.show_updates_overview().await;
                 }
             }
             KeyCode::Char('m') => {
@@ -4666,6 +4834,7 @@ log:
                 ("1-9", "Tabs"),
                 ("f", "Fetch"),
                 ("p", "Processes"),
+                ("U", "Updates"),
                 ("g/d/k/n", "TUI tools"),
                 ("`", "New term"),
                 ("?", "Keybinds"),
@@ -4686,6 +4855,7 @@ log:
             AppState::Knowledge => vec![
                 ("\u{2191}\u{2193}", "Navigate"),
                 ("f", "Filter type"),
+                ("U", "Updates"),
                 ("n", "New"),
                 ("e", "Edit"),
                 ("d", "Delete"),
@@ -6947,6 +7117,41 @@ log:
             Span::raw(" Cancel"),
         ]));
         f.render_widget(Paragraph::new(text).alignment(Alignment::Center), inner);
+    }
+
+    /// Updates overview popup (D96): large, scrollable — pending changes + news.
+    fn render_updates_overview(&self, f: &mut Frame) {
+        if let Some(ref o) = self.updates_overview {
+            let area = self.centered_rect(90, 85, f);
+            f.render_widget(Clear, area);
+            let block = Block::default()
+                .title(" Updates overview — pending changes & news ")
+                .title_alignment(Alignment::Center)
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(self.ui.theme.accent))
+                .style(Style::default().bg(self.ui.theme.bg));
+            let inner = block.inner(area);
+            f.render_widget(block, area);
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)])
+                .split(inner);
+
+            let text = Paragraph::new(o.text.as_str())
+                .style(Style::default().fg(self.ui.theme.fg))
+                .wrap(ratatui::widgets::Wrap { trim: false })
+                .scroll((o.scroll, 0));
+            f.render_widget(text, chunks[0]);
+
+            let help = Paragraph::new(Span::styled(
+                "\u{2191}/\u{2193} or j/k scroll · PgUp/PgDn · r refresh · a apply in new terminal · Esc close",
+                Style::default().fg(self.ui.theme.border),
+            ))
+            .alignment(Alignment::Center);
+            f.render_widget(help, chunks[1]);
+        }
     }
 
     fn render_run_result(&self, f: &mut Frame) {

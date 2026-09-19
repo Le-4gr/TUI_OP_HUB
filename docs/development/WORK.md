@@ -1402,6 +1402,34 @@ functional changes; all tests still pass.**
 
 ---
 
+## 🎯 Session 5: Updates overview popup (completed)
+
+> Request from the MyDesk integration: a paru-style "what will change + news"
+> overview before updating — available directly in the TUI where you update.
+
+### Changes
+- `modern_app.rs`:
+  - `UpdatesOverview { text, scroll }` popup state + `U` key on Dashboard/Knowledge
+  - `show_updates_overview()` — runs `~/.config/nix/scripts/mydesk/mydesk-updates.sh`
+    (MyDesk) or a built-in fallback script (standalone installs), 180s timeout,
+    ANSI-stripped (`strip_ansi` helper added)
+  - popup keys: `j/k`/arrows/PgUp/PgDn scroll · `r` refresh · `a` apply · Esc close
+  - `apply_updates()` — opens a NEW terminal (reuses the quick-launch terminal
+    spawner) running `mydesk-update`, falling back to `paru -Syu` / `emerge …` /
+    `nh os|home switch` per detected package manager
+  - `render_updates_overview()` — 90×85 scrollable popup, accent border, help line
+- Fixed D89 regression caught by tests: digit `1` also went to Knowledge, leaving
+  Dashboard unreachable by digits — restored 1=Dashboard / 2=Knowledge mapping
+  (`keybind_hints` gained `U` on both tabs)
+
+### Validation
+- `cargo build --release` ✅ · lib tests **221/221** ✅ · BDD debug **48/48** ✅
+  (4 release-mode BDD failures pre-exist: dev-mode gated on `cfg!(debug_assertions)`)
+- Deployed to the MyDesk VM: headless OK, 232 entities (26 MyDesk incl. new
+  `update-overview` + `distro-news`), imports idempotent
+
+---
+
 ## 🎯 Session 4: Launcher mode — Knowledge as the default screen (completed)
 
 > Context: MyDesk integration (external `~/.config/nix` repo, D85–D94) wanted the

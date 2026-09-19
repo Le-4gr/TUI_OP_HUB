@@ -151,6 +151,13 @@ tui-op-hub --headless   # scheduler + REST API, no TUI
 |:---|:---|
 | `1` Dashboard | stats + mini-btop + quick launches + jobs panel (`j`) |
 | `2` Knowledge | **launcher (default screen)** — commands/scripts/apps, type filter, FTS5 search |
+
+Press **`U`** on the Dashboard or Knowledge tab for the **updates overview**
+(paru-style: pending package changes + distro news for Arch/Gentoo, flatpak,
+firmware, Nix flake inputs, reboot check). Inside the popup: `↑/↓`/`j`/`k`
+scroll, `r` refresh, **`a` apply** — opens a new terminal window running
+`mydesk-update` (or the native package manager when MyDesk scripts are absent),
+`Esc` closes.
 | `3` Projects | workspaces + register-dir + detail view + plugin actions |
 | `4` Workflows | visual builder, cron scheduling, run history, cancel |
 | `5` Secrets | encrypted secrets, SSH/GPG keygen, ssh-agent, SSH hosts (`H`) |
