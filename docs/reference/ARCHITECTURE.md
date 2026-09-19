@@ -182,12 +182,19 @@ async fn handler(State(state): State<AppState>, Json(req): Json<Req>) -> Result<
   actions, keybinds overlay and delete confirmations
 - Reusable state types live in `list_state.rs` (pagination, forms,
   `VisualStep`/`VisualNodeKind` + logic-node compilation)
+- **Knowledge tab** holds all entity kinds in one list — `cmd`, `script`,
+  `app` and **`chain`** (pipe/semicolon one-liners, parsed quote-aware; `i`
+  shows per-segment notes, `r` opens the run-mode chooser)
+- Jobs panel (`j` on the Dashboard) tracks running workflows + background /
+  nohup processes (`s` stop, `K` force-kill, `r` refresh)
 
 **Selected rows** show an explicit `❯` cursor marker in addition to the
 highlight background, so selection is theme-independent (US-APP-01).
 
 **Tab features** (highlights):
-- **Knowledge (2)**: one list for commands/scripts/apps with type filter (`f`)
+- **Knowledge (2)**: one list for commands/scripts/apps/**chains** with type
+  filter (`f`); run modes via `r` (new terminal / foreground / background /
+  nohup), `i` for options panel (cmds) or chain segment info
 - **Projects (3)**: workspace creation with plugin-template picker + preview
   (`N`), register existing dir (`n`), delete with optional folder removal
   (`d` + `f` toggle), plugin UI actions (`a`), editor/shell open (`O`/`E`)

@@ -2,6 +2,56 @@
 
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
+
+## 🎯 Session 35: GUIDE.md (user guide), INSTALL merge, docs refresh (completed)
+
+User: "there are still two install.md and i want a file if it doesnt exist
+yet or just append to most logical file typing out what the program can do
+and how" → then: "finish this also update every markdown file to the latest
+version + capabilities especially import export for ai".
+
+- **Two INSTALL files merged into one**: root `INSTALL.md` (quick install) and
+  `docs/INSTALL.md` (release/service deep-dive) were duplicates in overlap;
+  both deleted, content consolidated into new **`docs/GUIDE.md`** (~400 lines):
+  install (script/manual/update/uninstall/release), the service+TUI
+  coexistence model, secrets key, files & paths, non-systemd inits, then a
+  full feature walk: 8 tabs, Knowledge tab (chains, options, run modes),
+  jobs panel, workflows + logic gates, secrets, configs, projects, plugins,
+  themes, import/export, headless, REST API, troubleshooting.
+- **docs/IMPORT_EXPORT.md updated for AI generation**: `chain` type added to
+  the bundle schema, the LLM prompt (§4), and the validation checklist;
+  implementation paths corrected (`src/share/`, `src/scheduler.rs`,
+  `src/service.rs`).
+- **Stale references fixed everywhere**: README.md (docs table + layout),
+  docs/INDEX.md, docs/development/AGENTS.md, install.sh, IMPORT_EXPORT —
+  all now point to `docs/GUIDE.md`; zero `INSTALL.md` references remain.
+- **docs/reference/ARCHITECTURE.md** TUI section extended: chain entities,
+  run modes, jobs panel. **docs/business/ROADMAP.md** Phase 3 now lists
+  sessions 30-33 features (chains/run modes/jobs, headless plugin trust);
+  headless leftover removed from Phase 4+.
+- Link check clean; tests unaffected (docs only).
+
+## 🎯 Session 34: documentation reorganization (completed)
+
+User: "go over all the md files and docs and put them in a folder and add a
+very good readme too".
+
+- **All markdown moved into `docs/`**: `reference/` (ARCHITECTURE,
+  USER_STORIES, MODERN_TUI_GUIDE, STACK_AND_TOOLS_GUIDE), `development/`
+  (AGENTS.md, WORK.md — the agent-facing files), `business/` (bp.md,
+  ROADMAP, VISION, GOVERNANCE) and `design/` (DB_LOGICAL.drawio, Figma
+  sketches — previously scattered in root `SKETCHES/` and `DB/`).
+  Repo root is now: README.md, install.sh, docs/, TUI-OP-HUB/.
+- **README.md fully rewritten** as a project front page: highlights table
+  (all session 18-33 features), quick start, keybindings taste, config
+  example, API examples, security model, test counts, docs table, project
+  layout, tech stack, status.
+- **docs/INDEX.md rewritten** as the documentation map (users / agents /
+  business sections) with correct relative links to the new layout.
+- **Link integrity**: a link checker walked every markdown file; all 46
+  cross-links resolve (fixed INDEX, business docs, AGENTS root paths and
+  USER_STORIES source line after the move).
+- 269 tests still pass (221 lib + 48 BDD), clippy 0, build ok.
 ## 🎯 Session 33: plugin approval for headless service runs (completed)
 
 The last leftover. Problem: `--headless` had no interactive consent flow, so

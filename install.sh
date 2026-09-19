@@ -44,7 +44,7 @@ fi
 echo "==> Setting up the background service"
 # systemd user service (includes generating the secrets-key env file once);
 # on systems without systemctl the unit file is still written and the app
-# can be wired into cron or any other init (see docs/INSTALL.md).
+# can be wired into cron or any other init (see docs/GUIDE.md).
 if command -v systemctl >/dev/null 2>&1; then
     "$PREFIX/$BIN_NAME" --install-service
     echo "==> Background service enabled (always runs after reboot)"

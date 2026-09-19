@@ -56,7 +56,9 @@ sqlx migrate run
 Use this loop while coding:
 
 ```bash
-cargo fmt && cargo clippy -- -D warnings && cargo test && cargo run
+cargo fmt -- --check && cargo clippy -- -D warnings
+cargo test --test bdd_scenarios       # BDD scenarios
+cargo fmt -- --check
 ```
 
 ## 7) Rust Learning Sources (Trusted)

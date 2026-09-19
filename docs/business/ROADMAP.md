@@ -26,9 +26,14 @@ stop/cancel (US-WF-09), systemd/cron integration (US-DEP-04), secrets v2
   flow, `run_when` gates
 - **SSH host tags + connection test** (US-SSH-04/05); project folder options
   (delete-with-folder, merge-into-existing)
+- **Chain entities + run modes + jobs panel**: `chain` type (quote-aware
+  pipe/semicolon one-liners with per-segment notes), run-mode chooser
+  (new terminal / foreground / background / nohup), Dashboard `j` panel to
+  stop/kill everything the hub started
+- **Plugin approval for headless runs** (US-PLG leftover): `H` trust toggle,
+  auto-approval on `--headless` startup
 
 ## 🟢 Phase 4+ — Planned (future)
-- Plugin approval workflow for headless service runs (leftover)
 - Process monitor (sysinfo backend exists) — US-PROC-01..07 (deliberately parked:
   prefer btop/htop)
 - Package manager integration (apt/pacman/nix) — US-PKG-01..09

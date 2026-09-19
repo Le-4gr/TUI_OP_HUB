@@ -132,8 +132,8 @@ cargo clippy --all-targets
 | Document | What it covers |
 |:---|:---|
 | [docs/INDEX.md](docs/INDEX.md) | **Start here** — the documentation index |
-| [INSTALL.md](INSTALL.md) | Install instructions |
-| [docs/INSTALL.md](docs/INSTALL.md) | Service/TUI coexistence, secrets key, releases |
+| [docs/GUIDE.md](docs/GUIDE.md) | **User guide** — install, service/TUI model, every feature and how to use it |
+| [docs/IMPORT_EXPORT.md](docs/IMPORT_EXPORT.md) | Bundle schema + LLM prompt for generating entries (cmds, scripts, apps, chains) |
 | [docs/PLUGINS.md](docs/PLUGINS.md) | Plugin API: actions, templates, headless trust |
 | [docs/IMPORT_EXPORT.md](docs/IMPORT_EXPORT.md) | Bundle schema + LLM prompt for generating entries |
 | [docs/reference/ARCHITECTURE.md](docs/reference/ARCHITECTURE.md) | Module responsibilities, data flow |
@@ -148,11 +148,11 @@ cargo clippy --all-targets
 ```text
 TUI-OP-HUB/
 ├── README.md                  # This file
-├── INSTALL.md                 # Quick install instructions
-├── install.sh                 # Release installer
+├── docs/GUIDE.md               # User guide (install + all features)
+├── install.sh                  # Release installer
 ├── docs/                      # All documentation (see docs/INDEX.md)
 │   ├── INDEX.md               # Documentation index — start here
-│   ├── INSTALL.md             # Install deep-dive
+│   ├── GUIDE.md                # User guide (install + features)
 │   ├── IMPORT_EXPORT.md       # Import/export guide
 │   ├── PLUGINS.md             # Plugin/mod API
 │   ├── reference/             # ARCHITECTURE, USER_STORIES, TUI guide, stack rationale

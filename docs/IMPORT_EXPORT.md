@@ -1,6 +1,6 @@
 # 📦 Knowledge Import / Export Guide
 
-> Move your command/script/app knowledge base in and out of TUI-OP-HUB —
+> Move your command/script/app/chain knowledge base in and out of TUI-OP-HUB —
 > including a **copy-paste prompt for any LLM** to generate importable bundles,
 > duplicate handling, cron scheduling and headless service setup.
 
@@ -27,7 +27,10 @@ A bundle is one portable JSON file:
       "content": "#!/usr/bin/env bash\nrsync -a --delete ~/ /mnt/nas/home/",
       "parent": null },
     { "name": "Firefox", "type_id": "app",
-      "description": "Web browser", "content": "firefox", "parent": null }
+      "description": "Web browser", "content": "firefox", "parent": null },
+    { "name": "meminfo dirty", "type_id": "chain",
+      "description": "Show dirty memory stats",
+      "content": "cat /proc/meminfo | grep Dirty;", "parent": null }
   ],
   "secrets": []
 }
@@ -41,15 +44,16 @@ A bundle is one portable JSON file:
 | `exported_at` | yes | RFC 3339 timestamp (informational) |
 | `secret_mode` | yes | `excluded`, `encrypted` or `plaintext` |
 | `entities[].name` | yes | Unique per (name, type) pair |
-| `entities[].type_id` | yes | `cmd` (shell command), `script` (script body, shebang supported), `app` (launcher command), `opt` (option of a command family), `wf` (Lua workflow) |
+| `entities[].type_id` | yes | `cmd` (shell command), `script` (script body, shebang supported), `app` (launcher command), `opt` (option of a command family), `chain` (pipe/semicolon one-liner — parsed at top level, quote-aware), `wf` (Lua workflow) |
 | `entities[].description` | no | One-line description |
-| `entities[].content` | no | The runnable command line / script body / launcher |
+| `entities[].content` | no | The runnable command line / script body / launcher / chain line |
 | `entities[].parent` | no | **Name** of the parent command (for `opt` children) |
 | `secrets` | no | Only in `encrypted`/`plaintext` mode — see §5 |
 
 ## 2. Export
 
-Press **`x`** on the Commands/Apps/Scripts/Workflows/Secrets tab:
+Press **`x`** on the Knowledge tab (commands / apps / scripts / chains, type
+filter `f`):
 
 1. A **save-path popup** opens, pre-filled with `~/tui-op-hub-export.json`
 2. **`Ctrl+O`** opens a **file/directory picker** — **yazi first** if installed,
@@ -105,6 +109,8 @@ OUTPUT RULES (strict):
     "opt"    = one option/flag variant of a cmd (set "parent" to that cmd's name)
     "script" = a multi-line script; content MUST start with a shebang line
     "app"    = a GUI/TUI application launcher command
+    "chain"  = a one-liner combining commands with top-level | or ; separators
+               (quote-aware: separators inside quotes do NOT split)
 - Names: lowercase, human-readable, unique per (name, type_id) pair.
 - content: complete and runnable. Use POSIX shell. No placeholders like
   <your-key>, no secrets, no tokens, no machine-specific absolute paths.
@@ -114,10 +120,12 @@ QUALITY BAR:
 - Prefer 10 high-quality entries over 30 shallow ones.
 - For every cmd, add 2-5 of its most useful option variants as "opt" children.
 - Scripts must be production-safe: set -euo pipefail where appropriate.
+- Chains should demonstrate real pipelines (e.g. "cat /proc/meminfo | grep Dirty;").
 
 Topic: <WHAT YOU WANT, e.g.>
   "docker management: 8 command families with their most useful option
-   variants, plus 5 server-maintenance scripts and 4 dev apps"
+   variants, 5 server-maintenance scripts, 4 dev apps, and 3 diagnostic
+   command chains"
 ```
 
 **Step 2 — save the reply** to any file, e.g. `~/ai-docker.json`.
@@ -133,7 +141,7 @@ follow the duplicate mode you selected (default: your local versions win).
 parts; sanity-check the rest):
 
 - [ ] Parses as a JSON array (or a full bundle)
-- [ ] Every `type_id` ∈ {`cmd`, `script`, `app`, `opt`, `wf`}
+- [ ] Every `type_id` ∈ {`cmd`, `script`, `app`, `opt`, `chain`, `wf`}
 - [ ] Every `opt` has a `parent` present in the array (as a `cmd`)
 - [ ] No secrets or machine-specific paths in `content`
 
@@ -161,11 +169,12 @@ tui-op-hub --install-service    # key file (0600) + unit + enable
 tui-op-hub --uninstall-service  # remove (key kept)
 ```
 
-See [`docs/INSTALL.md`](INSTALL.md) for the full service/TUI coexistence guide
+See [`docs/GUIDE.md`](GUIDE.md) for the full service/TUI coexistence guide
 and non-systemd inits.
 
 ---
 
-*Implementation: `src/share.rs` (bundle, lenient parse, duplicate modes),
-`src/filepicker.rs` (picker chain), `src/scheduler/mod.rs` (cron),
-`src/service/mod.rs` (systemd).*
+*Implementation: `src/share/` (bundle, lenient parse, duplicate modes —
+`src/share/crypto.rs` for the encrypted secret mode), `src/filepicker.rs`
+(picker chain), `src/scheduler.rs` (cron), `src/service.rs` (systemd).
+Feature guide: [GUIDE.md](GUIDE.md) §12.*

@@ -54,12 +54,12 @@ dependencies, Hyprland-style config (`~/.config/tui-op-hub/config.conf`).
 ```
 ../                        # repo root (docs/, README.md, install.sh)
 ├── README.md                     # user-facing readme (features, config, API)
-├── INSTALL.md                    # quick install instructions (repo root)
+├── docs/GUIDE.md                 # user guide (install, features, service/TUI model)
 ├── install.sh                    # release installer: build + install binary + enable service
 ├── docs/                         # ALL documentation lives here (start at docs/INDEX.md)
 │   ├── INDEX.md                  # map of all documentation
-│   ├── INSTALL.md                # service/TUI coexistence, secrets key, non-systemd inits
-│   ├── IMPORT_EXPORT.md          # knowledge bundle schema, AI prompt template, cron workflows
+│   ├── GUIDE.md                  # user guide: install + every feature and how to use it
+│   ├── IMPORT_EXPORT.md          # knowledge bundle schema, AI prompt template (incl. chain type), cron workflows
 │   ├── PLUGINS.md                # Lua mod API: capabilities, actions, templates, headless trust
 │   ├── reference/                # deep-dive references
 │   │   ├── ARCHITECTURE.md       # system architecture, module responsibilities, data flow
