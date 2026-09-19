@@ -30,7 +30,7 @@
 
             meta = with pkgs.lib; {
               description = "Terminal operations hub: commands, scripts, workflows, secrets, configs";
-              homepage = "https://github.com/Smeagol8/TUI_OP_HUB";
+              homepage = "https://github.com/Le-4gr/TUI_OP_HUB";
               license = with licenses; [ mit asl20 ];
               mainProgram = "tui-op-hub";
             };

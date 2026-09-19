@@ -4,7 +4,7 @@ version = "0.2.0"
 edition = "2021"
 description = "A terminal user interface (TUI) operations hub built in Rust"
 license = "MIT OR Apache-2.0"
-repository = ""
+repository = "https://github.com/Le-4gr/TUI_OP_HUB"
 readme = "../README.md"
 
 [dependencies]
