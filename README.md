@@ -17,6 +17,8 @@ just your own systemd user unit).
 │  1 Dashboard   2 Knowledge   3 Projects   4 Workflows   5 Secrets  │
 │  6 Configs     7 Plugins     0 Settings                            │
 └────────────────────────────────────────────────────────────────────┘
+   ▲ after login you land on `2 Knowledge` — the launcher: search is
+     auto-focused, type to filter across all entities, Enter runs.
 ```
 
 ## Highlights

@@ -135,15 +135,20 @@ tui-op-hub --headless   # scheduler + REST API, no TUI
 
 1. **Login/signup screen** — create your user (Argon2-hashed). The first user
    becomes the admin.
-2. **Dashboard** — card layout with stats, CPU/memory/network/temperature
+2. **Knowledge (launcher)** — after login you land on the Knowledge tab with the
+   search bar **auto-focused**: type to filter across commands, scripts, apps,
+   chains and workflows (FTS5); Enter runs the selection. This is the launcher
+   screen — on minimal/headless machines the TUI is the whole desktop.
+3. **Dashboard** — `1` from any screen: card layout with stats,
+   CPU/memory/network/temperature
    mini-btop (auto-refresh 2s), quick launches (`g` lazygit, `d` lazydocker,
    `k` k9s, `n` lazynpm), `` ` `` opens a new terminal window.
-3. **Eight tabs** — digits `1`–`9`/`0` switch from any screen:
+4. **Eight tabs** — digits `1`–`9`/`0` switch from any screen:
 
 | Tab | Contents |
 |:---|:---|
 | `1` Dashboard | stats + mini-btop + quick launches + jobs panel (`j`) |
-| `2` Knowledge | ONE tab for commands/scripts/apps with a type filter |
+| `2` Knowledge | **launcher (default screen)** — commands/scripts/apps, type filter, FTS5 search |
 | `3` Projects | workspaces + register-dir + detail view + plugin actions |
 | `4` Workflows | visual builder, cron scheduling, run history, cancel |
 | `5` Secrets | encrypted secrets, SSH/GPG keygen, ssh-agent, SSH hosts (`H`) |
