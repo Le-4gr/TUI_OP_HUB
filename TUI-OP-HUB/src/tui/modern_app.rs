@@ -7901,22 +7901,47 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         };
         let mut imported = 0usize;
         let mut skipped = 0usize;
+        // D112: collect ALL private keys first — including ones without a
+        // `.pub` pair (keygen makes the .pub by default, but keys can be
+        // copied over without it). "already generated" keys must import.
+        let mut keypairs: Vec<(String, std::path::PathBuf, Option<std::path::PathBuf>)> = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
             let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if !file_name.ends_with(".pub") {
+            if file_name.ends_with(".pub")
+                || file_name.starts_with("known_hosts")
+                || file_name.ends_with(".conf")
+                || file_name.ends_with(".config")
+            {
                 continue;
             }
-            let stem = file_name.trim_end_matches(".pub").to_string();
-            let priv_path = ssh_dir.join(&stem);
-            if !priv_path.is_file() {
-                continue; // bare .pub without a private part (e.g. known_hosts artifacts)
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let is_private = content.starts_with("-----BEGIN");
+            if file_name.ends_with(".pub") {
+                // pub with a matching private → keep both
+                let stem = file_name.trim_end_matches(".pub").to_string();
+                let priv_path = ssh_dir.join(&stem);
+                if !priv_path.is_file() {
+                    continue; // bare .pub (e.g. collected host keys)
+                }
+                keypairs.push((stem, priv_path, Some(path)));
+            } else if is_private {
+                // private-only key (no .pub) — still importable
+                keypairs.push((file_name.to_string(), path, None));
             }
+        }
+
+        for (stem, priv_path, pub_path) in keypairs {
             let (priv_pem, pub_key) = match (
                 std::fs::read_to_string(&priv_path),
-                std::fs::read_to_string(&path),
+                pub_path
+                    .as_deref()
+                    .map(std::fs::read_to_string)
+                    .unwrap_or(Ok(String::new())),
             ) {
                 (Ok(p), Ok(u)) => (p, u),
                 _ => {
@@ -7959,10 +7984,12 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             {
                 Ok(_) => {
                     imported += 1;
-                    // Public key stored too — copy/share without decrypting the private half
-                    if let Ok(pub_enc) =
-                        secrets::encrypt_for_user(&*self.pool, &user_id, &pub_key).await
-                    {
+                    // Public key stored too — copy/share without decrypting
+                    // the private half (only when a .pub file exists)
+                    if pub_path.is_some() {
+                        if let Ok(pub_enc) =
+                            secrets::encrypt_for_user(&*self.pool, &user_id, &pub_key).await
+                        {
                         let pub_meta = repository::SecretMeta {
                             secret_group: Some("ssh".to_string()),
                             ssh_agent: false,
@@ -7978,6 +8005,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                             &pub_meta,
                         )
                         .await;
+                        }
                     }
                 }
                 Err(e) => self.status_message = Some(format!("\u{2717} store {}: {}", stem, e)),
