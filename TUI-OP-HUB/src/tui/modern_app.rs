@@ -3761,7 +3761,11 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             }
             KeyCode::Char('I') => {
                 // Import knowledge base from a file path (default pre-filled)
-                self.import_input = Some(default_bundle_path());
+                // D123: state-gated — this arm ran for EVERY tab and shadowed
+                // the Secrets shift-I (SSH import window)
+                if self.ui.state == AppState::Knowledge {
+                    self.import_input = Some(default_bundle_path());
+                }
             }
             KeyCode::Char('k') => {
                 // SSH/GPG key generation (US-SEC-01) — notify when the tools
@@ -12865,7 +12869,9 @@ mod tests {
         )
         .unwrap();
 
-        // Open the popup (pre-filled with the default path) and type the temp path
+        // Open the popup (pre-filled with the default path) and type the temp
+        // path — D123: the knowledge I is state-gated to Knowledge
+        app.ui.state = AppState::Knowledge;
         app.handle_key(key(KeyCode::Char('I'))).await;
         assert!(app.import_input.is_some());
         // Clear the pre-filled default so the typed path stands alone
