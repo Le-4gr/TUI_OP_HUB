@@ -317,27 +317,25 @@ per-user key.
 - Workflow scripts can read secrets as `secrets.<name>` or
   `get_secret("<name>")` (US-SEC-02)
 
-### Importing real SSH keys from this PC (the `I` flow)
+### Importing real SSH keys from this PC (the `I` window)
 
-The import reads **actual key files from disk** — nothing needs to be in the
-database first, and nothing is generated for you:
+`5 (Secrets) → I` opens the **SSH key import window** — it reads **actual key
+files from disk**, from ANY directory (not just `~/.ssh`), and nothing needs
+to be in the database first:
 
-1. Your keys live in `~/.ssh/`. A key generated anywhere else on the PC is
-   simply copied in first (this is also what ssh-agent expects):
-   ```bash
-   install -m 600 ~/somewhere/mykey ~/.ssh/mykey           # private key
-   install -m 644 ~/somewhere/mykey.pub ~/.ssh/mykey.pub  # public half (optional)
-   ```
-2. In the hub: **5 (Secrets) → `I`**. Every file in `~/.ssh` that looks like a
-   private key (`-----BEGIN … PRIVATE KEY-----`) is imported — **with or
-   without its `.pub` pair** (keys copied between machines often lack it).
-   The private key is stored XChaCha20-encrypted as `ssh:<name>`; the public
-   half (when present) is stored read-only as `ssh-pub:<name>` for sharing.
-   Re-import is safe — existing names are skipped.
-3. `S` then offers the stored keys to your running ssh-agent (git/ssh use
-   them like normal), and `t` opens an SSH terminal to a host using the key.
-4. Passphrase-protected keys are marked `[locked]` and skipped by `S` (unlock
-   them by decrypting once through the secret view).
+1. Type the directory into the path field (defaults to `~/.ssh`), `Enter` to
+   scan. Every key file is listed with its kind, a `[passphrase]` marker and
+   a `(no .pub — private only)` note where relevant.
+2. Select with **Space** (or `a` for all private keys) and press **Enter**
+   (or `y`) to import. Private keys are stored XChaCha20-encrypted as
+   `ssh:<name>`; the public half (when present next to it) is stored
+   read-only as `ssh-pub:<name>`. Re-import is idempotent — duplicates are
+   skipped.
+3. Passphrase-protected keys are fully supported: they import fine, and `S`
+   opens a terminal window running `ssh-add` for them so you can type the
+   passphrase there.
+4. Keys generated anywhere on the PC just need to be readable — no copying
+   into `~/.ssh` required anymore (that was the old flow).
 5. Generated keys are a different flow: `k` runs `ssh-keygen`/`gpg` for you.
 
 ---

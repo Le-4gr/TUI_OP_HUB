@@ -148,3 +148,15 @@ pub(crate) fn dirs_home() -> std::path::PathBuf {
         .map(|h| std::path::PathBuf::from(h).join("projects"))
         .unwrap_or_else(|_| std::path::PathBuf::from("projects"))
 }
+
+/// D118: does this private key file have a same-stem `.pub` next to it?
+pub(crate) fn pub_path_if(priv_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let stem = priv_path.to_string_lossy().trim_end_matches(".priv").to_string();
+    let cand = std::path::PathBuf::from(format!("{}.pub", priv_path.display()));
+    if cand.is_file() {
+        Some(cand)
+    } else {
+        let _ = stem;
+        None
+    }
+}

@@ -671,6 +671,7 @@ pub struct ModernApp {
 
     /// SSH host manager panel (Secrets → `H`)
     ssh_panel: Option<SshPanel>,
+    ssh_import_panel: Option<SshImportPanel>,
     // New project creation form (US-PROJ)
     new_project_open: bool,
     new_project_name: String,
@@ -823,6 +824,76 @@ impl KbFilter {
     }
 }
 
+/// One key file discovered by the SSH import panel (D118 hub).
+#[derive(Clone)]
+struct SshImportItem {
+    name: String,
+    path: std::path::PathBuf,
+    is_private: bool,
+    passphrase: bool,
+    has_pair: bool,
+    selected: bool,
+}
+
+/// D118: import SSH keys from ANY directory (not just ~/.ssh) — a proper
+/// window with a path field, discovered-key list and per-key selection.
+struct SshImportPanel {
+    path: String,
+    path_editing: bool,
+    items: Vec<SshImportItem>,
+    selected: usize,
+    message: Option<String>,
+}
+
+fn ssh_scan_dir(dir: &std::path::Path) -> Vec<SshImportItem> {
+    let mut items = Vec::new();
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return items;
+    };
+    let mut files: Vec<std::path::PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .collect();
+    files.sort();
+    for path in files {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with("known_hosts") || name.ends_with(".conf") || name.ends_with(".config") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let is_private = content.starts_with("-----BEGIN");
+        let is_pub = name.ends_with(".pub");
+        if !is_private && !is_pub {
+            continue;
+        }
+        let has_pair = if is_pub {
+            path.with_extension("").is_file()
+                || std::path::Path::new(&path).parent().map_or(false, |d| {
+                    d.join(name.trim_end_matches(".pub")).is_file()
+                })
+        } else {
+            path.with_extension("pub").is_file()
+                || std::path::Path::new(&path).parent().map_or(false, |d| {
+                    d.join(format!("{}.pub", name)).is_file()
+                })
+        };
+        items.push(SshImportItem {
+            name: name.to_string(),
+            path: path.clone(),
+            is_private,
+            passphrase: is_private && content.contains("ENCRYPTED"),
+            has_pair,
+            selected: is_private,
+        });
+    }
+    items
+}
+
 impl ModernApp {
     pub fn new(pool: Arc<SqlitePool>, config: AppConfig) -> Self {
         let page_size = config.tui.page_size.max(1);
@@ -885,6 +956,7 @@ impl ModernApp {
             config_target_input: None,
             config_store_dir: dirs_home().join(".config/tui-op-hub/configs"),
             ssh_panel: None,
+            ssh_import_panel: None,
             dev_user_manager: false,
             dev_user_list: Vec::new(),
             dev_user_selected: 0,
@@ -1954,6 +2026,9 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         if self.ssh_panel.is_some() {
             self.render_ssh_panel(f);
         }
+        if self.ssh_import_panel.is_some() {
+            self.render_ssh_import_panel(f);
+        }
         if self.users_panel.is_some() {
             self.render_users_panel(f);
         }
@@ -2084,7 +2159,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" › "),
-            Span::styled("Dashboard", Style::default().fg(self.ui.theme.highlight)),
+            Span::styled("Overview", Style::default().fg(self.ui.theme.highlight)),
         ]);
 
         let header = Paragraph::new(header_text).alignment(Alignment::Center);
@@ -2098,9 +2173,36 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 Constraint::Length(8), // stat cards
                 Constraint::Min(4),    // monitor boxes
                 Constraint::Length(3), // quick launches
+                Constraint::Length(3), // D119: main menu hint row
             ])
             .margin(1)
             .split(chunks[1]);
+
+        // D119: main menu — the tab map at a glance
+        let menu = Paragraph::new(Line::from(vec![
+            Span::styled("2", Style::default().fg(self.ui.theme.accent)),
+            Span::styled(" Knowledge  ", Style::default().fg(self.ui.theme.fg)),
+            Span::styled("3", Style::default().fg(self.ui.theme.accent)),
+            Span::styled(" Projects  ", Style::default().fg(self.ui.theme.fg)),
+            Span::styled("4", Style::default().fg(self.ui.theme.accent)),
+            Span::styled(" Workflows  ", Style::default().fg(self.ui.theme.fg)),
+            Span::styled("5", Style::default().fg(self.ui.theme.accent)),
+            Span::styled(" Secrets  ", Style::default().fg(self.ui.theme.fg)),
+            Span::styled("6", Style::default().fg(self.ui.theme.accent)),
+            Span::styled(" Configs  ", Style::default().fg(self.ui.theme.fg)),
+            Span::styled("7", Style::default().fg(self.ui.theme.accent)),
+            Span::styled(" Plugins  ", Style::default().fg(self.ui.theme.fg)),
+            Span::styled("0", Style::default().fg(self.ui.theme.accent)),
+            Span::styled(" Settings", Style::default().fg(self.ui.theme.fg)),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(self.ui.theme.border))
+                .title(" Main menu "),
+        );
+        f.render_widget(menu, content_rows[3]);
 
         let card_chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -2721,6 +2823,11 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
     async fn handle_key(&mut self, key: KeyEvent) {
         // Collect finished background workflow runs (US-WF-09) before routing
         self.poll_workflow_task().await;
+        // D118: SSH import window is topmost when open
+        if self.ssh_import_panel.is_some() {
+            self.handle_ssh_import_key(key).await;
+            return;
+        }
         // Overlays take priority over normal tab handling (top of the input stack)
         if self.sudo_password.is_some() {
             // The sudo password popup renders last = topmost; without this
@@ -3806,10 +3913,19 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 }
             }
             KeyCode::Char('I') => {
-                // D105: Secrets — import SSH keypairs from ~/.ssh into the
-                // encrypted store (private key kept encrypted; S pushes to agent)
+                // D118: Secrets — open the SSH import window (any directory,
+                // private-only keys included, per-key selection)
                 if self.ui.state == AppState::Secrets {
-                    self.import_ssh_keys_from_home().await;
+                    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                    let dir = format!("{}/.ssh", home);
+                    let items = ssh_scan_dir(std::path::Path::new(&dir));
+                    self.ssh_import_panel = Some(SshImportPanel {
+                        path: dir,
+                        path_editing: false,
+                        items,
+                        selected: 0,
+                        message: None,
+                    });
                 }
             }
             KeyCode::Char('t') => {
@@ -4031,7 +4147,8 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                     eprintln!("Warning: Failed to fetch stats: {}", e);
                 }
 
-                self.ui.state = AppState::Knowledge;
+                // D119: land on the Overview (main menu) instead of Knowledge
+                self.ui.state = AppState::Dashboard;
                 self.fetch_monitor().await;
             }
             Ok(false) => {
@@ -8018,34 +8135,356 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         ));
     }
 
+    // ------------------------------------------------------------------
+    // D118: SSH import window — any directory, per-key selection
+    // ------------------------------------------------------------------
+
+    /// Import ONE private key (+ optional pub half) into the encrypted store.
+    /// Returns Ok(true) when imported, Ok(false) when skipped (duplicate).
+    async fn import_ssh_file(
+        &mut self,
+        priv_path: &std::path::Path,
+        pub_path: Option<&std::path::Path>,
+    ) -> anyhow::Result<bool> {
+        let user_id = self.current_user_profile_id().await;
+        let stem = priv_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("key")
+            .to_string();
+        let priv_pem = std::fs::read_to_string(priv_path)?;
+        let secret_name = format!("ssh:{}", stem);
+        let existing = repository::list_secrets(&*self.pool, &user_id).await?;
+        if existing.iter().any(|sec| sec.name == secret_name) {
+            return Ok(false);
+        }
+        let value_enc = secrets::encrypt_for_user(&*self.pool, &user_id, &priv_pem).await?;
+        let meta = repository::SecretMeta {
+            secret_group: Some("ssh".to_string()),
+            username: None,
+            url: None,
+            email: None,
+            passphrase_protected: priv_pem.contains("ENCRYPTED"),
+            ssh_agent: true,
+        };
+        repository::create_secret_meta(
+            &*self.pool,
+            &user_id,
+            &secret_name,
+            &value_enc,
+            "ssh_key",
+            false,
+            &meta,
+        )
+        .await?;
+        // Public half stored read-only for sharing (only when a .pub exists)
+        if let Some(pub_path) = pub_path {
+            if let Ok(pub_pem) = std::fs::read_to_string(pub_path) {
+                if let Ok(pub_enc) =
+                    secrets::encrypt_for_user(&*self.pool, &user_id, &pub_pem).await
+                {
+                    let pub_meta = repository::SecretMeta {
+                        secret_group: Some("ssh".to_string()),
+                        ssh_agent: false,
+                        ..meta
+                    };
+                    let _ = repository::create_secret_meta(
+                        &*self.pool,
+                        &user_id,
+                        &format!("ssh-pub:{}", stem),
+                        &pub_enc,
+                        "password",
+                        false,
+                        &pub_meta,
+                    )
+                    .await;
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    fn ssh_import_rescan(&mut self) {
+        if let Some(panel) = self.ssh_import_panel.as_mut() {
+            let expanded = expand_tilde(panel.path.trim());
+            let items = ssh_scan_dir(std::path::Path::new(&expanded));
+            panel.message = Some(if items.is_empty() {
+                format!("no keys found in {}", expanded)
+            } else {
+                format!("{} key file(s) found", items.len())
+            });
+            panel.items = items;
+            panel.selected = 0;
+        }
+    }
+
+    /// Import every SELECTED private key from the panel (D118).
+    async fn ssh_import_selected(&mut self) {
+        let picks: Vec<(std::path::PathBuf, Option<std::path::PathBuf>)> = match self.ssh_import_panel.as_ref() {
+            Some(panel) => panel
+                .items
+                .iter()
+                .filter(|it| it.selected && it.is_private)
+                .map(|it| (it.path.clone(), pub_path_if(&it.path)))
+                .collect(),
+            None => return,
+        };
+        let mut imported = 0usize;
+        let mut skipped = 0usize;
+        for (priv_path, pub_path) in picks {
+            match self.import_ssh_file(&priv_path, pub_path.as_deref()).await {
+                Ok(true) => imported += 1,
+                Ok(false) => skipped += 1,
+                Err(e) => {
+                    if let Some(panel) = self.ssh_import_panel.as_mut() {
+                        panel.message =
+                            Some(format!("\u{2717} {}: {}", priv_path.display(), e));
+                    }
+                    return;
+                }
+            }
+        }
+        self.fetch_secrets().await.ok();
+        if let Some(panel) = self.ssh_import_panel.as_mut() {
+            panel.message = Some(format!(
+                "imported {} key(s), {} skipped (duplicates)",
+                imported, skipped
+            ));
+            for it in panel.items.iter_mut() {
+                it.selected = false;
+            }
+        }
+        self.status_message = Some(format!(
+            "ssh import: {} imported, {} skipped (duplicates)",
+            imported, skipped
+        ));
+    }
+
+    async fn handle_ssh_import_key(&mut self, key: KeyEvent) {
+        let editing = self
+            .ssh_import_panel
+            .as_ref()
+            .map_or(false, |p| p.path_editing);
+        match key.code {
+            KeyCode::Esc => {
+                self.ssh_import_panel = None;
+            }
+            KeyCode::Tab => {
+                if let Some(p) = self.ssh_import_panel.as_mut() {
+                    p.path_editing = !p.path_editing;
+                }
+            }
+            KeyCode::Enter if editing => {
+                if let Some(p) = self.ssh_import_panel.as_mut() {
+                    p.path_editing = false;
+                }
+                self.ssh_import_rescan();
+            }
+            KeyCode::Enter => {
+                self.ssh_import_selected().await;
+            }
+            KeyCode::Char('y') if !editing => {
+                self.ssh_import_selected().await;
+            }
+            KeyCode::Char('a') if !editing => {
+                if let Some(panel) = self.ssh_import_panel.as_mut() {
+                    let any = panel.items.iter().any(|it| it.is_private && !it.selected);
+                    for it in panel.items.iter_mut() {
+                        if it.is_private {
+                            it.selected = !any;
+                        }
+                    }
+                }
+            }
+            KeyCode::Char(' ') if !editing => {
+                if let Some(panel) = self.ssh_import_panel.as_mut() {
+                    if let Some(it) = panel.items.get_mut(panel.selected) {
+                        if it.is_private {
+                            it.selected = !it.selected;
+                        }
+                    }
+                }
+            }
+            KeyCode::Up if !editing => {
+                if let Some(panel) = self.ssh_import_panel.as_mut() {
+                    panel.selected = panel.selected.saturating_sub(1);
+                }
+            }
+            KeyCode::Down if !editing => {
+                if let Some(panel) = self.ssh_import_panel.as_mut() {
+                    if panel.selected + 1 < panel.items.len() {
+                        panel.selected += 1;
+                    }
+                }
+            }
+            KeyCode::Char(c) if editing => {
+                if let Some(panel) = self.ssh_import_panel.as_mut() {
+                    panel.path.push(c);
+                }
+            }
+            KeyCode::Backspace if editing => {
+                if let Some(panel) = self.ssh_import_panel.as_mut() {
+                    panel.path.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn render_ssh_import_panel(&self, f: &mut Frame) {
+        let Some(panel) = self.ssh_import_panel.as_ref() else {
+            return;
+        };
+        let area = self.centered_rect(72, 24, f);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.warning))
+            .title(" 🔐 Import SSH keys ");
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2), // path line
+                Constraint::Min(6),    // key list
+                Constraint::Length(2), // message
+                Constraint::Length(2), // hints
+            ])
+            .margin(1)
+            .split(block.inner(area));
+        f.render_widget(block, area);
+
+        let path_line = Line::from(vec![
+            Span::styled("path ", Style::default().fg(self.ui.theme.border)),
+            Span::styled(
+                if panel.path_editing {
+                    format!("{}█", panel.path)
+                } else {
+                    panel.path.clone()
+                },
+                Style::default().fg(self.ui.theme.fg).add_modifier(if panel.path_editing {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+            ),
+            Span::styled(
+                if panel.path_editing { "  [Enter: scan]" } else { "  [Tab: edit]" },
+                Style::default().fg(self.ui.theme.border),
+            ),
+        ]);
+        f.render_widget(Paragraph::new(path_line), chunks[0]);
+
+        let mut lines: Vec<Line> = Vec::new();
+        for (idx, it) in panel.items.iter().enumerate() {
+            let cursor = if idx == panel.selected { "> " } else { "  " };
+            let check = if it.is_private {
+                if it.selected { "[x] " } else { "[ ] " }
+            } else {
+                "     "
+            };
+            let mut text = format!(
+                "{}{}{:<26} {}",
+                cursor,
+                check,
+                it.name,
+                if it.is_private { "private" } else { "public" }
+            );
+            if it.passphrase {
+                text.push_str("  [passphrase]");
+            }
+            if it.is_private && !it.has_pair {
+                text.push_str("  (no .pub — private only)");
+            }
+            let style = if idx == panel.selected {
+                Style::default().fg(self.ui.theme.accent)
+            } else if !it.is_private {
+                Style::default().fg(self.ui.theme.border)
+            } else {
+                Style::default().fg(self.ui.theme.fg)
+            };
+            lines.push(Line::from(Span::styled(text, style)));
+        }
+        let list = Paragraph::new(lines);
+        f.render_widget(list, chunks[1]);
+
+        let msg = panel.message.clone().unwrap_or_default();
+        f.render_widget(
+            Paragraph::new(Span::styled(msg, Style::default().fg(self.ui.theme.border))),
+            chunks[2],
+        );
+
+        let hints = "Enter: import selected · Space: toggle · a: select all · y: import · Tab: edit path · Esc: close";
+        f.render_widget(
+            Paragraph::new(Span::styled(hints, Style::default().fg(self.ui.theme.border))),
+            chunks[3],
+        );
+    }
+
     async fn load_ssh_agent_keys(&mut self) {
         let user_id = self.current_user_profile_id().await;
         let Ok(all) = repository::list_secrets(&*self.pool, &user_id).await else {
             return;
         };
         let mut added = 0;
+        let mut unlocked = 0;
         let mut skipped = 0;
         for secret in all
             .iter()
             .filter(|s| s.ssh_agent && s.secret_kind == "ssh_key")
         {
-            if secret.passphrase_protected {
-                skipped += 1;
-                continue;
-            }
             match secrets::decrypt_for_user(&*self.pool, &user_id, &secret.value_enc).await {
-                Ok(pem) => match secrets::ssh_agent::add_key_to_agent(&secret.name, &pem) {
-                    Ok(()) => added += 1,
-                    Err(e) => {
-                        self.status_message = Some(format!("{}", e));
+                Ok(pem) => {
+                    // D119: passphrase-locked keys get a TERMINAL window running
+                    // ssh-add — the user types the passphrase there; skipping
+                    // them made agent use impossible without removing the lock
+                    if secret.passphrase_protected {
+                        let key_file = std::env::temp_dir().join(format!(
+                            "tui-op-hub-ssh-{}.pem",
+                            std::process::id()
+                        ));
+                        if std::fs::write(&key_file, &pem).is_err() {
+                            skipped += 1;
+                            continue;
+                        }
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(
+                                &key_file,
+                                std::fs::Permissions::from_mode(0o600),
+                            );
+                        }
+                        match terminal_window_command_for(
+                            &format!("ssh-add {} && rm -f {}", key_file.display(), key_file.display()),
+                            None,
+                        ) {
+                            Some((prog, args)) => {
+                                let spawned = std::process::Command::new(&prog)
+                                    .args(&args)
+                                    .spawn();
+                                match spawned {
+                                    Ok(_) => unlocked += 1,
+                                    Err(_) => skipped += 1,
+                                }
+                            }
+                            None => skipped += 1,
+                        }
+                    } else {
+                        match secrets::ssh_agent::add_key_to_agent(&secret.name, &pem) {
+                            Ok(()) => added += 1,
+                            Err(e) => {
+                                self.status_message = Some(format!("{}", e));
+                            }
+                        }
                     }
-                },
+                }
                 Err(e) => self.status_message = Some(format!("{}", e)),
             }
         }
         self.status_message = Some(format!(
-            "ssh-agent: {} key(s) added (passphrase-locked skipped)",
-            added
+            "ssh-agent: {} key(s) added, {} passphrase key(s) opened in a terminal, {} skipped",
+            added, unlocked, skipped
         ));
     }
 

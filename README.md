@@ -14,11 +14,11 @@ just your own systemd user unit).
 
 ```text
 ┌────────────────────────────────────────────────────────────────────┐
-│  1 Dashboard   2 Knowledge   3 Projects   4 Workflows   5 Secrets  │
+│  1 Overview    2 Knowledge   3 Projects   4 Workflows   5 Secrets  │
 │  6 Configs     7 Plugins     0 Settings                            │
 └────────────────────────────────────────────────────────────────────┘
-   ▲ after login you land on `2 Knowledge` — the launcher: search is
-     auto-focused, type to filter across all entities, Enter runs.
+   ▲ after login you land on `1 Overview` — the main menu: stat cards,
+     a live system monitor, quick launches and the full tab map.
 ```
 
 ## Highlights
@@ -74,7 +74,7 @@ First launch shows a signup screen — the first user becomes the admin.
 | `j` | Jobs panel — stop or force-kill running things |
 | `v` | Visual workflow builder (logic nodes, `run_when` gates) |
 | `i` | Options of a command family / chain segments |
-| `I` | Secrets: import real SSH keys from `~/.ssh` into the encrypted store |
+| `I` | Secrets: open the SSH-key import window — scan ANY directory, per-key selection, private-only keys included |
 | `S` | Secrets: offer stored SSH keys to ssh-agent |
 | `t` | Secrets: open an SSH terminal to the selected host |
 | `/` | Search with a visible search bar |
