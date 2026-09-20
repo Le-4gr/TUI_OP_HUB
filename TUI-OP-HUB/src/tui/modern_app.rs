@@ -436,6 +436,8 @@ enum BrowserDest {
     /// Register form: replace the Path field (file pick).
     #[default]
     RegisterPath,
+    /// D123: SSH import window — set the scan directory from the explorer.
+    SshImportPath,
     /// Register form: append the picked folder to the Deploy-to list.
     DeployTo,
     /// Target popup: replace the destination path.
@@ -1608,6 +1610,14 @@ impl ModernApp {
                 if let Some(target) = self.config_target_input.as_mut() {
                     *target = path_str;
                 }
+            }
+            BrowserDest::SshImportPath => {
+                // D123: explorer picked the scan dir — update + rescan
+                if let Some(panel) = self.ssh_import_panel.as_mut() {
+                    panel.path = path_str.clone();
+                    panel.message = Some(format!("scanning {} …", path_str));
+                }
+                self.ssh_import_rescan();
             }
         }
     }
@@ -2828,21 +2838,22 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
     async fn handle_key(&mut self, key: KeyEvent) {
         // Collect finished background workflow runs (US-WF-09) before routing
         self.poll_workflow_task().await;
+        // In-TUI file browser is the topmost overlay when open (US-CFG-09) —
+        // D123: checked BEFORE the SSH import panel, because the import
+        // window can open the explorer (e) to pick the scan directory
+        if self.file_browser.is_some() {
+            self.handle_file_browser_key(key);
+            return;
+        }
         // D118: SSH import window is topmost when open
         if self.ssh_import_panel.is_some() {
             self.handle_ssh_import_key(key).await;
             return;
         }
-        // Overlays take priority over normal tab handling (top of the input stack)
         if self.sudo_password.is_some() {
             // The sudo password popup renders last = topmost; without this
             // route, typed password characters leak into the list handler.
             self.handle_sudo_password_key(key).await;
-            return;
-        }
-        // In-TUI file browser is the topmost overlay when open (US-CFG-09)
-        if self.file_browser.is_some() {
-            self.handle_file_browser_key(key);
             return;
         }
         // Plugin UI actions popup is topmost when open (US-PLG-13)
@@ -8285,9 +8296,13 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             }
         }
         self.fetch_secrets().await.ok();
+        // D123: hand the freshly imported keys to ssh-agent right away —
+        // passphrase-protected ones open a terminal window running ssh-add
+        // (the user types the passphrase there); plain keys load silently.
+        self.load_ssh_agent_keys().await;
         if let Some(panel) = self.ssh_import_panel.as_mut() {
             panel.message = Some(format!(
-                "imported {} key(s), {} skipped (duplicates)",
+                "imported {} key(s), {} skipped (duplicates) — agent offer done (passphrase keys: check the opened terminals)",
                 imported, skipped
             ));
             for it in panel.items.iter_mut() {
@@ -8325,6 +8340,16 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             }
             KeyCode::Char('y') if !editing => {
                 self.ssh_import_selected().await;
+            }
+            KeyCode::Char('e') if !editing => {
+                // D123: file explorer (the same one the Configs tab uses) to
+                // pick the scan directory
+                let cur = self
+                    .ssh_import_panel
+                    .as_ref()
+                    .map(|p| p.path.clone())
+                    .unwrap_or_default();
+                self.open_file_browser(true, BrowserDest::SshImportPath, &cur);
             }
             KeyCode::Char('a') if !editing => {
                 if let Some(panel) = self.ssh_import_panel.as_mut() {
@@ -8454,7 +8479,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             chunks[2],
         );
 
-        let hints = "Enter: import selected · Space: toggle · a: select all · y: import · Tab: edit path · Esc: close";
+        let hints = "Enter: import selected + offer to agent · Space: toggle · a: select all · e: file explorer (pick dir) · Tab: edit path · Esc: close";
         f.render_widget(
             Paragraph::new(Span::styled(hints, Style::default().fg(self.ui.theme.border))),
             chunks[3],
