@@ -1861,6 +1861,11 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         let backend = CrosstermBackend::new(io::stdout());
         let mut terminal = Terminal::new(backend)?;
 
+        // D121: skip the login screen when an account with a persisted key
+        // exists (personal-machine flow) — the account is linked to the OS
+        // user through the service's env secrets key.
+        self.try_auto_login().await;
+
         loop {
             // Dashboard auto-refresh: mini-btop panels tick every 2 seconds
             if self.ui.state == AppState::Dashboard
@@ -4119,6 +4124,37 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 _ => {}
             },
             _ => {}
+        }
+    }
+
+    /// D121: auto-login — when the database has a user whose secrets key is
+    /// already persisted (the wrapping key lives in the env file / secrets
+    /// key file), the login screen is pointless on a personal machine. Skip
+    /// it, bind the session to that account, and offer SSH keys to the agent
+    /// exactly like a manual login would.
+    async fn try_auto_login(&mut self) -> bool {
+        if std::env::var("TUI_OP_HUB_NO_AUTO_LOGIN").map_or(false, |v| v == "1") {
+            return false;
+        }
+        match crate::auth::first_user_id(&self.pool).await {
+            Ok(Some(user_id)) => {
+                match crate::auth::user_has_key(&self.pool, &user_id).await {
+                    Ok(true) => {
+                        self.current_user_id = Some(user_id);
+                        // same post-login flow as attempt_login
+                        self.ui.login_state.auth_success();
+                        self.load_ssh_agent_keys().await;
+                        if let Err(e) = self.fetch_stats().await {
+                            eprintln!("Warning: Failed to fetch stats: {}", e);
+                        }
+                        self.ui.state = AppState::Dashboard;
+                        self.fetch_monitor().await;
+                        true
+                    }
+                    _ => false, // user exists but no usable key — show login
+                }
+            }
+            _ => false, // no users yet — normal signup flow
         }
     }
 

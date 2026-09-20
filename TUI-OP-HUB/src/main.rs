@@ -2,6 +2,8 @@
 use std::sync::Arc;
 use tui_op_hub::api;
 use tui_op_hub::config::AppConfig;
+use tui_op_hub::repository;
+use tui_op_hub::secrets;
 use tui_op_hub::db;
 use tui_op_hub::tui::modern_app::ModernApp;
 
@@ -161,6 +163,38 @@ async fn main() -> anyhow::Result<()> {
         pm.set_headless(true);
         pm.load_all_plugins().await?;
         tracing::info!("TUI disabled, running headless. Press Ctrl+C to shut down.");
+
+        // D121: background session — link the OS login to the hub account and
+        // offer stored SSH keys to the user's ssh-agent (Hyprland session
+        // starts the service, so SSH_AUTH_SOCK is the session agent).
+        // Passphrase-locked keys are skipped silently here (headless has no
+        // prompt); the TUI can unlock them later with `S`.
+        {
+            let uid = match tui_op_hub::auth::first_user_id(&pool).await {
+                Ok(Some(id)) => id,
+                _ => config.current_user.clone(),
+            };
+            match repository::list_secrets(&pool, &uid).await {
+                Ok(all) => {
+                    let mut added = 0;
+                    for sec in all
+                        .iter()
+                        .filter(|s| s.ssh_agent && s.secret_kind == "ssh_key" && !s.passphrase_protected)
+                    {
+                        match crate::secrets::decrypt_for_user(&pool, &uid, &sec.value_enc).await {
+                            Ok(pem) => {
+                                if secrets::ssh_agent::add_key_to_agent(&sec.name, &pem).is_ok() {
+                                    added += 1;
+                                }
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    tracing::info!(count = added, "headless ssh-agent offer complete");
+                }
+                Err(e) => tracing::warn!(error = %e, "headless ssh-agent offer failed"),
+            }
+        }
         tokio::signal::ctrl_c().await?;
     }
 

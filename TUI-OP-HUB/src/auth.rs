@@ -524,3 +524,21 @@ mod tests {
         assert!(dev_mode_enabled_for(false, Some("TRUE")));
     }
 }
+
+/// D121: auto-login support — the id of the FIRST user in the database
+/// (the admin created at signup). `None` when no account exists yet.
+pub async fn first_user_id(pool: &SqlitePool) -> AppResult<Option<String>> {
+    let row = sqlx::query("SELECT id FROM user_profiles ORDER BY created_at ASC LIMIT 1")
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| r.try_get::<String, _>(0).unwrap_or_default()))
+}
+
+/// D121: does `user_id` have a usable secrets key already persisted?
+pub async fn user_has_key(pool: &SqlitePool, user_id: &str) -> AppResult<bool> {
+    let row = sqlx::query("SELECT key_b64 FROM user_keys WHERE user_id = ?")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.is_some())
+}
