@@ -25,10 +25,10 @@ just your own systemd user unit).
 
 | Area | What you get |
 |:---|:---|
-| **Knowledge base** | Commands, scripts and apps in one searchable (FTS5) tab with a type filter, runnable **command chains** (`cat /proc/meminfo \| grep Dirty`), per-command **options** with big descriptions, a read-only detail view, copy-to-clipboard and one-key run |
+| **Knowledge base** | Commands, scripts and apps in one searchable (FTS5) tab with a type filter, runnable **command chains** (`cat /proc/meminfo \| grep Dirty`), per-command **options** with big descriptions, a read-only detail view, copy-to-clipboard and one-key run — **every installed application on the PC appears automatically** (`.desktop` scan, GUI apps launch detached) |
 | **Run modes** | Every command can run in a **new terminal window** (interactive tools like nvim/htop work), **foreground** (captured output), **background** (tracked, stoppable) or via **nohup** (survives the hub, logged to `/tmp/tui-op-hub-logs/`) — plus a **jobs panel** (`j`) to stop/force-kill anything running |
 | **Workflows** | Visual builder (compose from saved commands + **logic nodes** AND/OR/NOT/XOR/compare/if-else with `run_when` gates), Lua 5.4 engine with host functions, cron scheduling, run history, live cancel |
-| **Secrets** | XChaCha20Poly1305 AEAD, per-user keys, groups, password-manager fields, optional passphrase layer, ssh-agent integration, SSH/GPG keygen |
+| **Secrets** | XChaCha20Poly1305 AEAD, per-user keys, groups, password-manager fields, optional passphrase layer, ssh-agent integration, SSH/GPG keygen — **`I` imports your real `~/.ssh` keys** (private-only keys included, encrypted at rest) |
 | **Configs** | Register config files (built-in file browser), deploy to multiple targets as symlink/hard-link/copy, drift detection + fix, git-versioned store |
 | **Projects** | Workspaces with kind scaffolding (Python/Rust/Node/…), plugin **templates** with preview + customize, editor/shell launch, optional folder deletion on delete, merge-into-existing-folder |
 | **SSH hosts** | CRUD, tags + live filter, **connection test** (non-interactive probe), quick-connect in a new terminal |
@@ -74,10 +74,30 @@ First launch shows a signup screen — the first user becomes the admin.
 | `j` | Jobs panel — stop or force-kill running things |
 | `v` | Visual workflow builder (logic nodes, `run_when` gates) |
 | `i` | Options of a command family / chain segments |
+| `I` | Secrets: import real SSH keys from `~/.ssh` into the encrypted store |
+| `S` | Secrets: offer stored SSH keys to ssh-agent |
+| `t` | Secrets: open an SSH terminal to the selected host |
 | `/` | Search with a visible search bar |
 | `?` | Full keybind helper |
 
 The complete table lives in the [docs](docs/INDEX.md).
+
+## SSH keys (real files → encrypted store)
+
+Your existing, real key files on the PC — not database-shaped magic:
+
+```bash
+# 1. keys live in ~/.ssh (copy one in if it was generated elsewhere)
+install -m 600 ~/somewhere/mykey ~/.ssh/mykey
+
+# 2. hub → 5 Secrets → I     (imports every private key, .pub optional)
+# 3. hub → 5 Secrets → S     (offers the stored keys to ssh-agent)
+# 4. hub → 5 Secrets → t     (ssh terminal to a host via that key)
+```
+
+Private keys are stored XChaCha20-encrypted (`ssh:<name>`, agent-flagged);
+public halves are stored read-only (`ssh-pub:<name>`) for sharing. Re-import
+is idempotent. See docs/GUIDE.md §7 for details.
 
 ## Configuration
 
@@ -125,7 +145,7 @@ The full endpoint list is in the docs.
 
 ```bash
 cd TUI-OP-HUB
-cargo test            # 269 tests: unit + BDD scenarios
+cargo test            # 273 tests: 225 unit + 48 BDD scenarios
 cargo clippy --all-targets
 ```
 

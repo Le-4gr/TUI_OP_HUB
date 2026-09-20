@@ -3,6 +3,35 @@
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
 
+## 🎯 Session 36: desktop app scan + SSH key import + headless fixes (completed)
+
+Companion requests from the MyDesk repo (config repo drives the hub via the
+flake input; commits D105 = 32ce4b9, D112 = a5e724a):
+
+- **`.desktop` app scan** (`seed_desktop_apps`, src/seed.rs): on every start
+  the hub scans XDG data dirs and upserts every visible `.desktop` file as an
+  `app` entity (key = desktop_id in metadata_json; stale entries pruned;
+  GUI apps flagged `gui: true`). `POST /apps/refresh` rescans without a
+  restart. Live on DeskArch: 146 app entities.
+- **GUI apps launch DETACHED** (modern_app.rs): entities flagged `gui` spawn
+  via `sh -c exec … >/dev/null 2>&1` — firefox from the TUI opens firefox,
+  not a terminal wrapping it. TUI/CLI apps keep the terminal-window path.
+- **SSH key import** (`I` on Secrets, modern_app.rs): reads REAL key files
+  from `~/.ssh` — every `-----BEGIN … PRIVATE KEY-----` file imports, WITH or
+  WITHOUT its `.pub` pair (D112: keys copied between machines lack the pub
+  half; bare `.pub` files without a private part are skipped). Private keys
+  stored encrypted (`ssh:<name>`, ssh_key kind, ssh_agent flag, group ssh);
+  public halves stored as `ssh-pub:<name>`. `S` then offers them to
+  ssh-agent; `t` opens sessions with them. Re-import is idempotent.
+- **`--headless` CLI fixes** (main.rs): the flag was documented in --help but
+  never matched (fell into "Unknown flag"), and a lone `--headless` missed the
+  `nth(1)` check — both fixed.
+- **Docs**: README (highlights/keybindings/SSH section), GUIDE §4 + §7
+  (app scan + the `I` import flow), this file. Test count: 225 lib + 48 BDD.
+- Verified: lib tests 225/225; Nix sandbox build green; deployed via the
+  MyDesk flake input (auto-updated per rebuild — mydesk-rebuild runs
+  `nix flake update tui-op-hub`).
+
 ## 🎯 Session 35: GUIDE.md (user guide), INSTALL merge, docs refresh (completed)
 
 User: "there are still two install.md and i want a file if it doesnt exist

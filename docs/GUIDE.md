@@ -174,6 +174,14 @@ screen. `/` opens a visible search bar.
 
 The heart of the hub: your personal command knowledge base.
 
+**Every installed application is here automatically**: on each start the hub
+scans the XDG data dirs for `.desktop` files and upserts them as `app`
+entities (GUI apps launch detached — no terminal hop; TUI/CLI apps open in a
+new terminal window). Uninstalled apps are pruned on the next start, and
+`curl -X POST localhost:31415/apps/refresh` rescans after installing
+something without a restart. On MyDesk machines the API port is **31415**
+(seed); the stock default stays 3001.
+
 ### Create
 
 - `f` cycles the type filter: All → Commands → Apps → Scripts → **Chains**
@@ -298,6 +306,7 @@ per-user key.
 
 - Passphrase-protected secrets (`[locked]`) wrap the value a second time and
   re-ask for the passphrase on every use
+- `I` **imports real SSH keys from `~/.ssh`** — see the flow below
 - `S` offers all ssh-agent-flagged SSH keys to ssh-agent (also automatic after
   login); `t` opens an SSH terminal to a host
 - `k` generates SSH or GPG keys (`ssh-keygen`/`gpg`); the private key location
@@ -307,6 +316,29 @@ per-user key.
   quick-connect (`Enter`/`c` in a new terminal window)
 - Workflow scripts can read secrets as `secrets.<name>` or
   `get_secret("<name>")` (US-SEC-02)
+
+### Importing real SSH keys from this PC (the `I` flow)
+
+The import reads **actual key files from disk** — nothing needs to be in the
+database first, and nothing is generated for you:
+
+1. Your keys live in `~/.ssh/`. A key generated anywhere else on the PC is
+   simply copied in first (this is also what ssh-agent expects):
+   ```bash
+   install -m 600 ~/somewhere/mykey ~/.ssh/mykey           # private key
+   install -m 644 ~/somewhere/mykey.pub ~/.ssh/mykey.pub  # public half (optional)
+   ```
+2. In the hub: **5 (Secrets) → `I`**. Every file in `~/.ssh` that looks like a
+   private key (`-----BEGIN … PRIVATE KEY-----`) is imported — **with or
+   without its `.pub` pair** (keys copied between machines often lack it).
+   The private key is stored XChaCha20-encrypted as `ssh:<name>`; the public
+   half (when present) is stored read-only as `ssh-pub:<name>` for sharing.
+   Re-import is safe — existing names are skipped.
+3. `S` then offers the stored keys to your running ssh-agent (git/ssh use
+   them like normal), and `t` opens an SSH terminal to a host using the key.
+4. Passphrase-protected keys are marked `[locked]` and skipped by `S` (unlock
+   them by decrypting once through the secret view).
+5. Generated keys are a different flow: `k` runs `ssh-keygen`/`gpg` for you.
 
 ---
 
