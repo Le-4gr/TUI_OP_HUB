@@ -101,6 +101,8 @@ pub fn router(pool: Arc<SqlitePool>) -> Router {
         // Knowledge-base sharing (US-CMD-01)
         .route("/export", axum::routing::get(export_handler))
         .route("/import", axum::routing::post(import_handler))
+        // D105: re-scan .desktop files → app entities (install/remove sync)
+        .route("/apps/refresh", axum::routing::post(refresh_apps_handler))
         .route("/tags", get(list_tags_handler))
         .route("/types", get(list_types_handler))
         // Developer-mode user management (US-NF): wiped/reset auth state while
@@ -122,6 +124,14 @@ pub fn router(pool: Arc<SqlitePool>) -> Router {
                 .delete(delete_secret_handler),
         )
         .with_state(state)
+}
+
+/// D105: re-scan .desktop files → app entities. Returns a short status.
+async fn refresh_apps_handler(State(state): State<AppState>) -> String {
+    match crate::seed::seed_desktop_apps(&state.pool).await {
+        Ok(()) => "ok — desktop apps rescanned".into(),
+        Err(e) => format!("error: {}", e),
+    }
 }
 
 async fn health() -> Json<HealthResponse> {

@@ -574,3 +574,274 @@ pub const SEED_COMMANDS_B: &[SeedCommand] = &[
 pub fn seed_commands() -> impl Iterator<Item = &'static SeedCommand> {
     SEED_COMMANDS_A.iter().chain(SEED_COMMANDS_B.iter())
 }
+
+// ---------------------------------------------------------------------------
+// Desktop application scan (D105)
+// ---------------------------------------------------------------------------
+
+/// One parsed `.desktop` application.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DesktopApp {
+    /// `.desktop` file id (e.g. `firefox.desktop`) — the upsert key, stored in
+    /// `metadata_json` so entries can be updated/pruned across rescans.
+    pub desktop_id: String,
+    /// `Name=` — shown in the launcher.
+    pub name: String,
+    /// `Exec=` with field codes stripped — the launch command.
+    pub exec: String,
+    /// `Icon=` — icon theme name, exposed for frontends.
+    pub icon: String,
+    /// `Terminal=true` — TUI/CLI apps; false = GUI (launch detached).
+    pub terminal: bool,
+}
+
+/// XDG data dirs in precedence order (`XDG_DATA_HOME`, `$HOME/.local/share`,
+/// `XDG_DATA_DIRS` or `/usr/local/share:/usr/share`).
+fn desktop_data_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(x) = std::env::var("XDG_DATA_HOME") {
+        if !x.is_empty() {
+            dirs.push(std::path::PathBuf::from(x));
+        }
+    }
+    if let Ok(h) = std::env::var("HOME") {
+        dirs.push(std::path::PathBuf::from(h).join(".local/share"));
+    }
+    let data_dirs =
+        std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
+    for d in data_dirs.split(':').filter(|s| !s.is_empty()) {
+        dirs.push(std::path::PathBuf::from(d));
+    }
+    dirs
+}
+
+/// Parse a `.desktop` file — minimal `[Desktop Entry]` INI (no deps).
+/// Skips `NoDisplay`/`Hidden` entries (menu-invisible → not launchable).
+fn parse_desktop_file(path: &std::path::Path, desktop_id: &str) -> Option<DesktopApp> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut name: Option<String> = None;
+    let mut exec: Option<String> = None;
+    let mut icon = String::new();
+    let mut nodisplay = false;
+    let mut hidden = false;
+    let mut terminal = false;
+    let mut in_entry = false;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_entry = t == "[Desktop Entry]";
+            continue;
+        }
+        if !in_entry || t.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = t.split_once('=') else {
+            continue;
+        };
+        match key {
+            "Name" => name = Some(value.to_string()),
+            "Exec" => exec = Some(value.to_string()),
+            "Icon" => icon = value.to_string(),
+            "NoDisplay" => nodisplay = value.trim().eq_ignore_ascii_case("true"),
+            "Hidden" => hidden = value.trim().eq_ignore_ascii_case("true"),
+            "Terminal" => terminal = value.trim().eq_ignore_ascii_case("true"),
+            _ => {}
+        }
+    }
+    if nodisplay || hidden {
+        return None;
+    }
+    let exec = clean_exec(exec.as_deref().unwrap_or(""))?;
+    if exec.is_empty() {
+        return None;
+    }
+    let name = name.unwrap_or_else(|| desktop_id.trim_end_matches(".desktop").to_string());
+    Some(DesktopApp {
+        desktop_id: desktop_id.to_string(),
+        name,
+        exec,
+        icon,
+        terminal,
+    })
+}
+
+/// Clean an `Exec=` line per the desktop-entry spec: strip `%` field codes
+/// (`%f %F %u %U …`, `%%` → literal `%`) and unescape `\s` (space),
+/// `\n`/`\t` (whitespace), `\\` (backslash).
+fn clean_exec(exec: &str) -> Option<String> {
+    if exec.trim().is_empty() {
+        return None;
+    }
+    let mut out = String::with_capacity(exec.len());
+    let mut chars = exec.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '%' => match chars.next() {
+                Some('%') => out.push('%'),
+                Some(_) => {} // field code — dropped (no file/URL args)
+                None => {}
+            },
+            '\\' => match chars.next() {
+                Some('s') | Some(' ') => out.push(' '), // \s per spec; "\ " common in the wild
+                Some('n') | Some('t') => out.push(' '),
+                Some('\\') => out.push('\\'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            },
+            other => out.push(other),
+        }
+    }
+    let trimmed = out.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+/// Extract the `desktop_id` marker from an app entity's metadata (None when
+/// the entity is not a desktop-scan entry — e.g. seeded TUI tools).
+fn desktop_id_of_metadata(metadata_json: &Option<String>) -> Option<String> {
+    let raw = metadata_json.as_deref()?;
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    value
+        .get("desktop_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Scan `.desktop` files and upsert them as `app` entities so the Knowledge
+/// launcher offers every installed application. Upsert key = the `.desktop`
+/// id in `metadata_json` (entities without the marker are never touched);
+/// entries for uninstalled apps are pruned. Cheap — safe on every startup.
+pub async fn seed_desktop_apps(pool: &SqlitePool) -> AppResult<()> {
+    let mut apps: Vec<DesktopApp> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for dir in desktop_data_dirs() {
+        let Ok(entries) = std::fs::read_dir(dir.join("applications")) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+                continue;
+            }
+            let Some(id) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !seen.insert(id.to_string()) {
+                continue; // earlier XDG dir already provided this id
+            }
+            if let Some(app) = parse_desktop_file(&path, id) {
+                apps.push(app);
+            }
+        }
+    }
+
+    for app in &apps {
+        let gui = !app.terminal;
+        let metadata = serde_json::json!({
+            "desktop_id": app.desktop_id,
+            "icon": app.icon,
+            "gui": gui,
+        })
+        .to_string();
+        let existing: Option<(String, Option<String>)> = sqlx::query_as(
+            "SELECT id, content FROM entities WHERE type_id = 'app' AND metadata_json LIKE ?",
+        )
+        .bind(format!("%\"desktop_id\":\"{}\"%", app.desktop_id))
+        .fetch_optional(pool)
+        .await?;
+        match existing {
+            Some((id, _)) => {
+                sqlx::query(
+                    "UPDATE entities SET name = ?, description = ?, content = ?, metadata_json = ? WHERE id = ?",
+                )
+                .bind(&app.name)
+                .bind(&app.name)
+                .bind(&app.exec)
+                .bind(&metadata)
+                .bind(&id)
+                .execute(pool)
+                .await?;
+            }
+            None => {
+                let id = uuid::Uuid::new_v4().to_string();
+                sqlx::query(
+                    "INSERT INTO entities (id, name, description, content, type_id, metadata_json) VALUES (?, ?, ?, ?, 'app', ?)",
+                )
+                .bind(&id)
+                .bind(&app.name)
+                .bind(&app.name)
+                .bind(&app.exec)
+                .bind(&metadata)
+                .execute(pool)
+                .await?;
+            }
+        }
+    }
+
+    // Prune entities whose .desktop file disappeared (app uninstalled).
+    let tracked: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT id, metadata_json FROM entities WHERE type_id = 'app' AND metadata_json LIKE '%\"desktop_id\":%'",
+    )
+    .fetch_all(pool)
+    .await?;
+    let current: std::collections::HashSet<String> =
+        apps.iter().map(|a| a.desktop_id.clone()).collect();
+    for (id, metadata) in tracked {
+        let known = desktop_id_of_metadata(&metadata)
+            .map(|d| current.contains(&d))
+            .unwrap_or(true); // unparseable → keep (never delete blindly)
+        if !known {
+            sqlx::query("DELETE FROM entities WHERE id = ?")
+                .bind(&id)
+                .execute(pool)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod desktop_tests {
+    use super::*;
+
+    #[test]
+    fn exec_field_codes_are_stripped() {
+        assert_eq!(clean_exec("firefox %u").as_deref(), Some("firefox"));
+        assert_eq!(clean_exec("code %F").as_deref(), Some("code"));
+        assert_eq!(clean_exec("app %%").as_deref(), Some("app %"));
+        assert_eq!(clean_exec("app %f %F").as_deref(), Some("app"));
+    }
+
+    #[test]
+    fn exec_escapes_are_unescaped() {
+        assert_eq!(
+            clean_exec(r"my\ app --flag").as_deref(),
+            Some("my app --flag")
+        );
+        assert_eq!(clean_exec(r"my\sapp").as_deref(), Some("my app"));
+        assert_eq!(clean_exec(r"a\\b").as_deref(), Some(r"a\b"));
+    }
+
+    #[test]
+    fn empty_exec_is_rejected() {
+        assert_eq!(clean_exec(""), None);
+        assert_eq!(clean_exec("   %f"), None);
+    }
+
+    #[test]
+    fn desktop_id_roundtrips_through_metadata() {
+        let meta = serde_json::json!({"desktop_id": "firefox.desktop", "gui": true}).to_string();
+        assert_eq!(
+            desktop_id_of_metadata(&Some(meta)).as_deref(),
+            Some("firefox.desktop")
+        );
+        assert_eq!(desktop_id_of_metadata(&None), None);
+        assert_eq!(desktop_id_of_metadata(&Some("not json".into())), None);
+    }
+}

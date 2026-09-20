@@ -1001,6 +1001,9 @@ impl ModernUI {
             )),
             Line::from(""),
             Line::from("Press 'n' to create a new secret"),
+            Line::from("Press 'I' to import SSH keys from ~/.ssh (D105)"),
+            Line::from("Press 'S' to offer stored keys to ssh-agent"),
+            Line::from("Press 'H' for the SSH host manager · 't' ssh terminal"),
             Line::from("Press '1' to return to dashboard"),
         ])
         .alignment(Alignment::Center);

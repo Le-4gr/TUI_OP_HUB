@@ -632,6 +632,9 @@ pub struct ModernApp {
     monitor_snap: Option<crate::monitor::MonitorSnapshot>,
     monitor_refreshed: std::time::Instant,
     wants_terminal_cmd: Option<(String, String)>, // (command, cwd)
+    /// D105: GUI desktop apps (from .desktop files) launch fully detached —
+    /// no terminal hop; the app owns its own windows.
+    wants_detach_cmd: Option<(String, String)>, // (command, cwd)
     plugins_list: PluginsListState,
     workflow_form: WorkflowFormState,
     secret_form: SecretFormState,
@@ -861,6 +864,7 @@ impl ModernApp {
             monitor_snap: None,
             monitor_refreshed: std::time::Instant::now(),
             wants_terminal_cmd: None,
+            wants_detach_cmd: None,
             plugins_list: ListState::new(page_size),
             workflow_form: WorkflowFormState::default(),
             secret_form: SecretFormState::default(),
@@ -1816,6 +1820,22 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                             Some("No terminal emulator found (set $TERMINAL)".to_string());
                     }
                 }
+            }
+
+            // D105: GUI desktop apps (from .desktop files) launch fully
+            // detached — no terminal hop, output goes to the app's own window.
+            if let Some((cmd, cwd)) = self.wants_detach_cmd.take() {
+                let spawned = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(format!("cd '{}' 2>/dev/null; exec {} >/dev/null 2>&1", cwd, cmd))
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+                self.status_message = match spawned {
+                    Ok(_) => Some(format!("\u{2713} Launched {}", cmd)),
+                    Err(e) => Some(format!("\u{2717} Launch failed: {}", e)),
+                };
             }
 
             // `: open a NEW terminal window (detached; the TUI keeps running)
@@ -3783,6 +3803,13 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 // Secrets: offer all ssh-agent keys to the running agent (US-SEC)
                 if self.ui.state == AppState::Secrets {
                     self.load_ssh_agent_keys().await;
+                }
+            }
+            KeyCode::Char('I') => {
+                // D105: Secrets — import SSH keypairs from ~/.ssh into the
+                // encrypted store (private key kept encrypted; S pushes to agent)
+                if self.ui.state == AppState::Secrets {
+                    self.import_ssh_keys_from_home().await;
                 }
             }
             KeyCode::Char('t') => {
@@ -5981,14 +6008,34 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                                 crate::workflow::RunPlan::App(c) => c.clone(),
                                 _ => unreachable!(),
                             };
-                            self.wants_terminal_cmd = Some((
-                                command,
-                                dirs_home().to_string_lossy().to_string(),
-                            ));
-                            self.status_message = Some(format!(
-                                "\u{2713} '{}' launched in a new terminal",
-                                entity.name
-                            ));
+                            // D105: GUI desktop apps (metadata gui=true from
+                            // the .desktop scan) launch fully detached —
+                            // running firefox inside a terminal is silly.
+                            let gui = entity
+                                .metadata_json
+                                .as_deref()
+                                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                                .and_then(|v| v.get("gui").and_then(|g| g.as_bool()))
+                                .unwrap_or(false);
+                            if gui {
+                                self.wants_detach_cmd = Some((
+                                    command,
+                                    dirs_home().to_string_lossy().to_string(),
+                                ));
+                                self.status_message = Some(format!(
+                                    "\u{2713} '{}' launched",
+                                    entity.name
+                                ));
+                            } else {
+                                self.wants_terminal_cmd = Some((
+                                    command,
+                                    dirs_home().to_string_lossy().to_string(),
+                                ));
+                                self.status_message = Some(format!(
+                                    "\u{2713} '{}' launched in a new terminal",
+                                    entity.name
+                                ));
+                            }
                         } else {
                             self.run_dialog = Some(RunDialog {
                                 name: entity.name.clone(),
@@ -7829,6 +7876,120 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
     /// Decrypt + offer every ssh_agent-flagged SSH key to ssh-agent (US-SEC).
     /// Passphrase-protected keys are skipped (no interactive prompt here);
     /// use `t` to open an ssh terminal with those.
+    /// D105: import SSH keypairs from `~/.ssh` into the encrypted secret
+    /// store — every `*.pub` with a matching private key becomes a secret
+    /// (`secret_kind = "ssh_key"`, ssh_agent flag set, group `ssh`). The
+    /// private key is stored encrypted; `S` offers it to the running agent
+    /// and `t` opens sessions with it. Re-import is safe (names dedupe).
+    async fn import_ssh_keys_from_home(&mut self) {
+        let user_id = self.current_user_profile_id().await;
+        let Ok(home) = std::env::var("HOME") else {
+            self.status_message = Some("\u{2717} No $HOME".to_string());
+            return;
+        };
+        let ssh_dir = std::path::Path::new(&home).join(".ssh");
+        let Ok(entries) = std::fs::read_dir(&ssh_dir) else {
+            self.status_message = Some("\u{2717} ~/.ssh not readable".to_string());
+            return;
+        };
+        let existing = match repository::list_secrets(&*self.pool, &user_id).await {
+            Ok(list) => list,
+            Err(e) => {
+                self.status_message = Some(format!("{}", e));
+                return;
+            }
+        };
+        let mut imported = 0usize;
+        let mut skipped = 0usize;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !file_name.ends_with(".pub") {
+                continue;
+            }
+            let stem = file_name.trim_end_matches(".pub").to_string();
+            let priv_path = ssh_dir.join(&stem);
+            if !priv_path.is_file() {
+                continue; // bare .pub without a private part (e.g. known_hosts artifacts)
+            }
+            let (priv_pem, pub_key) = match (
+                std::fs::read_to_string(&priv_path),
+                std::fs::read_to_string(&path),
+            ) {
+                (Ok(p), Ok(u)) => (p, u),
+                _ => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            let secret_name = format!("ssh:{}", stem);
+            if existing.iter().any(|s| s.name == secret_name) {
+                skipped += 1;
+                continue;
+            }
+            let value_enc =
+                match secrets::encrypt_for_user(&*self.pool, &user_id, &priv_pem).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.status_message =
+                            Some(format!("\u{2717} encrypt {}: {}", stem, e));
+                        return;
+                    }
+                };
+            let meta = repository::SecretMeta {
+                secret_group: Some("ssh".to_string()),
+                username: None,
+                url: None,
+                email: None,
+                passphrase_protected: priv_pem.contains("ENCRYPTED"),
+                ssh_agent: true,
+            };
+            match repository::create_secret_meta(
+                &*self.pool,
+                &user_id,
+                &secret_name,
+                &value_enc,
+                "ssh_key",
+                false,
+                &meta,
+            )
+            .await
+            {
+                Ok(_) => {
+                    imported += 1;
+                    // Public key stored too — copy/share without decrypting the private half
+                    if let Ok(pub_enc) =
+                        secrets::encrypt_for_user(&*self.pool, &user_id, &pub_key).await
+                    {
+                        let pub_meta = repository::SecretMeta {
+                            secret_group: Some("ssh".to_string()),
+                            ssh_agent: false,
+                            ..meta
+                        };
+                        let _ = repository::create_secret_meta(
+                            &*self.pool,
+                            &user_id,
+                            &format!("ssh-pub:{}", stem),
+                            &pub_enc,
+                            "password",
+                            false,
+                            &pub_meta,
+                        )
+                        .await;
+                    }
+                }
+                Err(e) => self.status_message = Some(format!("\u{2717} store {}: {}", stem, e)),
+            }
+        }
+        self.fetch_secrets().await.ok();
+        self.status_message = Some(format!(
+            "ssh import: {} keypair(s) imported, {} skipped (already present or missing private key)",
+            imported, skipped
+        ));
+    }
+
     async fn load_ssh_agent_keys(&mut self) {
         let user_id = self.current_user_profile_id().await;
         let Ok(all) = repository::list_secrets(&*self.pool, &user_id).await else {

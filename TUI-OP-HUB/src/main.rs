@@ -65,6 +65,9 @@ fn handle_cli_flags() -> Option<bool> {
                 Some(false)
             }
         },
+        // D105: recognized — startup continues; headless is resolved below
+        // from the full arg list (this flag used to fall into "Unknown")
+        "--headless" => None,
         other => {
             eprintln!("Unknown flag: {other} (try --help)");
             Some(false)
@@ -97,6 +100,11 @@ async fn main() -> anyhow::Result<()> {
     // Prepopulate the knowledge base with common commands + options and known
     // tools (idempotent; US-CMD-01, US-PROC).
     tui_op_hub::seed::seed_builtin_commands(&pool).await?;
+
+    // D105: scan .desktop files → `app` entities (every installed application
+    // shows up in the Knowledge launcher; GUI apps launch detached). Cheap
+    // upsert + prune — safe on every start.
+    tui_op_hub::seed::seed_desktop_apps(&pool).await?;
 
     // Workflow scheduler daemon (US-WF-07): executes cron-scheduled workflows
     let scheduler = tui_op_hub::scheduler::WorkflowScheduler::new(pool.clone());
@@ -134,7 +142,9 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let headless = std::env::args().nth(1).is_some_and(|a| a == "--headless");
+    // D105: any position; used to be nth(1) only, so a lone `--headless`
+    // flag never actually enabled headless mode
+    let headless = std::env::args().skip(1).any(|a| a == "--headless");
 
     if config.tui.enabled && !headless {
         // Use modern UI with login/signup
