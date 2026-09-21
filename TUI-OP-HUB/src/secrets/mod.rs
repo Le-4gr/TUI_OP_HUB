@@ -5,6 +5,7 @@ use chacha20poly1305::XNonce;
 use sqlx::SqlitePool;
 
 pub mod ssh_agent;
+pub mod ssh_import;
 
 // Retrieve user's encryption key from DB or env fallback
 pub async fn get_user_key(pool: &SqlitePool, user_id: &str) -> anyhow::Result<String> {

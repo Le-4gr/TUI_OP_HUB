@@ -893,7 +893,7 @@ fn ssh_scan_dir(dir: &std::path::Path) -> Vec<SshImportItem> {
             name: name.to_string(),
             path: path.clone(),
             is_private,
-            passphrase: is_private && content.contains("ENCRYPTED"),
+            passphrase: is_private && secrets::ssh_import::is_passphrase_protected(&content),
             has_pair,
             selected: is_private,
         });
@@ -8166,7 +8166,8 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 username: None,
                 url: None,
                 email: None,
-                passphrase_protected: priv_pem.contains("ENCRYPTED"),
+                passphrase_protected:
+                    secrets::ssh_import::is_passphrase_protected(&priv_pem),
                 ssh_agent: true,
             };
             match repository::create_secret_meta(
@@ -8229,67 +8230,39 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         passphrase: Option<&str>,
     ) -> anyhow::Result<bool> {
         let user_id = self.current_user_profile_id().await;
-        let stem = priv_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("key")
-            .to_string();
-        let priv_pem = std::fs::read_to_string(priv_path)?;
-        let secret_name = format!("ssh:{}", stem);
-        let existing = repository::list_secrets(&*self.pool, &user_id).await?;
-        if existing.iter().any(|sec| sec.name == secret_name) {
-            return Ok(false);
-        }
-        let value_enc = secrets::encrypt_for_user(&*self.pool, &user_id, &priv_pem).await?;
-        let meta = repository::SecretMeta {
-            secret_group: Some("ssh".to_string()),
-            username: None,
-            url: None,
-            email: None,
-            passphrase_protected: priv_pem.contains("ENCRYPTED"),
-            ssh_agent: true,
-        };
-        let _ = passphrase; // typed passphrase is session-scoped (agent offer)
-        repository::create_secret_meta(
-            &*self.pool,
-            &user_id,
-            &secret_name,
-            &value_enc,
-            "ssh_key",
-            false,
-            &meta,
-        )
-        .await?;
-        // Public half stored read-only for sharing (only when a .pub exists)
-        if let Some(pub_path) = pub_path {
-            if let Ok(pub_pem) = std::fs::read_to_string(pub_path) {
-                if let Ok(pub_enc) =
-                    secrets::encrypt_for_user(&*self.pool, &user_id, &pub_pem).await
-                {
-                    let pub_meta = repository::SecretMeta {
-                        secret_group: Some("ssh".to_string()),
-                        ssh_agent: false,
-                        ..meta
-                    };
-                    let _ = repository::create_secret_meta(
-                        &*self.pool,
-                        &user_id,
-                        &format!("ssh-pub:{}", stem),
-                        &pub_enc,
-                        "password",
-                        false,
-                        &pub_meta,
-                    )
-                    .await;
+        // D145: storage logic shared with the integration tests (ssh_import)
+        // — persists the key AND a typed passphrase as ssh-pass:<stem> so
+        // every future agent offer can unlock the key non-interactively.
+        let imported =
+            secrets::ssh_import::import_key_file(&*self.pool, &user_id, priv_path, pub_path, passphrase)
+                .await?;
+        // D145: with a typed passphrase the key is unlocked into the agent
+        // IMMEDIATELY (no terminal window); without an agent the timer /
+        // session-start offers cover it later.
+        if imported {
+            if let Some(pass) = passphrase.filter(|p| !p.is_empty()) {
+                let stem = priv_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("key");
+                if let Ok(pem) = std::fs::read_to_string(priv_path) {
+                    if secrets::ssh_import::is_passphrase_protected(&pem) {
+                        let _ = secrets::ssh_agent::add_key_with_pass(
+                            &format!("ssh:{}", stem),
+                            &pem,
+                            pass,
+                        );
+                    }
                 }
             }
         }
-        Ok(true)
+        Ok(imported)
     }
 
-    /// D140: stash the typed passphrase for the selected key — import_ssh_file
-    /// keeps it in memory for this session and the agent offer passes it to
-    /// ssh-add via SSH_ASKPASS (no terminal typing needed).
+    /// D140/D145: stash the typed passphrase for the selected key — the
+    /// import persists it as `ssh-pass:<stem>` (survives reboots) and
+    /// unlocks the key into the agent immediately (SSH_ASKPASS, no
+    /// terminal typing needed).
     fn store_pass_for_import(&mut self, priv_path: &std::path::Path, pass: &str) {
         let key = priv_path.to_string_lossy().to_string();
         self.ssh_import_pass
@@ -8323,12 +8296,15 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         };
         let mut imported = 0usize;
         let mut skipped = 0usize;
-        for (priv_path, pub_path) in picks {
+        for (priv_path, pub_path) in picks.iter() {
             let pass = self
                 .ssh_import_pass
                 .get(priv_path.to_string_lossy().as_ref())
                 .cloned();
-            match self.import_ssh_file(&priv_path, pub_path.as_deref(), pass.as_deref()).await {
+            match self
+                .import_ssh_file(priv_path, pub_path.as_deref(), pass.as_deref())
+                .await
+            {
                 Ok(true) => imported += 1,
                 Ok(false) => skipped += 1,
                 Err(e) => {
@@ -8342,14 +8318,51 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         }
         self.fetch_secrets().await.ok();
         // D123: hand the freshly imported keys to ssh-agent right away —
-        // passphrase-protected ones open a terminal window running ssh-add
-        // (the user types the passphrase there); plain keys load silently.
+        // D145: keys with a stored passphrase unlock silently; locked keys
+        // WITHOUT one fall back to the terminal window (D119).
         self.load_ssh_agent_keys().await;
+        // D145: a freshly imported LOCKED key without a typed passphrase
+        // opens the inline prompt immediately — Enter then persists the
+        // passphrase (ssh-pass:<stem>) and unlocks the key. No re-import.
+        let mut ask_pass: Option<std::path::PathBuf> = None;
+        for (priv_path, _) in picks.iter() {
+            let typed = self
+                .ssh_import_pass
+                .get(priv_path.to_string_lossy().as_ref())
+                .map(|p| !p.is_empty())
+                .unwrap_or(false);
+            if !typed {
+                if let Ok(pem) = std::fs::read_to_string(priv_path) {
+                    if secrets::ssh_import::is_passphrase_protected(&pem) {
+                        ask_pass = Some(priv_path.clone());
+                        break;
+                    }
+                }
+            }
+        }
         if let Some(panel) = self.ssh_import_panel.as_mut() {
-            panel.message = Some(format!(
-                "imported {} key(s), {} skipped (duplicates) — agent offer done (passphrase keys: check the opened terminals)",
-                imported, skipped
-            ));
+            match ask_pass.as_ref().and_then(|p| {
+                panel
+                    .items
+                    .iter()
+                    .position(|it| it.path == *p && it.is_private)
+            }) {
+                Some(idx) => {
+                    panel.selected = idx;
+                    panel.pass_editing = true;
+                    panel.pass_buf.clear();
+                    panel.message = Some(format!(
+                        "imported {} key(s), {} skipped (duplicates) — type the passphrase for the selected key, then Enter (stores + unlocks it)",
+                        imported, skipped
+                    ));
+                }
+                None => {
+                    panel.message = Some(format!(
+                        "imported {} key(s), {} skipped (duplicates) — agent offer done (passphrase keys: check the opened terminals)",
+                        imported, skipped
+                    ));
+                }
+            }
             for it in panel.items.iter_mut() {
                 it.selected = false;
             }
@@ -8369,7 +8382,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             KeyCode::Esc => {
                 self.ssh_import_panel = None;
             }
-            KeyCode::Tab => {
+            KeyCode::Tab if !self.ssh_import_panel.as_ref().map_or(false, |p| p.pass_editing) => {
                 if let Some(p) = self.ssh_import_panel.as_mut() {
                     p.path_editing = !p.path_editing;
                 }
@@ -8379,6 +8392,92 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                     p.path_editing = false;
                 }
                 self.ssh_import_rescan();
+            }
+            KeyCode::Enter if self.ssh_import_panel.as_ref().map_or(false, |p| p.pass_editing) => {
+                // store the typed passphrase with the SELECTED key so the
+                // agent offer can use it (ssh-add runs with SSH_ASKPASS)
+                let (priv_path, pass) = match self.ssh_import_panel.as_ref() {
+                    Some(p2) => match p2.items.get(p2.selected) {
+                        Some(it) => (it.path.clone(), p2.pass_buf.clone()),
+                        None => return,
+                    },
+                    None => return,
+                };
+                if let Some(panel) = self.ssh_import_panel.as_mut() {
+                    panel.pass_editing = false;
+                }
+                self.store_pass_for_import(&priv_path, &pass);
+                // D145: the key may ALREADY be imported (import without `p`
+                // first) — persist the passphrase now and unlock the key
+                // into the agent immediately.
+                let stem = priv_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("key")
+                    .to_string();
+                let secret_name = format!("ssh:{}", stem);
+                let user_id = self.current_user_profile_id().await;
+                let mut done_msg = format!(
+                    "\u{2713} passphrase stored for {} — import now uses it",
+                    priv_path.display()
+                );
+                if let Ok(all) = repository::list_secrets(&*self.pool, &user_id).await {
+                    if all.iter().any(|sec| sec.name == secret_name) {
+                        if let Ok(pass_enc) =
+                            secrets::encrypt_for_user(&*self.pool, &user_id, &pass).await
+                        {
+                            let pass_meta = repository::SecretMeta {
+                                secret_group: Some("ssh".to_string()),
+                                username: None,
+                                url: None,
+                                email: None,
+                                passphrase_protected: false,
+                                ssh_agent: false,
+                            };
+                            // overwrite any stale stored passphrase
+                            for old in all
+                                .iter()
+                                .filter(|s| s.name == format!("ssh-pass:{}", stem))
+                            {
+                                let _ = repository::delete_secret(&*self.pool, &old.id).await;
+                            }
+                            let stored = repository::create_secret_meta(
+                                &*self.pool,
+                                &user_id,
+                                &format!("ssh-pass:{}", stem),
+                                &pass_enc,
+                                "password",
+                                false,
+                                &pass_meta,
+                            )
+                            .await
+                            .is_ok();
+                            if stored {
+                                if let Ok(pem) = std::fs::read_to_string(&priv_path) {
+                                    match secrets::ssh_agent::add_key_with_pass(
+                                        &secret_name,
+                                        &pem,
+                                        &pass,
+                                    ) {
+                                        Ok(()) => {
+                                            done_msg =
+                                                format!("\u{2713} {} unlocked into ssh-agent", secret_name);
+                                        }
+                                        Err(e) => {
+                                            done_msg = format!(
+                                                "\u{2713} passphrase stored — agent unlock pending: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(panel) = self.ssh_import_panel.as_mut() {
+                    panel.message = Some(done_msg);
+                }
             }
             KeyCode::Enter => {
                 self.ssh_import_selected().await;
@@ -8442,7 +8541,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                     }
                 }
             }
-            KeyCode::Char('e') if !editing => {
+            KeyCode::Char('e') if !editing && !self.ssh_import_panel.as_ref().map_or(false, |p| p.pass_editing) => {
                 // D123: file explorer (the same one the Configs tab uses) to
                 // pick the scan directory
                 let cur = self
@@ -8483,17 +8582,8 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                     }
                 }
             }
-            KeyCode::Char(c) if editing => {
-                if let Some(panel) = self.ssh_import_panel.as_mut() {
-                    panel.path.push(c);
-                }
-            }
-            KeyCode::Backspace if editing => {
-                if let Some(panel) = self.ssh_import_panel.as_mut() {
-                    panel.path.pop();
-                }
-            }
-            // D140: passphrase typing for the selected key (inline, masked)
+            // D145: passphrase typing arms FIRST — when both edit modes are
+            // active (Tab during pass typing) chars must go to the passphrase
             KeyCode::Char(c) if self.ssh_import_panel.as_ref().map_or(false, |p| p.pass_editing) => {
                 if let Some(panel) = self.ssh_import_panel.as_mut() {
                     panel.pass_buf.push(c);
@@ -8504,24 +8594,15 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                     panel.pass_buf.pop();
                 }
             }
-            KeyCode::Enter if self.ssh_import_panel.as_ref().map_or(false, |p| p.pass_editing) => {
-                // store the typed passphrase with the SELECTED key so the
-                // agent offer can use it (ssh-add runs with SSH_ASKPASS)
-                let (priv_path, pass) = match self.ssh_import_panel.as_ref() {
-                    Some(p2) => match p2.items.get(p2.selected) {
-                        Some(it) => (it.path.clone(), p2.pass_buf.clone()),
-                        None => return,
-                    },
-                    None => return,
-                };
+            KeyCode::Char(c) if editing => {
                 if let Some(panel) = self.ssh_import_panel.as_mut() {
-                    panel.pass_editing = false;
-                    panel.message = Some(format!(
-                        "\u{2713} passphrase stored for {} — import now uses it",
-                        priv_path.display()
-                    ));
+                    panel.path.push(c);
                 }
-                self.store_pass_for_import(&priv_path, &pass);
+            }
+            KeyCode::Backspace if editing => {
+                if let Some(panel) = self.ssh_import_panel.as_mut() {
+                    panel.path.pop();
+                }
             }
             _ => {}
         }
@@ -8629,6 +8710,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         };
         let mut added = 0;
         let mut unlocked = 0;
+        let mut silent_unlocked = 0;
         let mut skipped = 0;
         for secret in all
             .iter()
@@ -8640,6 +8722,31 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                     // ssh-add — the user types the passphrase there; skipping
                     // them made agent use impossible without removing the lock
                     if secret.passphrase_protected {
+                        // D145: a STORED passphrase (typed at import) unlocks
+                        // the key silently — no terminal window at all
+                        let stem = secret
+                            .name
+                            .strip_prefix("ssh:")
+                            .unwrap_or(&secret.name)
+                            .to_string();
+                        let pass_name = format!("ssh-pass:{}", stem);
+                        let mut done = false;
+                        if let Some(p) = all.iter().find(|s| s.name == pass_name) {
+                            if let Ok(pass) =
+                                secrets::decrypt_for_user(&*self.pool, &user_id, &p.value_enc)
+                                    .await
+                            {
+                                if secrets::ssh_agent::add_key_with_pass(&secret.name, &pem, &pass)
+                                    .is_ok()
+                                {
+                                    silent_unlocked += 1;
+                                    done = true;
+                                }
+                            }
+                        }
+                        if done {
+                            continue;
+                        }
                         let key_file = std::env::temp_dir().join(format!(
                             "tui-op-hub-ssh-{}.pem",
                             std::process::id()
@@ -8684,8 +8791,8 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             }
         }
         self.status_message = Some(format!(
-            "ssh-agent: {} key(s) added, {} passphrase key(s) opened in a terminal, {} skipped",
-            added, unlocked, skipped
+            "ssh-agent: {} key(s) added, {} unlocked (stored passphrase), {} opened in a terminal, {} skipped",
+            added, silent_unlocked, unlocked, skipped
         ));
     }
 

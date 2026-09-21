@@ -159,6 +159,165 @@ pub fn add_key_to_agent(name: &str, pem: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// D145: offer a PASSPHRASE-protected private key to the agent
+/// non-interactively. ssh-add runs with SSH_ASKPASS_REQUIRE=force
+/// (OpenSSH >= 8.4) and an askpass script that echoes the passphrase from
+/// an env var — no secret ever touches disk in plaintext. Older OpenSSH
+/// ignores the REQUIRE variable and falls back to the DISPLAY + no-tty
+/// path, which our piped stdio satisfies (DISPLAY defaults to :0).
+pub fn add_key_with_pass(name: &str, pem: &str, passphrase: &str) -> AppResult<()> {
+    if !crate::keygen::which("ssh-add") {
+        return Err(AppError::Other("ssh-add not installed".into()));
+    }
+    ensure_agent()?;
+    let dir = std::env::temp_dir().join(format!("tui-op-hub-key-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| AppError::Io(e))?;
+    let file = dir.join(format!("key-{}", name.replace('/', "_").replace(" ", "_")));
+    std::fs::write(&file, pem).map_err(|e| AppError::Io(e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))?;
+    }
+    let script = dir.join(format!(
+        "askpass-{}",
+        name.replace('/', "_").replace(" ", "_")
+    ));
+    // The script contains NO secret — it echoes the env var passed below.
+    std::fs::write(
+        &script,
+        "#!/bin/sh\necho \"$MYDESK_ASKPASS\"\n",
+    )
+    .map_err(|e| AppError::Io(e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let mut child = std::process::Command::new("ssh-add")
+        .arg(&file)
+        .env("SSH_ASKPASS", &script)
+        .env("SSH_ASKPASS_REQUIRE", "force")
+        .env(
+            "DISPLAY",
+            std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string()),
+        )
+        .env("MYDESK_ASKPASS", passphrase)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| AppError::Io(e))?;
+    // ssh-add LOOPS forever when the askpass keeps returning a wrong
+    // passphrase (it re-prompts instead of failing) — bound the wait and
+    // kill it, reporting a wrong-passphrase-style error instead.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break Some(st),
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(e) => return Err(AppError::Io(e)),
+        }
+    };
+    let mut stderr_text = String::new();
+    if let Some(mut p) = child.stderr.take() {
+        use std::io::Read;
+        let _ = p.read_to_string(&mut stderr_text);
+    }
+    // cleanup AFTER the child exited (removing the askpass script early
+    // raced ssh-add's prompt and broke the unlock)
+    let _ = std::fs::remove_file(&file);
+    let _ = std::fs::remove_file(&script);
+    let ok = match &status {
+        Some(st) => st.success() || stderr_text.contains("already in agent"),
+        None => false,
+    };
+    if !ok {
+        let reason = match status {
+            None => {
+                if stderr_text.contains("incorrect passphrase") {
+                    "incorrect passphrase (retry loop killed)".to_string()
+                } else {
+                    "timed out — is ssh-agent reachable?".to_string()
+                }
+            }
+            Some(_) => stderr_text.trim().to_string(),
+        };
+        return Err(AppError::Other(format!(
+            "ssh-add failed for '{}': {}",
+            name, reason
+        )));
+    }
+    tracing::info!(key = %name, "unlocked passphrase key into ssh-agent");
+    Ok(())
+}
+
+/// D145: outcome of an agent offer run.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct OfferOutcome {
+    /// Plain keys added to the agent.
+    pub offered: usize,
+    /// Passphrase-locked keys unlocked non-interactively (stored pass).
+    pub unlocked: usize,
+    /// Keys that could not be added (no agent, no stored passphrase, …).
+    pub skipped: usize,
+}
+
+/// D145: offer every `ssh_key` secret of a user to the running agent.
+/// Shared by the TUI `S` flow, the headless startup offer and the
+/// `/ssh/agent-offer` endpoint. Passphrase-locked keys are unlocked when
+/// the import stored the passphrase as `ssh-pass:<stem>`; locked keys
+/// WITHOUT a stored passphrase are skipped here (the TUI opens a terminal
+/// for those; headless paths cannot prompt).
+pub async fn offer_user_keys(pool: &sqlx::SqlitePool, user_id: &str) -> OfferOutcome {
+    let mut out = OfferOutcome::default();
+    let Ok(all) = crate::repository::list_secrets(pool, user_id).await else {
+        return out;
+    };
+    for secret in all
+        .iter()
+        .filter(|s| s.ssh_agent && s.secret_kind == "ssh_key")
+    {
+        match crate::secrets::decrypt_for_user(pool, user_id, &secret.value_enc).await {
+            Ok(pem) => {
+                if secret.passphrase_protected {
+                    let stem = secret.name.strip_prefix("ssh:").unwrap_or(&secret.name);
+                    let pass_name = format!("ssh-pass:{}", stem);
+                    let mut unlocked_now = false;
+                    if let Some(p) = all.iter().find(|s| s.name == pass_name) {
+                        if let Ok(pass) =
+                            crate::secrets::decrypt_for_user(pool, user_id, &p.value_enc).await
+                        {
+                            unlocked_now = add_key_with_pass(&secret.name, &pem, &pass).is_ok();
+                        }
+                    }
+                    if unlocked_now {
+                        out.unlocked += 1;
+                    } else {
+                        out.skipped += 1;
+                    }
+                } else if add_key_to_agent(&secret.name, &pem).is_ok() {
+                    out.offered += 1;
+                } else {
+                    out.skipped += 1;
+                }
+            }
+            Err(_) => out.skipped += 1,
+        }
+    }
+    tracing::info!(
+        offered = out.offered,
+        unlocked = out.unlocked,
+        skipped = out.skipped,
+        "ssh-agent offer complete"
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

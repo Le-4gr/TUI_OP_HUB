@@ -129,30 +129,20 @@ pub fn router(pool: Arc<SqlitePool>) -> Router {
         .with_state(state)
 }
 
-/// D142: offer stored SSH keys to the session ssh-agent. Idempotent —
-/// the agent ignores duplicates. Passphrase-locked keys are skipped
-/// (headless has no prompt; the TUI unlocks those with `S`).
+/// D142/D145: offer stored SSH keys to the session ssh-agent. Idempotent —
+/// the agent ignores duplicates. Passphrase-locked keys unlock
+/// non-interactively when the import stored the passphrase (ssh-pass:<stem>);
+/// locked keys WITHOUT a stored passphrase are skipped (no prompt headless).
 async fn ssh_agent_offer_handler(State(state): State<AppState>) -> String {
     let uid = match crate::auth::first_user_id(&state.pool).await {
         Ok(Some(id)) => id,
         _ => "default".to_string(),
     };
-    let all = match repository::list_secrets(&state.pool, &uid).await {
-        Ok(list) => list,
-        Err(e) => return format!("error: {}", e),
-    };
-    let mut added = 0;
-    for sec in all
-        .iter()
-        .filter(|s| s.ssh_agent && s.secret_kind == "ssh_key" && !s.passphrase_protected)
-    {
-        if let Ok(pem) = crate::secrets::decrypt_for_user(&state.pool, &uid, &sec.value_enc).await {
-            if crate::secrets::ssh_agent::add_key_to_agent(&sec.name, &pem).is_ok() {
-                added += 1;
-            }
-        }
-    }
-    format!("offered {} key(s) to ssh-agent", added)
+    let out = crate::secrets::ssh_agent::offer_user_keys(&state.pool, &uid).await;
+    format!(
+        "offered {}, unlocked {}, skipped {}",
+        out.offered, out.unlocked, out.skipped
+    )
 }
 
 /// D105: re-scan .desktop files → app entities. Returns a short status.
