@@ -103,6 +103,9 @@ pub fn router(pool: Arc<SqlitePool>) -> Router {
         .route("/import", axum::routing::post(import_handler))
         // D105: re-scan .desktop files → app entities (install/remove sync)
         .route("/apps/refresh", axum::routing::post(refresh_apps_handler))
+        // D142: offer stored SSH keys to the session ssh-agent (the timer
+        // calls this every 5 min so imported keys reach new terminals)
+        .route("/ssh/agent-offer", axum::routing::post(ssh_agent_offer_handler))
         .route("/tags", get(list_tags_handler))
         .route("/types", get(list_types_handler))
         // Developer-mode user management (US-NF): wiped/reset auth state while
@@ -124,6 +127,32 @@ pub fn router(pool: Arc<SqlitePool>) -> Router {
                 .delete(delete_secret_handler),
         )
         .with_state(state)
+}
+
+/// D142: offer stored SSH keys to the session ssh-agent. Idempotent —
+/// the agent ignores duplicates. Passphrase-locked keys are skipped
+/// (headless has no prompt; the TUI unlocks those with `S`).
+async fn ssh_agent_offer_handler(State(state): State<AppState>) -> String {
+    let uid = match crate::auth::first_user_id(&state.pool).await {
+        Ok(Some(id)) => id,
+        _ => "default".to_string(),
+    };
+    let all = match repository::list_secrets(&state.pool, &uid).await {
+        Ok(list) => list,
+        Err(e) => return format!("error: {}", e),
+    };
+    let mut added = 0;
+    for sec in all
+        .iter()
+        .filter(|s| s.ssh_agent && s.secret_kind == "ssh_key" && !s.passphrase_protected)
+    {
+        if let Ok(pem) = crate::secrets::decrypt_for_user(&state.pool, &uid, &sec.value_enc).await {
+            if crate::secrets::ssh_agent::add_key_to_agent(&sec.name, &pem).is_ok() {
+                added += 1;
+            }
+        }
+    }
+    format!("offered {} key(s) to ssh-agent", added)
 }
 
 /// D105: re-scan .desktop files → app entities. Returns a short status.
