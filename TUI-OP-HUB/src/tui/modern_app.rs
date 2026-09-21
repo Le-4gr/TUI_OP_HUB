@@ -674,6 +674,8 @@ pub struct ModernApp {
     /// SSH host manager panel (Secrets → `H`)
     ssh_panel: Option<SshPanel>,
     ssh_import_panel: Option<SshImportPanel>,
+    /// D140: passphrases typed in the import panel, keyed by private-key path
+    ssh_import_pass: std::collections::HashMap<String, String>,
     // New project creation form (US-PROJ)
     new_project_open: bool,
     new_project_name: String,
@@ -845,6 +847,9 @@ struct SshImportPanel {
     items: Vec<SshImportItem>,
     selected: usize,
     message: Option<String>,
+    /// D140: passphrase typed in the panel (attached to the selected item)
+    pass_buf: String,
+    pass_editing: bool,
 }
 
 fn ssh_scan_dir(dir: &std::path::Path) -> Vec<SshImportItem> {
@@ -959,6 +964,7 @@ impl ModernApp {
             config_store_dir: dirs_home().join(".config/tui-op-hub/configs"),
             ssh_panel: None,
             ssh_import_panel: None,
+            ssh_import_pass: std::collections::HashMap::new(),
             dev_user_manager: false,
             dev_user_list: Vec::new(),
             dev_user_selected: 0,
@@ -3323,6 +3329,8 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 items,
                 selected: 0,
                 message: None,
+                pass_buf: String::new(),
+                pass_editing: false,
             });
             return;
         }
@@ -3962,6 +3970,8 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                         items,
                         selected: 0,
                         message: None,
+                        pass_buf: String::new(),
+                        pass_editing: false,
                     });
                 }
             }
@@ -8216,6 +8226,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         &mut self,
         priv_path: &std::path::Path,
         pub_path: Option<&std::path::Path>,
+        passphrase: Option<&str>,
     ) -> anyhow::Result<bool> {
         let user_id = self.current_user_profile_id().await;
         let stem = priv_path
@@ -8238,6 +8249,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             passphrase_protected: priv_pem.contains("ENCRYPTED"),
             ssh_agent: true,
         };
+        let _ = passphrase; // typed passphrase is session-scoped (agent offer)
         repository::create_secret_meta(
             &*self.pool,
             &user_id,
@@ -8275,6 +8287,15 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         Ok(true)
     }
 
+    /// D140: stash the typed passphrase for the selected key — import_ssh_file
+    /// keeps it in memory for this session and the agent offer passes it to
+    /// ssh-add via SSH_ASKPASS (no terminal typing needed).
+    fn store_pass_for_import(&mut self, priv_path: &std::path::Path, pass: &str) {
+        let key = priv_path.to_string_lossy().to_string();
+        self.ssh_import_pass
+            .insert(key, pass.to_string());
+    }
+
     fn ssh_import_rescan(&mut self) {
         if let Some(panel) = self.ssh_import_panel.as_mut() {
             let expanded = expand_tilde(panel.path.trim());
@@ -8303,7 +8324,11 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         let mut imported = 0usize;
         let mut skipped = 0usize;
         for (priv_path, pub_path) in picks {
-            match self.import_ssh_file(&priv_path, pub_path.as_deref()).await {
+            let pass = self
+                .ssh_import_pass
+                .get(priv_path.to_string_lossy().as_ref())
+                .cloned();
+            match self.import_ssh_file(&priv_path, pub_path.as_deref(), pass.as_deref()).await {
                 Ok(true) => imported += 1,
                 Ok(false) => skipped += 1,
                 Err(e) => {
@@ -8361,6 +8386,62 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             KeyCode::Char('y') if !editing => {
                 self.ssh_import_selected().await;
             }
+            KeyCode::Char('c') if !editing => {
+                // D140: copy the selected PUBLIC key to the clipboard (GitHub
+                // → Settings → SSH keys consumes exactly this)
+                let picked = self.ssh_import_panel.as_ref().and_then(|p| {
+                    p.items.get(p.selected).map(|it| (it.name.clone(), pub_path_if(&it.path)))
+                });
+                match picked {
+                    Some((name, Some(pub_path))) => {
+                        match std::fs::read_to_string(&pub_path) {
+                            Ok(pem) => match arboard::Clipboard::new() {
+                                Ok(mut cb) => {
+                                    let _ = cb.set_text(pem.trim_end());
+                                    if let Some(p2) = self.ssh_import_panel.as_mut() {
+                                        p2.message = Some(format!(
+                                            "\u{2713} public key '{}' copied — paste into GitHub",
+                                            name
+                                        ));
+                                    }
+                                }
+                                Err(e) => {
+                                    if let Some(p2) = self.ssh_import_panel.as_mut() {
+                                        p2.message = Some(format!("\u{2717} clipboard: {}", e));
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                if let Some(p2) = self.ssh_import_panel.as_mut() {
+                                    p2.message = Some(format!("\u{2717} read {}: {}", pub_path.display(), e));
+                                }
+                            }
+                        }
+                    }
+                    Some((name, None)) => {
+                        if let Some(p2) = self.ssh_import_panel.as_mut() {
+                            p2.message = Some(format!("\u{2717} no .pub file for {}", name));
+                        }
+                    }
+                    None => {}
+                }
+            }
+            KeyCode::Char('p') if !editing => {
+                // D140: ask for the passphrase of the selected key inline —
+                // the typed passphrase is kept for the ssh-add step
+                if let Some(panel) = self.ssh_import_panel.as_mut() {
+                    if let Some(it) = panel.items.get_mut(panel.selected) {
+                        if it.is_private {
+                            panel.pass_editing = !panel.pass_editing;
+                            panel.message = Some(
+                                "type the passphrase, Enter stores it with this import".to_string(),
+                            );
+                        } else {
+                            panel.message = Some("select a PRIVATE key first".to_string());
+                        }
+                    }
+                }
+            }
             KeyCode::Char('e') if !editing => {
                 // D123: file explorer (the same one the Configs tab uses) to
                 // pick the scan directory
@@ -8411,6 +8492,36 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 if let Some(panel) = self.ssh_import_panel.as_mut() {
                     panel.path.pop();
                 }
+            }
+            // D140: passphrase typing for the selected key (inline, masked)
+            KeyCode::Char(c) if self.ssh_import_panel.as_ref().map_or(false, |p| p.pass_editing) => {
+                if let Some(panel) = self.ssh_import_panel.as_mut() {
+                    panel.pass_buf.push(c);
+                }
+            }
+            KeyCode::Backspace if self.ssh_import_panel.as_ref().map_or(false, |p| p.pass_editing) => {
+                if let Some(panel) = self.ssh_import_panel.as_mut() {
+                    panel.pass_buf.pop();
+                }
+            }
+            KeyCode::Enter if self.ssh_import_panel.as_ref().map_or(false, |p| p.pass_editing) => {
+                // store the typed passphrase with the SELECTED key so the
+                // agent offer can use it (ssh-add runs with SSH_ASKPASS)
+                let (priv_path, pass) = match self.ssh_import_panel.as_ref() {
+                    Some(p2) => match p2.items.get(p2.selected) {
+                        Some(it) => (it.path.clone(), p2.pass_buf.clone()),
+                        None => return,
+                    },
+                    None => return,
+                };
+                if let Some(panel) = self.ssh_import_panel.as_mut() {
+                    panel.pass_editing = false;
+                    panel.message = Some(format!(
+                        "\u{2713} passphrase stored for {} — import now uses it",
+                        priv_path.display()
+                    ));
+                }
+                self.store_pass_for_import(&priv_path, &pass);
             }
             _ => {}
         }
@@ -8493,13 +8604,18 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         let list = Paragraph::new(lines);
         f.render_widget(list, chunks[1]);
 
-        let msg = panel.message.clone().unwrap_or_default();
+        let pass_line = if panel.pass_editing {
+            format!("passphrase for {}: {}", panel.items.get(panel.selected).map(|it| it.name.clone()).unwrap_or_default(), "*".repeat(panel.pass_buf.chars().count()))
+        } else {
+            String::new()
+        };
+        let msg = if !panel.pass_editing && !pass_line.is_empty() { pass_line } else { panel.message.clone().unwrap_or_default() };
         f.render_widget(
             Paragraph::new(Span::styled(msg, Style::default().fg(self.ui.theme.border))),
             chunks[2],
         );
 
-        let hints = "Enter: import selected + offer to agent · Space: toggle · a: select all · e: file explorer (pick dir) · Tab: edit path · Esc: close";
+        let hints = "Enter: import selected + offer to agent · Space: toggle · a: select all · e: file explorer (pick dir) · p: passphrase · c: copy public key (for GitHub) · Esc: close";
         f.render_widget(
             Paragraph::new(Span::styled(hints, Style::default().fg(self.ui.theme.border))),
             chunks[3],
