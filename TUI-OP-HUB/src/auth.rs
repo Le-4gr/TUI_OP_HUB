@@ -534,6 +534,22 @@ pub async fn first_user_id(pool: &SqlitePool) -> AppResult<Option<String>> {
     Ok(row.map(|r| r.try_get::<String, _>(0).unwrap_or_default()))
 }
 
+/// D129: auto-login needs BOTH the profile id AND the username — the TUI
+/// stores the USERNAME in current_user_id (current_user_profile_id resolves
+/// it via get_or_create_user(username)); feeding it a UUID silently created
+/// a phantom account and SSH imports landed where nobody could see them.
+pub async fn first_user(pool: &SqlitePool) -> AppResult<Option<(String, String)>> {
+    let row = sqlx::query("SELECT id, username FROM user_profiles ORDER BY created_at ASC LIMIT 1")
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| {
+        (
+            r.try_get::<String, _>(0).unwrap_or_default(),
+            r.try_get::<String, _>(1).unwrap_or_default(),
+        )
+    }))
+}
+
 /// D121: does `user_id` have a usable secrets key already persisted?
 pub async fn user_has_key(pool: &SqlitePool, user_id: &str) -> AppResult<bool> {
     let row = sqlx::query("SELECT key_b64 FROM user_keys WHERE user_id = ?")

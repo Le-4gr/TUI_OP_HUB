@@ -3309,6 +3309,23 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             self.keybinds_overlay = !self.keybinds_overlay;
             return;
         }
+        // D129: global panel keybinds — Secrets shift-I MUST open the SSH
+        // import window. It used to be an arm inside handle_dashboard_key,
+        // where any earlier dashboard arm (config/number/secret-form keys)
+        // could shadow it; routing it here makes it unreachable-proof.
+        if key.code == KeyCode::Char('I') && self.ui.state == AppState::Secrets {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            let dir = format!("{}/.ssh", home);
+            let items = ssh_scan_dir(std::path::Path::new(&dir));
+            self.ssh_import_panel = Some(SshImportPanel {
+                path: dir,
+                path_editing: false,
+                items,
+                selected: 0,
+                message: None,
+            });
+            return;
+        }
 
         match self.ui.state {
             AppState::Login => {
@@ -4151,11 +4168,14 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         if std::env::var("TUI_OP_HUB_NO_AUTO_LOGIN").map_or(false, |v| v == "1") {
             return false;
         }
-        match crate::auth::first_user_id(&self.pool).await {
-            Ok(Some(user_id)) => {
+        match crate::auth::first_user(&self.pool).await {
+            Ok(Some((user_id, username))) => {
                 match crate::auth::user_has_key(&self.pool, &user_id).await {
                     Ok(true) => {
-                        self.current_user_id = Some(user_id);
+                        // D129: the USERNAME (attempt_login stores the username
+                        // too — a UUID here created a phantom account whose
+                        // secrets nobody could see, breaking SSH import)
+                        self.current_user_id = Some(username);
                         // same post-login flow as attempt_login
                         self.ui.login_state.auth_success();
                         self.load_ssh_agent_keys().await;
@@ -11866,6 +11886,35 @@ mod tests {
     /// Scenario: cancel a new command
     /// Given the command form is open, when Esc is pressed, then the form closes
     /// and nothing is saved.
+    /// Scenario: Secrets shift-I opens the SSH import window (D118).
+    /// Regression: the Knowledge import-popup arm used to shadow this key.
+    #[tokio::test]
+    async fn given_secrets_when_shift_i_then_ssh_import_window_opens() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Secrets;
+
+        app.handle_key(key(KeyCode::Char('I'))).await;
+
+        assert!(
+            app.ssh_import_panel.is_some(),
+            "shift-I on Secrets must open the SSH import window"
+        );
+        let panel = app.ssh_import_panel.as_ref().unwrap();
+        assert!(panel.path.ends_with(".ssh"), "defaults to ~/.ssh");
+    }
+
+    /// Scenario: Knowledge shift-I still opens the knowledge import popup.
+    #[tokio::test]
+    async fn given_knowledge_when_shift_i_then_knowledge_import_opens() {
+        let mut app = test_app().await;
+        app.ui.state = AppState::Knowledge;
+
+        app.handle_key(key(KeyCode::Char('I'))).await;
+
+        assert!(app.import_input.is_some());
+        assert!(app.ssh_import_panel.is_none());
+    }
+
     #[tokio::test]
     async fn given_command_form_open_when_esc_then_form_closes() {
         let mut app = test_app().await;
