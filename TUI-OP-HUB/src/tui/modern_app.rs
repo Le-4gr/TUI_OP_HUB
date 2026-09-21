@@ -8708,91 +8708,66 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         let Ok(all) = repository::list_secrets(&*self.pool, &user_id).await else {
             return;
         };
-        let mut added = 0;
-        let mut unlocked = 0;
-        let mut silent_unlocked = 0;
+        // D145: ONE shared offer handles plain keys and locked keys WITH a
+        // stored passphrase (same code path as headless start + the API
+        // endpoint — tested end-to-end in tests/ssh_agent_flow.rs).
+        let out = secrets::ssh_agent::offer_user_keys(&*self.pool, &user_id).await;
+        // D119: locked keys WITHOUT a stored passphrase get a TERMINAL window
+        // running ssh-add — the user types the passphrase there (the shared
+        // offer cannot prompt and counted them as skipped).
+        let mut opened = 0;
         let mut skipped = 0;
         for secret in all
             .iter()
-            .filter(|s| s.ssh_agent && s.secret_kind == "ssh_key")
+            .filter(|s| s.ssh_agent && s.secret_kind == "ssh_key" && s.passphrase_protected)
         {
+            let stem = secret
+                .name
+                .strip_prefix("ssh:")
+                .unwrap_or(&secret.name)
+                .to_string();
+            if all.iter().any(|p| p.name == format!("ssh-pass:{}", stem)) {
+                continue; // handled (or attempted) silently by the shared offer
+            }
             match secrets::decrypt_for_user(&*self.pool, &user_id, &secret.value_enc).await {
                 Ok(pem) => {
-                    // D119: passphrase-locked keys get a TERMINAL window running
-                    // ssh-add — the user types the passphrase there; skipping
-                    // them made agent use impossible without removing the lock
-                    if secret.passphrase_protected {
-                        // D145: a STORED passphrase (typed at import) unlocks
-                        // the key silently — no terminal window at all
-                        let stem = secret
-                            .name
-                            .strip_prefix("ssh:")
-                            .unwrap_or(&secret.name)
-                            .to_string();
-                        let pass_name = format!("ssh-pass:{}", stem);
-                        let mut done = false;
-                        if let Some(p) = all.iter().find(|s| s.name == pass_name) {
-                            if let Ok(pass) =
-                                secrets::decrypt_for_user(&*self.pool, &user_id, &p.value_enc)
-                                    .await
-                            {
-                                if secrets::ssh_agent::add_key_with_pass(&secret.name, &pem, &pass)
-                                    .is_ok()
-                                {
-                                    silent_unlocked += 1;
-                                    done = true;
-                                }
+                    let key_file = std::env::temp_dir().join(format!(
+                        "tui-op-hub-ssh-{}.pem",
+                        std::process::id()
+                    ));
+                    if std::fs::write(&key_file, &pem).is_err() {
+                        skipped += 1;
+                        continue;
+                    }
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(
+                            &key_file,
+                            std::fs::Permissions::from_mode(0o600),
+                        );
+                    }
+                    match terminal_window_command_for(
+                        &format!("ssh-add {} && rm -f {}", key_file.display(), key_file.display()),
+                        None,
+                    ) {
+                        Some((prog, args)) => {
+                            let spawned =
+                                std::process::Command::new(&prog).args(&args).spawn();
+                            match spawned {
+                                Ok(_) => opened += 1,
+                                Err(_) => skipped += 1,
                             }
                         }
-                        if done {
-                            continue;
-                        }
-                        let key_file = std::env::temp_dir().join(format!(
-                            "tui-op-hub-ssh-{}.pem",
-                            std::process::id()
-                        ));
-                        if std::fs::write(&key_file, &pem).is_err() {
-                            skipped += 1;
-                            continue;
-                        }
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            let _ = std::fs::set_permissions(
-                                &key_file,
-                                std::fs::Permissions::from_mode(0o600),
-                            );
-                        }
-                        match terminal_window_command_for(
-                            &format!("ssh-add {} && rm -f {}", key_file.display(), key_file.display()),
-                            None,
-                        ) {
-                            Some((prog, args)) => {
-                                let spawned = std::process::Command::new(&prog)
-                                    .args(&args)
-                                    .spawn();
-                                match spawned {
-                                    Ok(_) => unlocked += 1,
-                                    Err(_) => skipped += 1,
-                                }
-                            }
-                            None => skipped += 1,
-                        }
-                    } else {
-                        match secrets::ssh_agent::add_key_to_agent(&secret.name, &pem) {
-                            Ok(()) => added += 1,
-                            Err(e) => {
-                                self.status_message = Some(format!("{}", e));
-                            }
-                        }
+                        None => skipped += 1,
                     }
                 }
-                Err(e) => self.status_message = Some(format!("{}", e)),
+                Err(_) => skipped += 1,
             }
         }
         self.status_message = Some(format!(
             "ssh-agent: {} key(s) added, {} unlocked (stored passphrase), {} opened in a terminal, {} skipped",
-            added, silent_unlocked, unlocked, skipped
+            out.offered, out.unlocked, opened, out.skipped
         ));
     }
 
