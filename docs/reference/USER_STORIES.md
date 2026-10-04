@@ -508,3 +508,25 @@ starter kits without touching core.
 │  P1  ████████████████████████████████████████████████████│
 │  P2  ██████████████████████████████████████████          │
 └─────────────────────────────────────────────────────────┘
+
+---
+
+## �� Phase 5 — MyDesk Coupling (US-MDSK / US-MCP)
+
+> Source: MyDesk v2 audit + 2026-10 brainstorm. The hub becomes MyDesk's
+> standalone secrets store and automation backend — one XChaCha20 vault,
+> TUI-manageable, cross-machine-ready. OpenCode connects via a hub-native
+> MCP server.
+
+| ID | Story | Priority | Points |
+|---|---|---|---|
+| `US-MDSK-01` | As a **User**, I want MyDesk to store remembered SSH-key passphrases in the **hub secrets vault** instead of a plaintext-adjacent local file, so that one encrypted store serves shell + TUI + future machines. | 🔴 | 8 |
+| `US-MDSK-02` | As a **User**, I want my MyDesk keys registry (keys.json) mirrored into hub entities, so that keys are importable via shift-I and visible in the Secrets tab. | 🟡 | 5 |
+| `US-MDSK-03` | As a **User**, I want MyDesk system status (theme, agent state, fault reports) pushed to the hub as entities, so that automation and cross-machine sync see the desktop state. | 🟢 | 3 |
+| `US-MCP-01` | As a **User**, I want a hub-native MCP server (`tui-op-hub mcp`, stdio) exposing entity query/run, workflow trigger and secrets get as MCP tools, so that AI agents (OpenCode) can drive the hub. | 🔴 | 8 |
+| `US-MCP-02` | As a **User**, I want an OpenCode integration preset (mcp entry + a `mydesk` skill), so that agents know the hub surface without manual config. | 🟡 | 3 |
+| `US-PROC-02` | As a **User**, I want an interactive process list with kill from the Dashboard monitor panels, so that I can manage runaway processes in the hub. | 🟡 | 5 |
+| `US-PKG-02` | As a **User**, I want a package manager tab with nix-profile + declarative lists, search, add/remove/try and stable/unstable channel switching (mydesk-pkg parity), so that package work happens without leaving the hub. | 🟡 | 8 |
+| `US-ENV-01` | As a **User**, I want per-project environment variables stored in the secrets vault and exported in workflow runners, so that automation credentials never sit in plaintext. | 🟢 | 5 |
+
+**Order of attack:** US-MDSK-01 → US-MCP-01 → US-PROC-02 → US-PKG-02 → US-ENV-01 → the rest.

@@ -279,7 +279,7 @@ pub async fn import_knowledge_with_mode(
             }
         }
         let name = if matches!(mode, DuplicateMode::Rename) {
-            let mut candidate = item.name.clone();
+            let mut candidate;
             let mut n = 1;
             loop {
                 let suffix = if n == 1 {
@@ -358,7 +358,7 @@ pub async fn import_knowledge_with_mode(
             }
         }
         let name = if matches!(mode, DuplicateMode::Rename) {
-            let mut candidate = item.name.clone();
+            let mut candidate;
             let mut n = 1;
             loop {
                 let suffix = if n == 1 {

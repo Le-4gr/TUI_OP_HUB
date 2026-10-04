@@ -52,6 +52,11 @@ stop/cancel (US-WF-09), systemd/cron integration (US-DEP-04), secrets v2
 - Multi-database contexts — US-DB-01..06
 - Web UI — US-WEB-01..04 · Cross-machine sync — US-SYNC-01..04 · Backup/export — US-BAK-01..04
 
+## 🔴 Phase 5 — MyDesk Coupling (next)
+- Hub as MyDesk's secrets store (remembered SSH passphrases move off disk) — US-MDSK-01..03
+- Hub-native MCP server for AI agents (OpenCode) — US-MCP-01..02
+- Process manager upgrade, package manager tab, per-project env — US-PROC-02, US-PKG-02, US-ENV-01
+
 ## Release cadence
 Patch releases for fixes; minor versions per completed phase milestone; the
 [`WORK.md`](../development/WORK.md) log doubles as the changelog source.

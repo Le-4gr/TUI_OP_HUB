@@ -6,7 +6,7 @@
 //! run suspended (raw mode off, alternate screen left) so they render cleanly
 //! on top of the hub.
 
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use std::path::PathBuf;
 
 /// What the picker should return.

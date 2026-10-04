@@ -1862,8 +1862,10 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             AppState::Workflows => self.fetch_workflows().await?,
             AppState::Secrets => self.fetch_secrets().await?,
             AppState::Configs => self.fetch_configs().await?,
-            AppState::Dashboard => self.fetch_stats().await?,
-            AppState::Dashboard => self.fetch_monitor().await,
+            AppState::Dashboard => {
+                self.fetch_stats().await?;
+                self.fetch_monitor().await;
+            }
             AppState::Plugins => self.fetch_plugins().await,
             _ => {}
         }
@@ -2113,9 +2115,6 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             }
             AppState::Knowledge => {
                 // ONE knowledge tab: filtered list (US-TUI-11/12)
-                self.render_commands_list(f);
-            }
-            AppState::Knowledge => {
                 self.render_commands_list(f);
             }
             AppState::Projects => {
@@ -3360,8 +3359,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             | AppState::Projects
             | AppState::Workflows
             | AppState::Secrets
-            | AppState::Configs
-            | AppState::Knowledge => {
+            | AppState::Configs => {
                 // Handle dashboard and other app state keys
                 self.handle_dashboard_key(key).await;
             }
@@ -3788,6 +3786,32 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 if self.ui.state == AppState::Secrets {
                     self.open_ssh_panel().await;
                 }
+                // Plugins: toggle headless trust (US-PLG leftover) — trusted
+                // plugins auto-approve on headless service startup.
+                if self.ui.state == AppState::Plugins {
+                    if let Some(entry) = self.plugins_list.get_selected().cloned() {
+                        let new_trust = !entry.trusted_headless;
+                        match self
+                            .plugins
+                            .set_trusted_headless(&entry.manifest.id, new_trust)
+                            .await
+                        {
+                            Ok(()) => {
+                                let mark = if new_trust {
+                                    "\u{2713} Enabled"
+                                } else {
+                                    "\u{2713} Disabled"
+                                };
+                                self.status_message = Some(format!(
+                                    "{} headless trust for {}",
+                                    mark, entry.manifest.id
+                                ));
+                                self.fetch_plugins().await;
+                            }
+                            Err(e) => self.status_message = Some(format!("{}", e)),
+                        }
+                    }
+                }
             }
             KeyCode::Char('u') => {
                 // Admin user management (Settings → `u`, US-SEC)
@@ -3903,34 +3927,6 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                     self.open_project_actions().await;
                 }
             }
-            KeyCode::Char('H') => {
-                // Plugins: toggle headless trust (US-PLG leftover) — trusted
-                // plugins auto-approve on headless service startup.
-                if self.ui.state == AppState::Plugins {
-                    if let Some(entry) = self.plugins_list.get_selected().cloned() {
-                        let new_trust = !entry.trusted_headless;
-                        match self
-                            .plugins
-                            .set_trusted_headless(&entry.manifest.id, new_trust)
-                            .await
-                        {
-                            Ok(()) => {
-                                let mark = if new_trust {
-                                    "\u{2713} Enabled"
-                                } else {
-                                    "\u{2713} Disabled"
-                                };
-                                self.status_message = Some(format!(
-                                    "{} headless trust for {}",
-                                    mark, entry.manifest.id
-                                ));
-                                self.fetch_plugins().await;
-                            }
-                            Err(e) => self.status_message = Some(format!("{}", e)),
-                        }
-                    }
-                }
-            }
             KeyCode::Char('e') => {
                 // Plugins: toggle enabled state (US-PLG-10)
                 if self.ui.state == AppState::Plugins {
@@ -3955,24 +3951,6 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 // Secrets: offer all ssh-agent keys to the running agent (US-SEC)
                 if self.ui.state == AppState::Secrets {
                     self.load_ssh_agent_keys().await;
-                }
-            }
-            KeyCode::Char('I') => {
-                // D118: Secrets — open the SSH import window (any directory,
-                // private-only keys included, per-key selection)
-                if self.ui.state == AppState::Secrets {
-                    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                    let dir = format!("{}/.ssh", home);
-                    let items = ssh_scan_dir(std::path::Path::new(&dir));
-                    self.ssh_import_panel = Some(SshImportPanel {
-                        path: dir,
-                        path_editing: false,
-                        items,
-                        selected: 0,
-                        message: None,
-                        pass_buf: String::new(),
-                        pass_editing: false,
-                    });
                 }
             }
             KeyCode::Char('t') => {
@@ -5119,14 +5097,6 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 ("c", "Copy"),
                 ("v", "Visual"),
                 ("/", "Find"),
-                ("?", "Keybinds"),
-                ("q", "Quit"),
-            ],
-            AppState::Knowledge => vec![
-                ("\u{2191}\u{2193}", "Select"),
-                ("Enter", "Open"),
-                ("n", "New (of type)"),
-                ("3/4/5", "Quick jump"),
                 ("?", "Keybinds"),
                 ("q", "Quit"),
             ],
@@ -8716,7 +8686,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         // running ssh-add — the user types the passphrase there (the shared
         // offer cannot prompt and counted them as skipped).
         let mut opened = 0;
-        let mut skipped = 0;
+        let mut _skipped = 0;
         for secret in all
             .iter()
             .filter(|s| s.ssh_agent && s.secret_kind == "ssh_key" && s.passphrase_protected)
@@ -8736,7 +8706,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                         std::process::id()
                     ));
                     if std::fs::write(&key_file, &pem).is_err() {
-                        skipped += 1;
+                        _skipped += 1;
                         continue;
                     }
                     #[cfg(unix)]
@@ -8756,17 +8726,17 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                                 std::process::Command::new(&prog).args(&args).spawn();
                             match spawned {
                                 Ok(_) => opened += 1,
-                                Err(_) => skipped += 1,
+                                Err(_) => _skipped += 1,
                             }
                         }
-                        None => skipped += 1,
+                        None => _skipped += 1,
                     }
                 }
-                Err(_) => skipped += 1,
+                Err(_) => _skipped += 1,
             }
         }
         self.status_message = Some(format!(
-            "ssh-agent: {} key(s) added, {} unlocked (stored passphrase), {} opened in a terminal, {} skipped",
+            "ssh-agent: {} key(s) added, {} unlocked (stored passphrase), {} opened in a terminal, {} _skipped",
             out.offered, out.unlocked, opened, out.skipped
         ));
     }
@@ -9822,7 +9792,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
     /// Keys for the jobs panel (stop/kill running things).
     async fn handle_jobs_panel_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('j') => {
+            KeyCode::Esc | KeyCode::Char('q') => {
                 self.jobs_panel = None;
             }
             KeyCode::Up | KeyCode::Char('k') => {
@@ -12591,6 +12561,36 @@ mod tests {
         assert!(app.jobs_panel.is_none());
     }
 
+    /// Scenario: vim-style `j` moves down inside the jobs panel instead of
+    /// closing it; Esc remains the explicit close key (US-TUI-03).
+    #[tokio::test]
+    async fn given_jobs_panel_when_j_pressed_then_selection_moves_down() {
+        let mut app = test_app().await;
+        app.jobs_panel = Some(0);
+        app.background_jobs = vec![
+            BgJob {
+                name: "first".into(),
+                pid: 1,
+                kind: "background",
+                started: "00:00:00".into(),
+                child: None,
+            },
+            BgJob {
+                name: "second".into(),
+                pid: 2,
+                kind: "background",
+                started: "00:00:01".into(),
+                child: None,
+            },
+        ];
+
+        app.handle_key(key(KeyCode::Char('j'))).await;
+
+        assert_eq!(app.jobs_panel, Some(1));
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert!(app.jobs_panel.is_none());
+    }
+
     /// Scenario: nohup jobs are tracked and listed too (US-CMD-09).
     #[tokio::test]
     async fn given_run_dialog_when_nohup_then_job_tracked_with_log() {
@@ -13440,6 +13440,43 @@ mod tests {
             "project row saved"
         );
         let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    /// Scenario: `H` on Plugins toggles headless trust for the selected plugin
+    /// even though the same key opens SSH hosts on Secrets (US-PLG-06).
+    #[tokio::test]
+    async fn given_plugins_tab_when_h_pressed_then_headless_trust_toggles() {
+        let mut app = test_app_db().await;
+        let plugin_root =
+            std::env::temp_dir().join(format!("tuihub-trust-{}-plug", std::process::id()));
+        let _ = std::fs::remove_dir_all(&plugin_root);
+        let plugin_dir = plugin_root.join("trusted.plugin");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(
+            plugin_dir.join("plugin.toml"),
+            "id = 'trusted.plugin'\nname = 'Trusted Plugin'\nversion = '1.0.0'\nplugin_type = 'lua'\nentry_point = 'main.lua'\nrequired_capabilities = []\n",
+        )
+        .unwrap();
+        app.plugins = std::sync::Arc::new(crate::plugin::PluginManager::new(
+            app.pool.clone(),
+            plugin_root.clone(),
+        ));
+        app.fetch_plugins().await;
+        app.ui.state = AppState::Plugins;
+
+        app.handle_key(key(KeyCode::Char('H'))).await;
+
+        assert!(app
+            .plugins
+            .is_plugin_trusted_headless("trusted.plugin")
+            .await
+            .unwrap());
+        assert!(app
+            .status_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Enabled headless trust"));
+        let _ = std::fs::remove_dir_all(&plugin_root);
     }
 
     #[tokio::test]
