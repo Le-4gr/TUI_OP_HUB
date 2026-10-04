@@ -32,3 +32,6 @@ tmp/
 
 # ===== Syncthing conflict artifacts (stale duplicates) =====
 *.sync-conflict-*
+# permission-locked syncthing leftovers from the old flattened copy (owned by another UID — undeletable as user)
+/src/
+/tests/
