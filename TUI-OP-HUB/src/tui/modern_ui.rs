@@ -214,6 +214,8 @@ pub enum AppState {
     /// Managed config files (US-CFG-09..12)
     Configs,
     Plugins,
+    /// US-PKG-02: nix profile packages + nixpkgs search.
+    Packages,
     Settings,
     Help,
 }
@@ -883,6 +885,7 @@ impl ModernUI {
         f.render_widget(help_paragraph, inner);
     }
 
+    #[allow(dead_code)]
     fn render_commands(&self, f: &mut Frame) {
         let area = f.area();
 

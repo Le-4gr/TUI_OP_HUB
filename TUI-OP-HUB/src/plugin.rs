@@ -866,7 +866,7 @@ impl PluginManager {
             .execute(&*self.pool)
             .await?;
         if !enabled {
-            self.unload_plugin(plugin_id).await;
+            let _ = self.unload_plugin(plugin_id).await;
         } else {
             let dir = self.plugin_dir.join(plugin_id);
             if dir.is_dir() {

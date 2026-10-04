@@ -579,6 +579,7 @@ impl SshForm {
         }
     }
     /// Build the quick-connect command: `ssh [-i key] [-p port] user@host`.
+    #[allow(dead_code)]
     fn connect_command(&self) -> Option<String> {
         if self.hostname.trim().is_empty() {
             return None;
@@ -640,6 +641,12 @@ pub struct ModernApp {
     /// no terminal hop; the app owns its own windows.
     wants_detach_cmd: Option<(String, String)>, // (command, cwd)
     plugins_list: PluginsListState,
+    /// US-PKG-02: nix profile packages (installed list + nixpkgs search).
+    pkg_items: Vec<String>,
+    pkg_selected: usize,
+    pkg_search: String,
+    pkg_searching: bool,
+    pkg_results: Vec<String>,
     workflow_form: WorkflowFormState,
     secret_form: SecretFormState,
     // Search state
@@ -947,6 +954,11 @@ impl ModernApp {
             wants_terminal_cmd: None,
             wants_detach_cmd: None,
             plugins_list: ListState::new(page_size),
+            pkg_items: Vec::new(),
+            pkg_selected: 0,
+            pkg_search: String::new(),
+            pkg_searching: false,
+            pkg_results: Vec::new(),
             workflow_form: WorkflowFormState::default(),
             secret_form: SecretFormState::default(),
             // Initialize search state
@@ -1004,8 +1016,8 @@ impl ModernApp {
     /// Switch to the tab for digit 1-9 (US-APP-02 tab keys). Works from ANY
     /// screen, including Settings/Advanced, so digits always mean tabs.
     /// Default Tab-cycle order (US-TUI-12): Settings is intentionally LAST.
-    const DEFAULT_TAB_ORDER: [&'static str; 8] =
-        ["dash", "kb", "proj", "wf", "sec", "cfg", "plug", "set"];
+    const DEFAULT_TAB_ORDER: [&'static str; 9] =
+        ["dash", "kb", "proj", "wf", "sec", "cfg", "plug", "pkg", "set"];
 
     /// Resolve the configured Tab-cycle order to AppState values (US-TUI-12).
     /// Unknown ids are dropped; an empty result falls back to the default.
@@ -1019,6 +1031,7 @@ impl ModernApp {
             "sec" => Some(AppState::Secrets),
             "cfg" => Some(AppState::Configs),
             "plug" => Some(AppState::Plugins),
+            "pkg" => Some(AppState::Packages),
             "set" => Some(AppState::Settings),
             _ => None,
         };
@@ -1080,6 +1093,9 @@ impl ModernApp {
             }
             AppState::Plugins => {
                 self.fetch_plugins().await;
+            }
+            AppState::Packages => {
+                self.fetch_packages().await;
             }
             _ => {}
         }
@@ -1256,6 +1272,128 @@ impl ModernApp {
         self.monitor_refreshed = std::time::Instant::now();
     }
     /// Discover plugins and combine with their DB approval/enabled state (US-PLG-10).
+    fn pkg_up(&mut self) {
+        if self.pkg_selected > 0 {
+            self.pkg_selected -= 1;
+        }
+    }
+
+    fn pkg_down(&mut self) {
+        let len = if self.pkg_searching {
+            self.pkg_results.len()
+        } else {
+            self.pkg_items.len()
+        };
+        if self.pkg_selected + 1 < len {
+            self.pkg_selected += 1;
+        }
+    }
+
+    /// US-PKG-02: installed packages from `nix profile list --json`.
+    async fn fetch_packages(&mut self) {
+        let out = tokio::task::spawn_blocking(|| {
+            std::process::Command::new("nix")
+                .args(["profile", "list", "--json"])
+                .output()
+        })
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+        let mut items = Vec::new();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) {
+            if let Some(elements) = v.get("elements").and_then(|e| e.as_array()) {
+                for el in elements {
+                    if let Some(paths) = el.get("storePaths").and_then(|p| p.as_array()) {
+                        if let Some(p0) = paths.first().and_then(|p| p.as_str()) {
+                            let base = p0.rsplit('/').next().unwrap_or(p0);
+                            let name = if base.len() > 33 { &base[33..] } else { base };
+                            let url = el.get("url").and_then(|u| u.as_str()).unwrap_or("");
+                            items.push(format!("{name}  ({url})"));
+                        }
+                    }
+                }
+            }
+        }
+        items.sort();
+        self.pkg_items = items;
+        self.pkg_selected = 0;
+    }
+
+    /// US-PKG-02: `nix search nixpkgs#<query> --json` (top 25 results).
+    async fn packages_search(&mut self) {
+        let q = self.pkg_search.trim().to_string();
+        if q.is_empty() {
+            return;
+        }
+        let out = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("nix")
+                .args(["search", &format!("nixpkgs#{q}"), "--json"])
+                .output()
+        })
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+        let mut results = Vec::new();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) {
+            if let Some(map) = v.as_object() {
+                for (k, val) in map.iter().take(25) {
+                    let attr = k
+                        .strip_prefix("legacyPackages.x86_64-linux.")
+                        .unwrap_or(k);
+                    let ver = val.get("version").and_then(|x| x.as_str()).unwrap_or("?");
+                    let desc = val.get("description").and_then(|x| x.as_str()).unwrap_or("");
+                    results.push(format!("{attr} {ver} — {desc}"));
+                }
+            }
+        }
+        self.pkg_results = results;
+        self.pkg_selected = 0;
+        self.status_message = Some(format!(
+            "{} results for '{}'",
+            self.pkg_results.len(),
+            self.pkg_search.trim()
+        ));
+    }
+
+    async fn packages_add(&mut self, attr: String) {
+        let status = tokio::process::Command::new("nix")
+            .args(["profile", "install", &format!("nixpkgs#{attr}")])
+            .output()
+            .await;
+        let ok = status.map(|o| o.status.success()).unwrap_or(false);
+        self.status_message = Some(if ok {
+            format!("installed {attr} (profile)")
+        } else {
+            format!("install failed: {attr}")
+        });
+        self.fetch_packages().await;
+    }
+
+    async fn packages_remove(&mut self) {
+        let Some(item) = self.pkg_items.get(self.pkg_selected).cloned() else {
+            return;
+        };
+        let name = item.split_whitespace().next().unwrap_or("").to_string();
+        if name.is_empty() {
+            return;
+        }
+        let status = tokio::process::Command::new("nix")
+            .args(["profile", "remove", &name])
+            .output()
+            .await;
+        let ok = status.map(|o| o.status.success()).unwrap_or(false);
+        self.status_message = Some(if ok {
+            format!("removed {name}")
+        } else {
+            format!("remove failed: {name}")
+        });
+        self.fetch_packages().await;
+    }
+
     async fn fetch_plugins(&mut self) {
         let mut entries = Vec::new();
         for manifest in self.plugins.discover_plugins() {
@@ -1895,6 +2033,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 self.fetch_monitor().await;
             }
             AppState::Plugins => self.fetch_plugins().await,
+            AppState::Packages => self.fetch_packages().await,
             _ => {}
         }
         Ok(())
@@ -2167,6 +2306,9 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             }
             AppState::Plugins => {
                 self.render_plugins_list(f);
+            }
+            AppState::Packages => {
+                self.render_packages_list(f);
             }
             AppState::Help => {
                 // Delegate to UI for help
@@ -2927,6 +3069,36 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
     async fn handle_key(&mut self, key: KeyEvent) {
         // Collect finished background workflow runs (US-WF-09) before routing
         self.poll_workflow_task().await;
+        // US-PKG-02: Packages owns its keys (search input mode + list ops).
+        if self.ui.state == AppState::Packages {
+            match key.code {
+                KeyCode::Up => self.pkg_up(),
+                KeyCode::Down => self.pkg_down(),
+                KeyCode::Char('/') => {
+                    self.pkg_searching = !self.pkg_searching;
+                    self.pkg_selected = 0;
+                }
+                KeyCode::Char(c) if self.pkg_searching => self.pkg_search.push(c),
+                KeyCode::Backspace if self.pkg_searching => {
+                    self.pkg_search.pop();
+                }
+                KeyCode::Enter if self.pkg_searching => self.packages_search().await,
+                KeyCode::Enter => {
+                    if let Some(res) = self.pkg_results.get(self.pkg_selected).cloned() {
+                        let attr = res.split_whitespace().next().unwrap_or("").to_string();
+                        if !attr.is_empty() {
+                            self.packages_add(attr).await;
+                        }
+                    }
+                }
+                KeyCode::Char('d') if !self.pkg_searching => self.packages_remove().await,
+                KeyCode::Esc => {
+                    self.pkg_searching = false;
+                }
+                _ => {}
+            }
+            return;
+        }
         // In-TUI file browser is the topmost overlay when open (US-CFG-09) —
         // D123: checked BEFORE the SSH import panel, because the import
         // window can open the explorer (e) to pick the scan directory
@@ -3454,6 +3626,9 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             AppState::Plugins => {
                 self.handle_dashboard_key(key).await;
             }
+            AppState::Packages => {
+                // US-PKG-02: keys handled early in handle_key.
+            }
             AppState::Help => {
                 // Handle help screen keys
                 match key.code {
@@ -3912,9 +4087,20 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 }
             }
             KeyCode::Char('k') => {
-                // SSH/GPG key generation (US-SEC-01) — notify when the tools
-                // are missing instead of failing later
-                if self.ui.state == AppState::Secrets {
+                if self.ui.state == AppState::Dashboard {
+                    // US-PROC-02: kill the selected process from the Dashboard list
+                    if let Some(snap) = &self.monitor_snap {
+                        if let Some(p) = snap.top_processes.get(self.monitor_selected) {
+                            let pid = p.pid;
+                            let ok = self.monitor.kill_process(pid);
+                            self.status_message =
+                                Some(format!("kill {}: {}", pid, if ok { "ok" } else { "failed" }));
+                            self.fetch_monitor().await;
+                        }
+                    }
+                } else if self.ui.state == AppState::Secrets {
+                    // SSH/GPG key generation (US-SEC-01) — notify when the tools
+                    // are missing instead of failing later
                     if keygen::which("ssh-keygen") || keygen::which("gpg") {
                         self.keygen = KeygenState {
                             open: true,
@@ -4053,20 +4239,6 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 // Structured options of the selected command family (US-CMD-01)
                 if matches!(self.ui.state, AppState::Knowledge) {
                     self.open_entity_detail().await;
-                }
-            }
-            KeyCode::Char('k') => {
-                // US-PROC-02: kill the selected process from the Dashboard list
-                if self.ui.state == AppState::Dashboard {
-                    if let Some(snap) = &self.monitor_snap {
-                        if let Some(p) = snap.top_processes.get(self.monitor_selected) {
-                            let pid = p.pid;
-                            let ok = self.monitor.kill_process(pid);
-                            self.status_message =
-                                Some(format!("kill {}: {}", pid, if ok { "ok" } else { "failed" }));
-                            self.fetch_monitor();
-                        }
-                    }
                 }
             }
             KeyCode::Char('f') => {
@@ -4829,6 +5001,59 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         );
     }
 
+    fn render_packages_list(&self, f: &mut Frame) {
+        if self.pkg_searching {
+            self.render_packages_search(f);
+            return;
+        }
+        self.render_list(
+            f,
+            "📦 Packages (nix profile)",
+            &self.pkg_items,
+            self.pkg_selected,
+            self.ui.theme.accent,
+        );
+    }
+
+    /// US-PKG-02: nixpkgs search input + results.
+    fn render_packages_search(&self, f: &mut Frame) {
+        let area = f.area();
+        let chunks = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                ratatui::layout::Constraint::Length(3),
+                ratatui::layout::Constraint::Min(1),
+                ratatui::layout::Constraint::Length(3),
+            ])
+            .split(area);
+        let title = format!(
+            "Search nixpkgs — {}▌  (Enter=search · a=add · Esc=back)",
+            self.pkg_search
+        );
+        let input = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .title(title);
+        f.render_widget(
+            ratatui::widgets::Paragraph::new(self.pkg_search.as_str()).block(input),
+            chunks[0],
+        );
+        let items: Vec<ratatui::widgets::ListItem> = self
+            .pkg_results
+            .iter()
+            .map(|s| ratatui::widgets::ListItem::new(s.as_str()))
+            .collect();
+        let list = ratatui::widgets::List::new(items)
+            .block(
+                ratatui::widgets::Block::default()
+                    .borders(ratatui::widgets::Borders::ALL)
+                    .title("Results"),
+            )
+            .highlight_style(ratatui::style::Style::default().bg(self.ui.theme.accent));
+        let mut state = ratatui::widgets::ListState::default();
+        state.select(Some(self.pkg_selected));
+        f.render_stateful_widget(list, chunks[1], &mut state);
+    }
+
     fn render_projects_list(&self, f: &mut Frame) {
         self.render_list(
             f,
@@ -4888,7 +5113,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             .border_style(Style::default().fg(color))
             .style(Style::default().bg(self.ui.theme.bg));
 
-        let inner = header_block.inner(chunks[0]);
+        let _inner = header_block.inner(chunks[0]);
         f.render_widget(header_block, chunks[0]);
 
         let mut header_text = vec![
@@ -4924,7 +5149,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             ));
         }
 
-        let header = Paragraph::new(Line::from(header_text)).alignment(Alignment::Center);
+        let _header = Paragraph::new(Line::from(header_text)).alignment(Alignment::Center);
 
         // List content
         let list_block = Block::default()
@@ -5050,7 +5275,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                     path.display()
                 ));
                 let _ = self.fetch_stats().await;
-                self.refresh_current_tab().await;
+                let _ = self.refresh_current_tab().await;
             }
             Err(e) => self.status_message = Some(format!("✗ Import failed: {}", e)),
         }
@@ -5059,8 +5284,8 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
     /// Export the knowledge base to the chosen path (secrets excluded).
     async fn export_knowledge_to_path(&mut self, entered: &str) {
         let expanded = expand_tilde(entered);
-        let path = std::path::PathBuf::from(expanded.clone());
-        let user_id = self.current_user_profile_id().await;
+        let _path = std::path::PathBuf::from(expanded.clone());
+        let _user_id = self.current_user_profile_id().await;
         let user_id = self.current_user_profile_id().await;
         let bundle = match crate::share::export_knowledge(
             &*self.pool,
@@ -6635,14 +6860,10 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             }
             return;
         }
-        let Some(panel) = &mut self.ssh_panel else {
+        if self.ssh_panel.is_none() {
             return;
-        };
-        let visible = {
-            // borrow dance: compute the filtered view through &self
-            drop(panel);
-            self.visible_ssh_hosts()
-        };
+        }
+        let visible = self.visible_ssh_hosts();
         let Some(panel) = &mut self.ssh_panel else {
             return;
         };
@@ -6678,7 +6899,6 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 };
                 panel.testing = Some(host.name.clone());
                 panel.message = Some(format!("◌ Testing {}…", host.name));
-                drop(panel);
                 let result = tokio::task::spawn_blocking(move || {
                     crate::secrets::ssh_agent::run_connection_test(
                         &host.hostname,
@@ -7790,7 +8010,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 }
                 self.status_message = Some(format!("\u{2713} Deleted {} {}(s)", count, label));
                 let _ = self.fetch_stats().await;
-                self.refresh_current_tab().await;
+                let _ = self.refresh_current_tab().await;
             }
             Err(e) => self.status_message = Some(format!("\u{2717} {}", e)),
         }
@@ -8149,6 +8369,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
     /// (`secret_kind = "ssh_key"`, ssh_agent flag set, group `ssh`). The
     /// private key is stored encrypted; `S` offers it to the running agent
     /// and `t` opens sessions with it. Re-import is safe (names dedupe).
+    #[allow(dead_code)] // US-MDSK-02 keys-registry mirror will use this
     async fn import_ssh_keys_from_home(&mut self) {
         let user_id = self.current_user_profile_id().await;
         let Ok(home) = std::env::var("HOME") else {
@@ -9486,7 +9707,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         // Labels dim, values bright — readable on every theme (Nord etc.)
         let label_style = Style::default().fg(self.ui.theme.border);
         let value_style = Style::default().fg(self.ui.theme.fg);
-        let label = |s: String| Line::from(vec![Span::styled(s, label_style)]);
+        let _label = |s: String| Line::from(vec![Span::styled(s, label_style)]);
 
         let desc = entity.description.as_deref().unwrap_or("(no description)");
         f.render_widget(
@@ -10129,6 +10350,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
     }
 
     /// `create_new_project` with an injectable parent directory (tests).
+    #[allow(dead_code)] // reserved for project-creation flows
     async fn create_new_project_in(&mut self, parent: &std::path::Path) {
         self.create_new_project_in_opts(parent, false).await;
     }
@@ -13929,10 +14151,11 @@ mod knowledge_nav_tests {
             crate::config::AppConfig::default(),
         );
         let cycle = app.tab_cycle();
-        assert_eq!(cycle.len(), 8);
+        assert_eq!(cycle.len(), 9, "US-PKG-02 added the Packages tab");
         assert_eq!(cycle[0], AppState::Dashboard);
         assert_eq!(cycle[1], AppState::Knowledge);
         assert_eq!(cycle[5], AppState::Configs);
+        assert_eq!(cycle[7], AppState::Packages);
         assert_eq!(cycle[cycle.len() - 1], AppState::Settings, "last tab");
     }
 
@@ -13957,7 +14180,7 @@ mod knowledge_nav_tests {
         let mut app = test_app().await;
         app.config.tui.tab_order = Some("bogus,,nope".to_string());
         let cycle = app.tab_cycle();
-        assert_eq!(cycle.len(), 8, "falls back to the default order");
+        assert_eq!(cycle.len(), 9, "falls back to the default order");
         assert_eq!(cycle[cycle.len() - 1], AppState::Settings);
     }
 
