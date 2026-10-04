@@ -3,6 +3,31 @@
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
 
+## 2026-10-04 — US-MCP-01 implemented (5886a73, pushed)
+
+## 2026-10-04 — MCP smoke fix: ambient-runtime pattern + end-to-end proof (US-MCP-01)
+
+## 2026-10-04 — US-PROC-02: Dashboard process list + kill
+
+- **Top-10 processes by CPU** on the Dashboard monitor: monitor.rs gained `ProcInfo {pid, name, cpu_pct, mem_mb}`, `MonitorSnapshot.top_processes` (snapshot() refreshes processes via `sysinfo::ProcessesToUpdate::All`, sorts desc, truncates 10) and `Monitor::kill_process(pid)`.
+- **TUI wiring**: `monitor_selected` field + `monitor_up`/`monitor_down` (clamped), Up/Down arms in the Dashboard state, `k` kills the selected pid (status message + refresh), render split 60/40 under the monitor boxes (`render_process_list` with accent-selected row + `↑/↓ select · k kill` hint).
+- **Verify**: cargo test 237 lib + 48 BDD + 2 ssh_agent_flow = 287 passed / 0 failed; build OK.
+- Commit: `feat(tui): process list + kill on Dashboard monitor (US-PROC-02)` (dev).
+
+
+- **Bug**: `tui-op-hub mcp` panicked "Cannot start a runtime from within a runtime" — `#[tokio::main]` means the CLI flag handler already runs inside a runtime; both `Runtime::new().block_on` and bare `Handle::current().block_on` panic from a worker thread.
+- **Fix**: the mcp arm now runs `tokio::task::block_in_place(|| handle.block_on(async move { init_pool → migrations → mcp::run }))` — block_in_place moves off the worker, handle.block_on drives the async body.
+- **Lessons**: (1) block_in_place + Handle::current().block_on is the pattern for async subcommand bodies under #[tokio::main]; (2) cargo check ≠ build — the smoke test passed only after `cargo build` (stale target binary masked the fix).
+- **Verified end-to-end**: initialize → protocolVersion 2024-11-05 + serverInfo; tools/list → query_entities + get_secret; tools/call query_entities("docker") returned a real command entity from the live DB. Suite 286 passed / 0 failed.
+- Pushed dev -> origin/dev.
+
+
+- `src/mcp.rs`: `tui-op-hub mcp` subcommand — newline-delimited JSON-RPC 2.0 over stdio (MCP stdio transport). Tools: `query_entities` (FTS5 search via repository), `get_secret` (by-name + decrypt, plaintext never logged). `run_command` deferred. No new deps. Wired from `main.rs` (own pool init mirroring the service path) + `lib.rs pub mod mcp`.
+- 6 unit tests (initialize capabilities, notification → no response, tools list, unknown tool error, get_secret round-trip with TUI_OP_HUB_SECRETS_KEY test env, missing secret error).
+- Verify: cargo check 0 warnings; 286 passed / 0 failed; build OK. Pushed 3caf61d..5886a73 dev → origin/dev.
+- OpenCode wiring: `"mcp": {"tui-op-hub": {"type": "stdio", "command": "tui-op-hub", "args": ["mcp"]}}`.
+
+
 ## 2026-10-04 — US-MDSK-01 + US-MCP-01: hub as the secrets vault + MCP server
 
 - **US-MDSK-01** (aafcf49): `GET /secrets/by-name/{name}` → repository `get_secret_by_name(pool, user_id, name)` → `decrypt_for_user` → `{id, name, value}` plaintext (localhost-trust like /ssh/agent-offer; never logged). Test: by-name round-trip + missing→None (280 → suite green). MyDesk `mydesk-keys remember` now ALSO mirrors the passphrase to the vault via `POST /secrets` (`ssh-pass:<name>`, server-side encrypt; best-effort, pass.json stays the offline fallback).
