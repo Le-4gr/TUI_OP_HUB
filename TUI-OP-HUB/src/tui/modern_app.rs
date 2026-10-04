@@ -633,6 +633,8 @@ pub struct ModernApp {
     monitor: crate::monitor::Monitor,
     monitor_snap: Option<crate::monitor::MonitorSnapshot>,
     monitor_refreshed: std::time::Instant,
+    /// US-PROC-02: selected row in the Dashboard process list.
+    monitor_selected: usize,
     wants_terminal_cmd: Option<(String, String)>, // (command, cwd)
     /// D105: GUI desktop apps (from .desktop files) launch fully detached —
     /// no terminal hop; the app owns its own windows.
@@ -940,6 +942,7 @@ impl ModernApp {
             secret_pass_prompt: None,
             monitor: crate::monitor::Monitor::new(),
             monitor_snap: None,
+            monitor_selected: 0,
             monitor_refreshed: std::time::Instant::now(),
             wants_terminal_cmd: None,
             wants_detach_cmd: None,
@@ -1219,6 +1222,31 @@ impl ModernApp {
                 });
             }
             Err(e) => self.status_message = Some(format!("\u{2717} {}", e)),
+        }
+    }
+
+    /// US-PROC-02: move the Dashboard process-list selection up.
+    fn monitor_up(&mut self) {
+        let len = self
+            .monitor_snap
+            .as_ref()
+            .map(|s| s.top_processes.len())
+            .unwrap_or(0);
+        if len > 0 {
+            self.monitor_selected = self.monitor_selected.min(len - 1);
+            self.monitor_selected = self.monitor_selected.saturating_sub(1);
+        }
+    }
+
+    /// US-PROC-02: move the Dashboard process-list selection down.
+    fn monitor_down(&mut self) {
+        let len = self
+            .monitor_snap
+            .as_ref()
+            .map(|s| s.top_processes.len())
+            .unwrap_or(0);
+        if len > 0 {
+            self.monitor_selected = (self.monitor_selected + 1).min(len - 1);
         }
     }
 
@@ -2271,7 +2299,16 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         );
 
         // Mini-btop monitor boxes (CPU / RAM / Network / Temp+GPU)
-        self.render_monitor_boxes(f, content_rows[1]);
+        // US-PROC-02: monitor boxes on top, process list below
+        let monitor_chunks = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                ratatui::layout::Constraint::Percentage(60),
+                ratatui::layout::Constraint::Percentage(40),
+            ])
+            .split(content_rows[1]);
+        self.render_monitor_boxes(f, monitor_chunks[0]);
+        self.render_process_list(f, monitor_chunks[1]);
 
         // Quick-launch row for installed TUI tools
         self.render_quick_launches(f, content_rows[2]);
@@ -2281,6 +2318,53 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
     }
 
     /// The four mini-btop boxes: CPU, Memory, Network, Temps+GPU (US-PROC-01).
+    /// US-PROC-02: top processes table with selection highlight.
+    fn render_process_list(&self, f: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+        use ratatui::style::{Modifier, Style};
+        let (title, rows): (String, Vec<(String, bool)>) = match &self.monitor_snap {
+            Some(snap) if !snap.top_processes.is_empty() => (
+                " processes  ↑/↓ select · k kill ".into(),
+                snap.top_processes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        (
+                            format!(
+                                "{:>2}  {:<7} {:>5.1}%  {:>7.1} MB  {}",
+                                i + 1,
+                                p.pid,
+                                p.cpu_pct,
+                                p.mem_mb,
+                                p.name
+                            ),
+                            i == self.monitor_selected,
+                        )
+                    })
+                    .collect(),
+            ),
+            _ => (" processes (waiting for first refresh…) ".into(), vec![]),
+        };
+        let items: Vec<ratatui::widgets::ListItem> = rows
+            .iter()
+            .map(|(text, sel)| {
+                ratatui::widgets::ListItem::new(ratatui::text::Line::from(text.clone()).style(
+                    if *sel {
+                        Style::default().fg(ratatui::style::Color::Black).bg(ratatui::style::Color::LightBlue).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    },
+                ))
+            })
+            .collect();
+        let list = ratatui::widgets::List::new(items)
+            .block(
+                ratatui::widgets::Block::default()
+                    .borders(ratatui::widgets::Borders::ALL)
+                    .title(title),
+            );
+        f.render_widget(list, area);
+    }
+
     fn render_monitor_boxes(&self, f: &mut Frame, area: Rect) {
         let boxes = Layout::default()
             .direction(Direction::Horizontal)
@@ -3971,6 +4055,20 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                     self.open_entity_detail().await;
                 }
             }
+            KeyCode::Char('k') => {
+                // US-PROC-02: kill the selected process from the Dashboard list
+                if self.ui.state == AppState::Dashboard {
+                    if let Some(snap) = &self.monitor_snap {
+                        if let Some(p) = snap.top_processes.get(self.monitor_selected) {
+                            let pid = p.pid;
+                            let ok = self.monitor.kill_process(pid);
+                            self.status_message =
+                                Some(format!("kill {}: {}", pid, if ok { "ok" } else { "failed" }));
+                            self.fetch_monitor();
+                        }
+                    }
+                }
+            }
             KeyCode::Char('f') => {
                 // System fetch panel (US-PROC/US-NF)
                 if self.ui.state == AppState::Dashboard {
@@ -4066,6 +4164,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             }
             // Arrow keys for navigation
             KeyCode::Up => match self.ui.state {
+                AppState::Dashboard => self.monitor_up(),
                 AppState::Knowledge => self.commands_list.select_previous(),
                 AppState::Projects => self.projects_list.select_previous(),
                 AppState::Workflows => self.workflows_list.select_previous(),
@@ -4075,6 +4174,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 _ => {}
             },
             KeyCode::Down => match self.ui.state {
+                AppState::Dashboard => self.monitor_down(),
                 AppState::Knowledge => self.commands_list.select_next(),
                 AppState::Projects => self.projects_list.select_next(),
                 AppState::Workflows => self.workflows_list.select_next(),

@@ -34,6 +34,15 @@ pub struct QuickLaunch {
 }
 
 /// One full monitor snapshot for the dashboard panels.
+/// One row of the Dashboard process table (US-PROC-02).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcInfo {
+    pub pid: i32,
+    pub name: String,
+    pub cpu_pct: f32,
+    pub mem_mb: f64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MonitorSnapshot {
     pub cpu_overall: f32,
@@ -48,6 +57,7 @@ pub struct MonitorSnapshot {
     /// Best-effort: (name, utilization %, temp \u00b0C) per GPU via nvidia-smi.
     pub gpus: Vec<(String, f32, f32)>,
     pub quick_launches: Vec<QuickLaunch>,
+    pub top_processes: Vec<ProcInfo>,
 }
 
 impl MonitorSnapshot {
@@ -148,6 +158,7 @@ impl Monitor {
     pub fn snapshot(&mut self) -> MonitorSnapshot {
         self.system.refresh_cpu_usage();
         self.system.refresh_memory();
+        self.system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
         self.networks.refresh();
         self.components.refresh();
 
@@ -192,7 +203,32 @@ impl Monitor {
             temps,
             gpus: query_gpus(),
             quick_launches: detect_quick_launches(crate::keygen::which),
+            top_processes: {
+                let mut rows: Vec<ProcInfo> = self
+                    .system
+                    .processes()
+                    .iter()
+                    .map(|(pid, p)| ProcInfo {
+                        pid: pid.as_u32() as i32,
+                        name: p.name().to_string_lossy().into_owned(),
+                        cpu_pct: p.cpu_usage(),
+                        mem_mb: p.memory() as f64 / 1_048_576.0,
+                    })
+                    .collect();
+                rows.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap_or(std::cmp::Ordering::Equal));
+                rows.truncate(10);
+                rows
+            },
         }
+    }
+    /// Kill a process by PID (US-PROC-02). Returns whether a kill signal was sent.
+    pub fn kill_process(&mut self, pid: i32) -> bool {
+        self.system
+            .refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        self.system
+            .process(sysinfo::Pid::from_u32(pid as u32))
+            .map(|p| p.kill())
+            .unwrap_or(false)
     }
 }
 
@@ -279,5 +315,20 @@ mod tests {
         for q in &snap.quick_launches {
             assert!(q.key.is_ascii_lowercase());
         }
+    }
+
+    use super::*;
+
+    /// US-PROC-02: the monitor snapshot carries a sorted top-process list.
+    #[test]
+    fn given_snapshot_when_taken_then_top_processes_sorted_desc() {
+        let mut m = Monitor::new();
+        let snap = m.snapshot();
+        assert!(!snap.top_processes.is_empty(), "a running system always has processes");
+        let cpus: Vec<f32> = snap.top_processes.iter().map(|p| p.cpu_pct).collect();
+        let mut sorted = cpus.clone();
+        sorted.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        assert_eq!(cpus, sorted, "top_processes must be sorted by cpu desc");
+        assert!(snap.top_processes.len() <= 10);
     }
 }
