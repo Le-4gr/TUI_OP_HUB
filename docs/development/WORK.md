@@ -5,6 +5,15 @@
 
 ## 🎯 Session 36: desktop app scan + SSH key import + headless fixes (completed)
 
+## 2026-10-04 — repo restored + warning cleanup + Phase 5 stories (US-MDSK/US-MCP)
+
+- **Repo restored**: working copy was a flattened duplicate of `TUI-OP-HUB/` at the root (zero commits, no remote). Added `origin` (git@github.com:Le-4gr/TUI_OP_HUB.git), fetched, verified local code identical to `origin/dev`, `git reset --hard origin/dev` + `dev` branch tracking. Root `src/` + `tests/` were permission-locked flattened-copy leftovers — gitignored via root `/src/` + `/tests/` entries (60583bd).
+- **Warning cleanup (3caf61d)**: filepicker.rs unused `AppError` import; duplicate `AppState::Dashboard` arm merged (fetch_stats + fetch_monitor); 4 unreachable match arms in modern_app.rs (~3366 AppState multi-arm, ~3908 'H' handler, ~3962 'I' handler, ~9835) — shadow analysis per site, dead arms merged/narrowed; share/mod.rs `candidate` unused_assignments x2 (decl-only let); D119 `skipped` counter -> `_skipped` scoped rename.
+- **Verify**: cargo check 0 warnings; cargo test 279 passed / 0 failed (229 unit + 48 BDD + 2 ssh_agent_flow); cargo build OK. fmt/clippy components not installed in this toolchain.
+- **Phase 5 stories proposed** (US-MDSK-01/02/03, US-MCP-01/02, US-PROC-02, US-PKG-02, US-ENV-01) in docs/reference/USER_STORIES.md + ROADMAP.md Phase-5 section — MyDesk-coupling: hub secrets vault for MyDesk remembered passphrases, keys registry mirror, hub-native MCP server (`tui-op-hub mcp`), OpenCode preset, process list+kill, package manager tab, per-project env vars.
+- Pushed d90b05b..3caf61d dev -> origin/dev.
+
+
 Companion requests from the MyDesk repo (config repo drives the hub via the
 flake input; commits D105 = 32ce4b9, D112 = a5e724a):
 

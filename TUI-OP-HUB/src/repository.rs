@@ -395,6 +395,23 @@ pub async fn list_secrets(
     Ok(rows)
 }
 
+/// Find a secret by (user_id, name) — MyDesk login-mode looks passphrases up
+/// by key name (US-MDSK-01).
+pub async fn get_secret_by_name(
+    pool: &SqlitePool,
+    user_id: &str,
+    name: &str,
+) -> AppResult<Option<crate::models::Secret>> {
+    let row = sqlx::query_as::<_, crate::models::Secret>(
+        "SELECT * FROM secrets WHERE user_id = ? AND name = ? LIMIT 1",
+    )
+    .bind(user_id)
+    .bind(name)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
 pub async fn update_secret(
     pool: &SqlitePool,
     id: &str,
@@ -1065,6 +1082,29 @@ mod tests {
         assert_eq!(deleted, 2);
         assert_eq!(count_users(&pool).await.unwrap(), 0);
         assert!(list_secrets(&pool, &a.id).await.unwrap().is_empty());
+    }
+    // ── Secrets by-name (US-MDSK-01) ────────────────────────────────────────
+
+    /// Scenario: by-name lookup finds the stored secret; missing name -> None
+    #[tokio::test]
+    async fn given_stored_secret_when_lookup_by_name_then_found_or_none() {
+        let pool = test_pool().await;
+        let uid = get_or_create_user(&pool, "tester").await.unwrap().id;
+        let created = create_secret_full(&pool, &uid, "ssh-pass:gh", "ENC", "ssh_key", false)
+            .await
+            .unwrap();
+
+        let found = get_secret_by_name(&pool, &uid, "ssh-pass:gh")
+            .await
+            .unwrap()
+            .expect("should find the stored secret");
+        assert_eq!(found.id, created.id);
+        assert_eq!(found.name, "ssh-pass:gh");
+
+        let missing = get_secret_by_name(&pool, &uid, "does-not-exist")
+            .await
+            .unwrap();
+        assert!(missing.is_none());
     }
 }
 

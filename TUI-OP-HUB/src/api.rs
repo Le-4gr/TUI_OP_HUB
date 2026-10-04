@@ -126,6 +126,10 @@ pub fn router(pool: Arc<SqlitePool>) -> Router {
                 .put(update_secret_handler)
                 .delete(delete_secret_handler),
         )
+        .route(
+            "/secrets/by-name/{name}",
+            axum::routing::get(secret_by_name_handler),
+        )
         .with_state(state)
 }
 
@@ -463,6 +467,26 @@ async fn create_secret_handler(
             .await
             .map(Json)
             .map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// US-MDSK-01: lookup a secret by NAME (default user scope) and return it
+/// DECRYPTED — the MyDesk keys tool fetches remembered passphrases this way
+/// (localhost-trust contract, same as /ssh/agent-offer; never log).
+async fn secret_by_name_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, String> {
+    let uid = default_user_id(&state.pool).await?;
+    let s = repository::get_secret_by_name(&state.pool, &uid, &name)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("secret not found: {}", name))?;
+    match crate::secrets::decrypt_for_user(&state.pool, &s.user_id, &s.value_enc).await {
+        Ok(val) => Ok(Json(
+            serde_json::json!({"id": s.id, "name": s.name, "value": val}),
+        )),
         Err(e) => Err(e.to_string()),
     }
 }
