@@ -521,6 +521,7 @@ starter kits without touching core.
 | ID | Story | Priority | Points |
 |---|---|---|---|
 | `US-MDSK-01` | As a **User**, I want MyDesk to store remembered SSH-key passphrases in the **hub secrets vault** instead of a plaintext-adjacent local file, so that one encrypted store serves shell + TUI + future machines. | 🔴 | 8 |
+  > **Status: implemented (hub side)** — `GET /secrets/by-name/{name}` returns the decrypted `{id, name, value}` for the first user (localhost-trust contract, same as `/ssh/agent-offer`). MyDesk `mydesk-keys remember` stores `ssh-pass:<name>` into this vault.
 | `US-MDSK-02` | As a **User**, I want my MyDesk keys registry (keys.json) mirrored into hub entities, so that keys are importable via shift-I and visible in the Secrets tab. | 🟡 | 5 |
 | `US-MDSK-03` | As a **User**, I want MyDesk system status (theme, agent state, fault reports) pushed to the hub as entities, so that automation and cross-machine sync see the desktop state. | 🟢 | 3 |
 | `US-MCP-01` | As a **User**, I want a hub-native MCP server (`tui-op-hub mcp`, stdio) exposing entity query/run, workflow trigger and secrets get as MCP tools, so that AI agents (OpenCode) can drive the hub. | 🔴 | 8 |
