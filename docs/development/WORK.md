@@ -1,3 +1,11 @@
+## 2026-10-04 — US-PKG-02 package manager tab + warning hygiene (e322839)
+
+- **US-PKG-02**: new Packages tab (AppState::Packages, tab id "pkg", DEFAULT_TAB_ORDER 8->9, digit 8) — fetch via `nix profile list --json` (storePaths basename, hash-stripped), search via `nix search nixpkgs#<q> --json` (25 rows, legacy-prefix stripped), add/remove through `nix profile install/remove`; '/' search-mode UI (query input + result list; Enter=search in mode / add from results; 'd' remove; Esc back). Async ops via tokio::task::spawn_blocking; status_message feedback.
+- **Real bug fixed**: the US-PROC-02 Dashboard kill arm was UNREACHABLE — a second Char('k') arm (Secrets keygen, US-SEC-01) in the same match shadowed it; merged into one state-aware arm (Dashboard kills, Secrets opens keygen) + `fetch_monitor().await` was missing (unused-Future warning = monitor never refreshed after kill).
+- **Hygiene**: 16 pre-existing warnings resolved — 3 unused Results (`let _ =`), 2 no-op `drop(&mut)` borrow-dance lines replaced with an `is_none()` guard + NLL (double panel binding collapsed), 3 intentional dead-code fns annotated (`#[allow(dead_code)]` w/ story notes: connect_command, import_ssh_keys_from_home for US-MDSK-02, create_new_project_in), unused imports dropped by cargo fix. cargo fix double-prefixed 2 sites (`let _ = let _ =`) — caught + corrected (lesson: substring replaces must exclude already-prefixed forms).
+- **Tests**: tab-order tests updated to 9 tabs w/ Packages at index 7, Settings last. Suite: 237 lib + 48 BDD + 2 ssh_agent_flow = 287 passed / 0 failed; cargo check 0 warnings; build OK.
+- Files: TUI-OP-HUB/src/tui/modern_app.rs, TUI-OP-HUB/src/tui/modern_ui.rs, TUI-OP-HUB/src/plugin.rs. Pushed e322839 dev->origin.
+
 # WORK.md — Active Work Log (AI Agents)
 
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
