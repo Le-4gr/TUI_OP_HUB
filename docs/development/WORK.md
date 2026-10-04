@@ -1,3 +1,9 @@
+## 2026-10-04 — US-ENV-01 per-project env vars (3e014a9)
+
+- **feat(api+wf)**: env vars stored in the secrets vault as `env:<project>:<name>` (D145 naming-convention precedent). REST: GET /env/{project} (list), PUT /env/{project}/{name} (set, server-side encrypt), DELETE /env/{project}/{name} — localhost-trust like agent-offer. Runner: execute_workflow reads the workflow entity's `metadata_json.project`, resolves env via repository::resolve_project_env (decrypt per var), publishes a Lua `project_env` table; run_command injects it into every spawned process (`Command::envs`). Non-fatal warn when resolution fails.
+- **tests**: resolve round-trip (create → resolve → delete → resolve empty); suite 238 lib + 48 BDD + 2 ssh_agent_flow = 288 passed / 0 failed; cargo check 0 warnings; build OK.
+- **verify lessons**: keep using exact-byte splices; test inserted via brace-walk INSIDE mod tests (EOF appends land outside); mod-internal tests need `crate::repository::` qualification (no `repository` name in scope); anyhow::Result from decrypt_for_user needs `.map_err(AppError::Other)` (no Internal variant).
+
 ## 2026-10-04 — US-PKG-02 package manager tab + warning hygiene (e322839)
 
 - **US-PKG-02**: new Packages tab (AppState::Packages, tab id "pkg", DEFAULT_TAB_ORDER 8->9, digit 8) — fetch via `nix profile list --json` (storePaths basename, hash-stripped), search via `nix search nixpkgs#<q> --json` (25 rows, legacy-prefix stripped), add/remove through `nix profile install/remove`; '/' search-mode UI (query input + result list; Enter=search in mode / add from results; 'd' remove; Esc back). Async ops via tokio::task::spawn_blocking; status_message feedback.

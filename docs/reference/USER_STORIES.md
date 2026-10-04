@@ -167,7 +167,7 @@
 
 | ID | Story | Priority | Points |
 |:---|:---|:---:|:---:|
-| `US-ENV-01` | As a **User**, I want to manage **environment variables**, so that I can configure tool behavior per context. | 🟡 | 3 |
+| `US-ENV-01` | As a **User**, I want to manage **environment variables**, so that I can configure tool behavior per context. | 🟡 | 3 |  (IMPLEMENTED 2026-10-04: env vars live in the secrets vault as `env:<project>:<name>`; REST GET/PUT DELETE /env/{project}[/{name}]; workflow runner injects resolved env into `run_command` via the Lua `project_env` table; repository::resolve_project_env used by both API and runner)
 | `US-ENV-02` | As a **User**, I want to create **project-specific environments**, so that each project has isolated settings. | 🟡 | 5 |
 | `US-ENV-03` | As a **User**, I want to manage **Python virtual environments**, so that I can isolate Python dependencies. | 🟡 | 5 |
 | `US-ENV-04` | As a **User**, I want to manage **multiple Python versions**, so that I can work across projects with different requirements. | 🟡 | 5 |
