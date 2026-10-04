@@ -37,8 +37,10 @@ fn handle_cli_flags() -> Option<bool> {
             let config_path = tui_op_hub::config::AppConfig::default_path();
             match tui_op_hub::config::AppConfig::load(&config_path) {
                 Ok(config) => {
-                    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
-                    runtime.block_on(async move {
+                    // main is #[tokio::main] — reuse the ambient runtime (nested
+                    // Runtime::new().block_on panics).
+                    let handle = tokio::runtime::Handle::current();
+                    tokio::task::block_in_place(|| handle.block_on(async move {
                         match tui_op_hub::db::init_pool(&config.database).await {
                             Ok(pool) => {
                                 let pool = std::sync::Arc::new(pool);
@@ -59,7 +61,7 @@ fn handle_cli_flags() -> Option<bool> {
                                 Some(false)
                             }
                         }
-                    })
+                    }))
                 }
                 Err(e) => {
                     eprintln!("tui-op-hub mcp: config load failed: {e}");
