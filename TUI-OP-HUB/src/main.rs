@@ -32,6 +32,41 @@ fn handle_cli_flags() -> Option<bool> {
             println!("{}", tui_op_hub::service::systemd_user_unit());
             Some(true)
         }
+        "mcp" => {
+            // US-MCP-01: serve the hub as an MCP stdio server for AI agents.
+            let config_path = tui_op_hub::config::AppConfig::default_path();
+            match tui_op_hub::config::AppConfig::load(&config_path) {
+                Ok(config) => {
+                    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+                    runtime.block_on(async move {
+                        match tui_op_hub::db::init_pool(&config.database).await {
+                            Ok(pool) => {
+                                let pool = std::sync::Arc::new(pool);
+                                if let Err(e) = tui_op_hub::db::run_migrations(&pool).await {
+                                    eprintln!("tui-op-hub mcp: migrations failed: {e}");
+                                    return Some(false);
+                                }
+                                match tui_op_hub::mcp::run(pool).await {
+                                    Ok(()) => Some(true),
+                                    Err(e) => {
+                                        eprintln!("tui-op-hub mcp: {e}");
+                                        Some(false)
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("tui-op-hub mcp: db pool failed: {e}");
+                                Some(false)
+                            }
+                        }
+                    })
+                }
+                Err(e) => {
+                    eprintln!("tui-op-hub mcp: config load failed: {e}");
+                    Some(false)
+                }
+            }
+        }
         "--install-service" => match tui_op_hub::service::install_service() {
             Ok(path) => {
                 println!("✓ Service installed and enabled: {}", path.display());

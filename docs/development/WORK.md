@@ -3,6 +3,14 @@
 > **STATUS: ONGOING NOW — this file is the live hand-off sheet for AI agents working on the TUI.**
 > Update it at the end of every work session: what was done, what broke, what's next.
 
+## 2026-10-04 — US-MDSK-01 + US-MCP-01: hub as the secrets vault + MCP server
+
+- **US-MDSK-01** (aafcf49): `GET /secrets/by-name/{name}` → repository `get_secret_by_name(pool, user_id, name)` → `decrypt_for_user` → `{id, name, value}` plaintext (localhost-trust like /ssh/agent-offer; never logged). Test: by-name round-trip + missing→None (280 → suite green). MyDesk `mydesk-keys remember` now ALSO mirrors the passphrase to the vault via `POST /secrets` (`ssh-pass:<name>`, server-side encrypt; best-effort, pass.json stays the offline fallback).
+- **US-MCP-01** (this commit): new `src/mcp.rs` — `tui-op-hub mcp` subcommand serves newline-delimited JSON-RPC 2.0 over stdio (MCP stdio transport). Tools: `query_entities` (repository::search_entities FTS5) and `get_secret` (by-name + decrypt_for_user — plaintext never logged). `initialize`/`tools/list`/`tools/call` + JSON-RPC errors (-32700 parse, -32601 unknown, -32000 not-found). `run_command` deferred (process runner reuse needs a dedicated story). No new dependencies (serde_json only). 6 unit tests: initialize capabilities, notification → no response, tools list, unknown tool error, get_secret round-trip (TUI_OP_HUB_SECRETS_KEY test env), missing secret error.
+- **Verify**: cargo check 0 warnings; cargo test 286 passed / 0 failed (236 lib + 48 BDD + 2 ssh_agent_flow); cargo build OK.
+- OpenCode wiring: opencode.jsonc `"mcp": {"tui-op-hub": {"type": "stdio", "command": "tui-op-hub", "args": ["mcp"]}}`.
+
+
 ## 🎯 Session 36: desktop app scan + SSH key import + headless fixes (completed)
 
 ## 2026-10-04 — repo restored + warning cleanup + Phase 5 stories (US-MDSK/US-MCP)

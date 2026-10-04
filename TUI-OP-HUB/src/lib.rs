@@ -9,6 +9,7 @@ pub mod error;
 pub mod filepicker;
 pub mod fuzzy;
 pub mod keygen;
+pub mod mcp;
 pub mod models;
 pub mod monitor;
 pub mod plugin;
