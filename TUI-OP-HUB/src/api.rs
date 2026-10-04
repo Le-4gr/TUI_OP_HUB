@@ -130,6 +130,14 @@ pub fn router(pool: Arc<SqlitePool>) -> Router {
             "/secrets/by-name/{name}",
             axum::routing::get(secret_by_name_handler),
         )
+        .route(
+            "/env/{project}",
+            axum::routing::get(list_env_handler),
+        )
+        .route(
+            "/env/{project}/{name}",
+            axum::routing::put(set_env_handler).delete(delete_env_handler),
+        )
         .with_state(state)
 }
 
@@ -489,6 +497,60 @@ async fn secret_by_name_handler(
         )),
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// US-ENV-01: list env var names for a project (vault convention
+/// `env:<project>:<name>`, localhost-trust like agent-offer).
+async fn list_env_handler(
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+) -> Result<Json<serde_json::Value>, String> {
+    let uid = default_user_id(&state.pool).await?;
+    let names = repository::list_env_var_names(&state.pool, &uid, &project)
+        .await
+        .map_err(|e| e.to_string())?;
+    let prefix = format!("env:{}:", project);
+    let vars: Vec<String> = names.iter().map(|n| n[prefix.len()..].to_string()).collect();
+    Ok(Json(serde_json::json!({"project": project, "vars": vars})))
+}
+
+async fn set_env_handler(
+    State(state): State<AppState>,
+    Path((project, name)): Path<(String, String)>,
+    Json(req): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, String> {
+    let uid = default_user_id(&state.pool).await?;
+    let value = req
+        .get("value")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "body must be {\"value\": string}".to_string())?;
+    let full = format!("env:{}:{}", project, name);
+    if let Some(existing) = repository::get_secret_by_name(&state.pool, &uid, &full)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        repository::delete_secret(&state.pool, &existing.id)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let enc = crate::secrets::encrypt_for_user(&state.pool, &uid, value)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = repository::create_secret_full(&state.pool, &uid, &full, &enc, "env", false)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Json(serde_json::json!({"name": name, "project": project})))
+}
+
+async fn delete_env_handler(
+    State(state): State<AppState>,
+    Path((project, name)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, String> {
+    let uid = default_user_id(&state.pool).await?;
+    let removed = repository::delete_env_var(&state.pool, &uid, &project, &name)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Json(serde_json::json!({"deleted": removed})))
 }
 
 async fn get_secret_handler(

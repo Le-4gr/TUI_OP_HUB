@@ -412,6 +412,62 @@ pub async fn get_secret_by_name(
     Ok(row)
 }
 
+/// US-ENV-01: per-project env vars live in the secrets vault under the
+/// naming convention `env:<project>:<name>` (same pattern as the D145
+/// `ssh:` / `ssh-pass:` conventions). Values are encrypted server-side;
+/// these helpers are the read/resolve layer for the runner.
+pub async fn list_env_var_names(
+    pool: &SqlitePool,
+    user_id: &str,
+    project: &str,
+) -> AppResult<Vec<String>> {
+    let pattern = format!("env:{}:%", project);
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT name FROM secrets WHERE user_id = ? AND name LIKE ? ORDER BY name",
+    )
+    .bind(user_id)
+    .bind(pattern)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
+}
+
+pub async fn resolve_project_env(
+    pool: &SqlitePool,
+    user_id: &str,
+    project: &str,
+) -> AppResult<Vec<(String, String)>> {
+    let prefix_len = format!("env:{}:", project).len();
+    let mut out = Vec::new();
+    for full_name in list_env_var_names(pool, user_id, project).await? {
+        let short = full_name[prefix_len..].to_string();
+        let Some(secret) = get_secret_by_name(pool, user_id, &full_name).await? else {
+            continue;
+        };
+        let value = crate::secrets::decrypt_for_user(pool, user_id, &secret.value_enc)
+            .await
+            .map_err(|e| AppError::Other(e.to_string()))?;
+        out.push((short, value));
+    }
+    Ok(out)
+}
+
+pub async fn delete_env_var(
+    pool: &SqlitePool,
+    user_id: &str,
+    project: &str,
+    name: &str,
+) -> AppResult<bool> {
+    let full = format!("env:{}:{}", project, name);
+    match get_secret_by_name(pool, user_id, &full).await? {
+        Some(secret) => {
+            delete_secret(pool, &secret.id).await?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
 pub async fn update_secret(
     pool: &SqlitePool,
     id: &str,
@@ -1105,6 +1161,41 @@ mod tests {
             .await
             .unwrap();
         assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn given_project_env_when_resolved_then_decrypts() {
+        let pool = test_pool().await;
+        let uid = crate::repository::get_or_create_user(&pool, "tester")
+            .await
+            .expect("user")
+            .id;
+        let enc = crate::secrets::encrypt_for_user(&pool, &uid, "hush321")
+            .await
+            .expect("enc");
+        crate::repository::create_secret_full(
+            &pool,
+            &uid,
+            "env:testproj:FOO",
+            &enc,
+            "env",
+            false,
+        )
+        .await
+        .expect("create");
+        let vars = crate::repository::resolve_project_env(&pool, &uid, "testproj")
+            .await
+            .expect("resolve");
+        assert_eq!(vars, vec![("FOO".to_string(), "hush321".to_string())]);
+        assert!(
+            crate::repository::delete_env_var(&pool, &uid, "testproj", "FOO")
+                .await
+                .expect("delete")
+        );
+        let after = crate::repository::resolve_project_env(&pool, &uid, "testproj")
+            .await
+            .expect("resolve2");
+        assert!(after.is_empty());
     }
 }
 

@@ -116,9 +116,18 @@ impl WorkflowEngine {
         let run_command = lua.create_function(|lua, command: String| {
             tracing::info!(command = %command, "workflow executing command");
 
-            let output = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(&command)
+            // US-ENV-01: the engine exposes per-project env vars as the
+            // `project_env` global table; inject them into every spawned
+            // command so workflow runners see project-specific values.
+            let mut process = std::process::Command::new("sh");
+            process.arg("-c").arg(&command);
+            if let Ok(Some(table)) = lua.globals().get::<Option<mlua::Table>>("project_env")
+            {
+                for pair in table.pairs::<String, String>().flatten() {
+                    process.env(pair.0, pair.1);
+                }
+            }
+            let output = process
                 .output()
                 .map_err(|e| mlua::Error::RuntimeError(format!("Command failed: {}", e)))?;
 
@@ -212,6 +221,33 @@ impl WorkflowEngine {
             match load_user_secrets(&self.lua, &context.pool, user_id).await {
                 Ok(secrets_table) => globals.set("secrets", secrets_table)?,
                 Err(e) => tracing::warn!(error = %e, "could not load secrets for workflow"),
+            }
+        }
+
+        // US-ENV-01: expose per-project env vars as the `project_env` table
+        // (read by run_command for env injection). The project comes from
+        // the workflow entity's metadata JSON `project` key.
+        if let Some(user_id) = &context.user_id {
+            let project = match repository::get_entity(&context.pool, &context.workflow_id).await {
+                Ok(entity) => entity
+                    .metadata_json
+                    .as_deref()
+                    .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                    .and_then(|m| m.get("project").and_then(|p| p.as_str()).map(String::from)),
+                Err(_) => None,
+            };
+            if let Some(project) = project {
+                match repository::resolve_project_env(&context.pool, user_id, &project).await {
+                    Ok(pairs) if !pairs.is_empty() => {
+                        let env_table = self.lua.create_table()?;
+                        for (k, v) in pairs {
+                            env_table.set(k, v)?;
+                        }
+                        globals.set("project_env", env_table)?;
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "could not resolve project env"),
+                }
             }
         }
 
