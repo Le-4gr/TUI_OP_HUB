@@ -226,7 +226,13 @@ impl std::fmt::Display for Project {
 
 impl std::fmt::Display for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name)?;
+        // kind icon up front: 🔑 key material vs 🔒 plain passwords (US-SEC)
+        let icon = match self.secret_kind.as_str() {
+            "ssh_key" | "gpg_key" => "🔑",
+            "api_key" => "🔗",
+            _ => "🔒",
+        };
+        write!(f, "{} {}", icon, self.name)?;
         if let Some(g) = &self.secret_group {
             write!(f, " [{}]", g)?;
         }
@@ -235,6 +241,9 @@ impl std::fmt::Display for Secret {
         }
         if self.passphrase_protected {
             write!(f, " [locked]")?;
+        }
+        if self.ssh_agent {
+            write!(f, " [agent]")?;
         }
         Ok(())
     }

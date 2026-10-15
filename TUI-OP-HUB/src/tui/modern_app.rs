@@ -845,8 +845,10 @@ struct SshImportItem {
     name: String,
     path: std::path::PathBuf,
     is_private: bool,
+    key_type: String,
     passphrase: bool,
     has_pair: bool,
+    imported: bool,
     selected: bool,
 }
 
@@ -863,7 +865,7 @@ struct SshImportPanel {
     pass_editing: bool,
 }
 
-fn ssh_scan_dir(dir: &std::path::Path) -> Vec<SshImportItem> {
+fn ssh_scan_dir(dir: &std::path::Path, vault_names: &[String]) -> Vec<SshImportItem> {
     let mut items = Vec::new();
     let Ok(rd) = std::fs::read_dir(dir) else {
         return items;
@@ -889,6 +891,21 @@ fn ssh_scan_dir(dir: &std::path::Path) -> Vec<SshImportItem> {
         if !is_private && !is_pub {
             continue;
         }
+        // key-type badge for the list (ed25519/rsa/ecdsa/… from the header)
+        let key_type = if is_private {
+            content
+                .lines()
+                .find(|l| l.starts_with("-----BEGIN"))
+                .and_then(|l| l.split_whitespace().nth(2))
+                .unwrap_or("key")
+                .to_string()
+        } else {
+            content
+                .split_whitespace()
+                .last()
+                .unwrap_or("pub")
+                .to_string()
+        };
         let has_pair = if is_pub {
             path.with_extension("").is_file()
                 || std::path::Path::new(&path).parent().map_or(false, |d| {
@@ -904,9 +921,12 @@ fn ssh_scan_dir(dir: &std::path::Path) -> Vec<SshImportItem> {
             name: name.to_string(),
             path: path.clone(),
             is_private,
+            key_type,
             passphrase: is_private && secrets::ssh_import::is_passphrase_protected(&content),
             has_pair,
-            selected: is_private,
+            // already in the vault? (ssh:<stem>) — shown grayed with ✓
+            imported: is_private && vault_names.iter().any(|v| v == &format!("ssh:{}", name)),
+            selected: is_private && !vault_names.iter().any(|v| v == &format!("ssh:{}", name)),
         });
     }
     items
@@ -3578,15 +3598,24 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         // where any earlier dashboard arm (config/number/secret-form keys)
         // could shadow it; routing it here makes it unreachable-proof.
         if key.code == KeyCode::Char('I') && self.ui.state == AppState::Secrets {
+            // D176: refresh the secrets list first so the scan can mark
+            // already-imported keys (✓) from the loaded vault names
+            let _ = self.fetch_secrets().await;
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
             let dir = format!("{}/.ssh", home);
-            let items = ssh_scan_dir(std::path::Path::new(&dir));
+            let vault_names: Vec<String> = self
+                .secrets_list
+                .items
+                .iter()
+                .map(|s| s.name.clone())
+                .collect();
+            let items = ssh_scan_dir(std::path::Path::new(&dir), &vault_names);
             self.ssh_import_panel = Some(SshImportPanel {
                 path: dir,
                 path_editing: false,
                 items,
                 selected: 0,
-                message: None,
+                message: Some("type any path, Enter rescans — keys already in the vault are marked ✓".to_string()),
                 pass_buf: String::new(),
                 pass_editing: false,
             });
@@ -5449,6 +5478,10 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 ("d", "Delete"),
                 ("c", "Copy"),
                 ("k", "Keygen"),
+                ("I", "SSH import"),
+                ("S", "Agent offer"),
+                ("y", "Copy pubkey"),
+                ("t", "ssh term"),
                 ("H", "SSH hosts"),
                 ("?", "Keybinds"),
                 ("q", "Quit"),
@@ -8573,11 +8606,19 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
     fn ssh_import_rescan(&mut self) {
         if let Some(panel) = self.ssh_import_panel.as_mut() {
             let expanded = expand_tilde(panel.path.trim());
-            let items = ssh_scan_dir(std::path::Path::new(&expanded));
+            // D176: vault names come from the already-loaded secrets list —
+            // ✓ = already in the vault, those unselect at scan
+            let vault_names: Vec<String> = self
+                .secrets_list
+                .items
+                .iter()
+                .map(|s| s.name.clone())
+                .collect();
+            let items = ssh_scan_dir(std::path::Path::new(&expanded), &vault_names);
             panel.message = Some(if items.is_empty() {
                 format!("no keys found in {}", expanded)
             } else {
-                format!("{} key file(s) found", items.len())
+                format!("{} key file(s) found — ✓ = already in the vault", items.len())
             });
             panel.items = items;
             panel.selected = 0;
@@ -8962,19 +9003,25 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 "     "
             };
             let mut text = format!(
-                "{}{}{:<26} {}",
+                "{}{}{:<26} {:<9} {}",
                 cursor,
                 check,
                 it.name,
+                it.key_type,
                 if it.is_private { "private" } else { "public" }
             );
             if it.passphrase {
                 text.push_str("  [passphrase]");
             }
+            if it.imported {
+                text.push_str("  ✓ imported");
+            }
             if it.is_private && !it.has_pair {
                 text.push_str("  (no .pub — private only)");
             }
-            let style = if idx == panel.selected {
+            let style = if it.imported {
+                Style::default().fg(self.ui.theme.border)
+            } else if idx == panel.selected {
                 Style::default().fg(self.ui.theme.accent)
             } else if !it.is_private {
                 Style::default().fg(self.ui.theme.border)
@@ -12052,8 +12099,15 @@ impl ModernApp {
 
         lines.push(Line::from(""));
         lines.push(section("Secrets"));
-        lines.push(row("k", "Generate SSH / GPG key"));
+        lines.push(row("n", "New secret (encrypted on save)"));
+        lines.push(row("e", "Edit selected secret"));
+        lines.push(row("d", "Delete selected secret (confirm)"));
         lines.push(row("c", "Copy (decrypts) secret value"));
+        lines.push(row("k", "Generate SSH / GPG key"));
+        lines.push(row("I", "Import SSH keys from any directory"));
+        lines.push(row("S", "Offer ssh keys to the running ssh-agent"));
+        lines.push(row("y", "Copy the PUBLIC key (GitHub/authorized_keys)"));
+        lines.push(row("t", "Open an ssh session using the selected key"));
         lines.push(row("H", "SSH host manager (connect / CRUD)"));
 
         lines.push(Line::from(""));
