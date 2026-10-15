@@ -76,6 +76,7 @@ First launch shows a signup screen — the first user becomes the admin.
 | `i` | Options of a command family / chain segments |
 | `I` | Secrets: open the SSH-key import window — scan ANY directory, per-key selection, private-only keys included |
 | `S` | Secrets: offer stored SSH keys to ssh-agent |
+| `y` | Secrets: copy the PUBLIC key of the selected key (GitHub/authorized_keys) |
 | `t` | Secrets: open an SSH terminal to the selected host |
 | `/` | Search with a visible search bar |
 | `?` | Full keybind helper |
@@ -97,7 +98,9 @@ install -m 600 ~/somewhere/mykey ~/.ssh/mykey
 
 Private keys are stored XChaCha20-encrypted (`ssh:<name>`, agent-flagged);
 public halves are stored read-only (`ssh-pub:<name>`) for sharing. Re-import
-is idempotent. See docs/GUIDE.md §7 for details.
+is idempotent. Keys you GENERATE with `k` on Secrets are vaulted the same
+way (in `~/.ssh/<name>`, offered to the agent immediately) — and `y` on a
+key copies its public half. See docs/GUIDE.md §7 for details.
 
 ## Configuration
 
@@ -140,6 +143,14 @@ The full endpoint list is in the docs.
 - Plugins run in a fresh Lua sandbox per invocation; capabilities require
   explicit user approval, and headless runs only auto-load plugins an admin
   explicitly marked as trusted
+
+## Auto-seed (MyDesk machines)
+
+On every start the hub imports every `*.json` bundle found in
+`~/.config/mydesk/bundles` (configurable via `seed { bundles_dir = … }`,
+empty string disables). Duplicate entries skip, so this is idempotent —
+a fresh MyDesk machine's hub populates itself with zero manual imports.
+Standalone installs without that directory are unaffected.
 
 ## Testing & quality
 

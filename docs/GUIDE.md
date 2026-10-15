@@ -309,11 +309,18 @@ per-user key.
 - `I` **imports real SSH keys from `~/.ssh`** — see the flow below
 - `S` offers all ssh-agent-flagged SSH keys to ssh-agent (also automatic after
   login); `t` opens an SSH terminal to a host
-- `k` generates SSH or GPG keys (`ssh-keygen`/`gpg`); the private key location
-  and passphrase are stored encrypted
+- `k` generates SSH or GPG keys (`ssh-keygen`/`gpg`). SSH keys land in
+  `~/.ssh/<name>` and are **vaulted + offered immediately** (`ssh:<name>`
+  agent-flagged, `ssh-pub:<name>` stored, a chosen passphrase persists as
+  `ssh-pass:<name>`) — generated keys are usable the moment they exist.
+  The private key location and passphrase are also stored encrypted
 - `H` opens the **SSH host manager**: CRUD, tags, live filter (`f`),
   **connection test** (`t` — non-interactive probe with 5s timeout),
   quick-connect (`Enter`/`c` in a new terminal window)
+- **`y` on a key copies its PUBLIC key** (the thing GitHub / authorized_keys
+  consume): uses the stored `ssh-pub:<name>` half, or derives it from the
+  vaulted private key via `ssh-keygen -y` (locked keys without a public half
+  say so)
 - Workflow scripts can read secrets as `secrets.<name>` or
   `get_secret("<name>")` (US-SEC-02)
 
@@ -407,7 +414,16 @@ generates entries.
 
 ---
 
-## 13. Headless service & plugins
+## 13. Bundle auto-seed
+
+`seed { bundles_dir = ~/.config/mydesk/bundles }` (config.conf): every start,
+each `*.json` in that directory is imported leniently (duplicates skip,
+missing dir = no-op). MyDesk machines ship their action/knowledge bundles
+there — the hub populates itself; standalone installs are unaffected.
+
+---
+
+## 14. Headless service & plugins
 
 `--headless` runs the scheduler + API without the TUI. Because there is no
 interactive consent flow there, only plugins an admin explicitly marked
@@ -416,7 +432,7 @@ startup. Untrusted mods still require approval in the TUI first.
 
 ---
 
-## 14. REST API
+## 15. REST API
 
 The hub serves a local API on `127.0.0.1:3001` (configurable). Entities,
 projects, workflows, schedules, secrets (user-scoped), export/import, health.
@@ -431,7 +447,7 @@ The full endpoint list is in the [README](README.md#rest-api).
 
 ---
 
-## 15. Troubleshooting
+## 16. Troubleshooting
 
 | Symptom | Fix |
 |:---|:---|
