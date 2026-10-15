@@ -1,3 +1,20 @@
+## 2026-10-15 — D176c: secrets UX pass (hints match reality, import window smarter)
+
+- **Keybinds updated**: the Secrets footer hints + the `?` overlay now list
+  EVERY actual Secrets key — n/e/d (CRUD), c (copy), k (keygen), **I**
+  (SSH import), **S** (agent offer), **y** (copy public key), **t**
+  (ssh terminal), H (hosts). Previously only 5 of 10 were documented.
+- **Secret rows user-friendly**: kind icons up front (🔑 ssh/gpg, 🔗 api,
+  🔒 password) + an [agent] flag next to [locked].
+- **Import window smarter**: the scan now cross-checks the vault —
+  already-imported keys render grayed with "✓ imported" and are UNSELECTED
+  by default (re-import was always a no-op but the UI made it look like a
+  fresh import). Key-type badges (ed25519/rsa/…) on every row. The panel
+  hint says any path can be typed + Enter rescans.
+- NOTE: the target/ dir was from the laptop's nix toolchain (GC'd glibc —
+  build scripts unexecutable on Arch); cargo clean + full rebuild (290
+  green: 239 + 48 BDD + 3 flow).
+
 ## 2026-10-15 — D162: keygen produces USABLE, COPYABLE keys
 
 - **The keygen was stranded**: SSH keys were generated into `/tmp/tui-op-hub-keys`
