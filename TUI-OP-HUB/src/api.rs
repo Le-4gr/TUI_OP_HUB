@@ -440,6 +440,13 @@ async fn delete_all_users_handler(
 pub struct CreateSecretReq {
     pub name: String,
     pub value: String,
+    /// Optional classification (US-SEC-01): "password" (default), "ssh_key",
+    /// "gpg_key", "api_key" — the MyDesk keys tool pushes ssh_key entries.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Flag the secret for the ssh-agent offer flow (US-SEC-05/US-MDSK-02).
+    #[serde(default)]
+    pub ssh_agent: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -471,10 +478,20 @@ async fn create_secret_handler(
     let user_id = default_user_id(&state.pool).await?;
     // encrypt value server-side
     match crate::secrets::encrypt_for_user(&state.pool, &user_id, &req.value).await {
-        Ok(enc) => repository::create_secret(&state.pool, &user_id, &req.name, &enc)
+        Ok(enc) => {
+            let kind = req.kind.as_deref().unwrap_or("password");
+            let created = repository::create_secret_full(
+                &state.pool, &user_id, &req.name, &enc, kind, false,
+            )
             .await
-            .map(Json)
-            .map_err(|e| e.to_string()),
+            .map_err(|e| e.to_string())?;
+            if req.ssh_agent.unwrap_or(false) {
+                repository::set_secret_ssh_agent(&state.pool, &created.id, true)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(Json(created))
+        }
         Err(e) => Err(e.to_string()),
     }
 }

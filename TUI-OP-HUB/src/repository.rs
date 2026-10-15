@@ -275,6 +275,21 @@ pub async fn create_secret(
     create_secret_full(pool, user_id, name, value_enc, "password", false).await
 }
 
+/// Flag (or unflag) a secret for the ssh-agent offer flow (US-SEC-05,
+/// US-MDSK-02 — the MyDesk keys tool pushes registry keys through the API).
+pub async fn set_secret_ssh_agent(
+    pool: &SqlitePool,
+    secret_id: &str,
+    enabled: bool,
+) -> AppResult<()> {
+    sqlx::query("UPDATE secrets SET ssh_agent = ? WHERE id = ?")
+        .bind(if enabled { 1 } else { 0 })
+        .bind(secret_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Create a secret with classification and access control (US-SEC-01/05).
 pub async fn create_secret_full(
     pool: &SqlitePool,

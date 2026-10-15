@@ -23,6 +23,7 @@ pub struct AppConfig {
     /// General preferences: editor and other defaults (US-APP-01, US-APP-06).
     #[serde(default)]
     pub general: GeneralConfig,
+    pub seed: SeedConfig,
     /// Current user for multi-user encryption
     #[serde(default = "default_user")]
     pub current_user: String,
@@ -37,9 +38,32 @@ impl Default for AppConfig {
             theme: ThemeConfig::default(),
             keybindings: KeybindingsConfig::default(),
             general: GeneralConfig::default(),
+            seed: SeedConfig::default(),
             current_user: default_user(),
         }
     }
+}
+
+/// D161: knowledge-bundle auto-seed. On startup the hub imports every
+/// `*.json` bundle found in `bundles_dir` (idempotent — duplicates skip).
+/// Default points at the MyDesk bundles dir; an empty string disables it
+/// (standalone installs without MyDesk never seed anything).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeedConfig {
+    #[serde(default = "default_bundles_dir")]
+    pub bundles_dir: String,
+}
+
+impl Default for SeedConfig {
+    fn default() -> Self {
+        Self {
+            bundles_dir: default_bundles_dir(),
+        }
+    }
+}
+
+fn default_bundles_dir() -> String {
+    "~/.config/mydesk/bundles".to_string()
 }
 
 /// General preferences editable from the Settings screen (US-APP-01).
@@ -492,6 +516,11 @@ impl AppConfig {
 
         let mut cfg = Self::default();
 
+        // seed (D161: bundle auto-seed)
+        if let Some(v) = get("seed", "bundles_dir") {
+            cfg.seed.bundles_dir = v;
+        }
+
         // general
         if let Some(v) = get("general", "editor") {
             cfg.general.editor = v;
@@ -586,6 +615,17 @@ impl AppConfig {
         );
         out.push_str("    # Empty = use $EDITOR, falling back to \"vi\".\n");
         out.push_str(&format!("    editor = {}\n", val(&self.general.editor)));
+
+        out.push_str("seed {\n");
+        out.push_str(
+            "    # D161: import every *.json bundle in this dir on startup\n",
+        );
+        out.push_str("    # (idempotent). Empty string disables the auto-seed.\n");
+        out.push_str(&format!(
+            "    bundles_dir = {}\n",
+            val(&self.seed.bundles_dir)
+        ));
+        out.push_str("}\n");
         out.push_str("    # User profile used for secrets encryption.\n");
         out.push_str(&format!("    user = {}\n", val(&self.current_user)));
         out.push_str("}\n\n");

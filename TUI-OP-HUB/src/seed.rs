@@ -717,6 +717,45 @@ fn desktop_id_of_metadata(metadata_json: &Option<String>) -> Option<String> {
 /// launcher offers every installed application. Upsert key = the `.desktop`
 /// id in `metadata_json` (entities without the marker are never touched);
 /// entries for uninstalled apps are pruned. Cheap — safe on every startup.
+/// D161 (US-MDSK-03): import every `*.json` knowledge bundle found in
+/// `dir` — the MyDesk integration ships its action/knowledge bundles to
+/// `~/.config/mydesk/bundles/`, so a fresh machine's hub auto-populates on
+/// first start with zero manual curl. Idempotent: duplicate (name, type)
+/// entries are skipped by the normal import path. A missing or empty dir
+/// is a no-op (standalone installs are unaffected).
+pub async fn seed_bundles_from_dir(pool: &sqlx::SqlitePool, dir: &std::path::Path) -> AppResult<usize> {
+    if !dir.is_dir() {
+        return Ok(0);
+    }
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .map_err(crate::error::AppError::Io)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+        .collect();
+    paths.sort();
+    let mut total = 0usize;
+    for p in paths {
+        let text = std::fs::read_to_string(&p).map_err(crate::error::AppError::Io)?;
+        match crate::share::bundle_from_json(&text) {
+            Ok(bundle) => match crate::share::import_knowledge(pool, &bundle).await {
+                Ok((imported, skipped)) => {
+                    tracing::info!(
+                        file = %p.display(),
+                        imported,
+                        skipped,
+                        "seeded knowledge bundle"
+                    );
+                    total += imported;
+                }
+                Err(e) => tracing::warn!(file = %p.display(), error = %e, "bundle import failed"),
+            },
+            Err(e) => tracing::warn!(file = %p.display(), error = %e, "bundle parse failed"),
+        }
+    }
+    Ok(total)
+}
+
+
 pub async fn seed_desktop_apps(pool: &SqlitePool) -> AppResult<()> {
     let mut apps: Vec<DesktopApp> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -843,5 +882,41 @@ mod desktop_tests {
         );
         assert_eq!(desktop_id_of_metadata(&None), None);
         assert_eq!(desktop_id_of_metadata(&Some("not json".into())), None);
+    }
+}
+
+#[cfg(test)]
+mod bundle_seed_tests {
+    use super::*;
+
+    /// US-MDSK-03: a dir of bundles populates the hub; a second run is a
+    /// no-op (duplicates skip), a missing dir is a no-op.
+    #[tokio::test]
+    async fn bundle_seed_is_idempotent_and_dir_agnostic() {
+        // single-connection in-memory pool inside the test runtime (never
+        // spin a nested Runtime — the block_in_place lesson, WORK.md)
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::db::run_migrations(&pool).await.unwrap();
+        let dir = std::env::temp_dir().join(format!("tuihub-seed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bundle = r#"{"version":1,"exported_at":"2026-10-15T00:00:00+00:00","secret_mode":"excluded","entities":[{"name":"seed-bundle-cmd","type_id":"cmd","description":"from the auto-seed","content":"echo hi","parent":null}],"secrets":[]}"#;
+        std::fs::write(dir.join("a-bundle.json"), bundle).unwrap();
+        std::fs::write(dir.join("not-json.txt"), "ignore me").unwrap();
+
+        let first = seed_bundles_from_dir(&pool, &dir).await.unwrap();
+        assert_eq!(first, 1);
+        let second = seed_bundles_from_dir(&pool, &dir).await.unwrap();
+        assert_eq!(second, 0, "duplicates must skip on the second run");
+
+        // missing dir: silent no-op
+        let none = seed_bundles_from_dir(&pool, &dir.join("does-not-exist"))
+            .await
+            .unwrap();
+        assert_eq!(none, 0);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

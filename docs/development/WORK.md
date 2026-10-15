@@ -1,3 +1,22 @@
+## 2026-10-15 — US-MDSK-02/03: hub accepts flagged keys + auto-seeds bundles (D161)
+
+- **POST /secrets gained `kind` + `ssh_agent`**: the API now classifies pushed
+  secrets (CreateSecretReq {kind, ssh_agent} → create_secret_full +
+  repository::set_secret_ssh_agent). The MyDesk keys tool can push registry
+  keys straight into the vault as agent-offerable `ssh:<name>` secrets —
+  keys become usable (`S`, agent-offer timer, terminals) WITHOUT the manual
+  import window. `repository::set_secret_ssh_agent` added + tested.
+- **Bundle auto-seed (US-MDSK-03)**: new `seed { bundles_dir }` config
+  (default `~/.config/mydesk/bundles`) — on EVERY start the hub imports each
+  `*.json` bundle leniently (duplicates skip; missing dir = no-op, so
+  standalone installs are unaffected). MyDesk ships its 3 bundles there, so
+  a fresh machine's hub auto-populates with zero manual curl.
+  `seed::seed_bundles_from_dir` + idempotency test.
+- Suite: 239 lib + 48 BDD + 2 ssh_agent_flow = **289 passed / 0 failed**;
+  cargo check 0 warnings. (Nested-runtime lesson re-verified: build test
+  pools inside the tokio test, never via a nested Runtime.)
+
+
 ## 2026-10-04 — US-ENV-01 per-project env vars (3e014a9)
 
 - **feat(api+wf)**: env vars stored in the secrets vault as `env:<project>:<name>` (D145 naming-convention precedent). REST: GET /env/{project} (list), PUT /env/{project}/{name} (set, server-side encrypt), DELETE /env/{project}/{name} — localhost-trust like agent-offer. Runner: execute_workflow reads the workflow entity's `metadata_json.project`, resolves env via repository::resolve_project_env (decrypt per var), publishes a Lua `project_env` table; run_command injects it into every spawned process (`Command::envs`). Non-fatal warn when resolution fails.

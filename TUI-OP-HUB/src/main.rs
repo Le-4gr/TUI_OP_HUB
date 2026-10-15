@@ -2,7 +2,6 @@
 use std::sync::Arc;
 use tui_op_hub::api;
 use tui_op_hub::config::AppConfig;
-use tui_op_hub::secrets;
 use tui_op_hub::db;
 use tui_op_hub::tui::modern_app::ModernApp;
 
@@ -143,6 +142,26 @@ async fn main() -> anyhow::Result<()> {
     // shows up in the Knowledge launcher; GUI apps launch detached). Cheap
     // upsert + prune — safe on every start.
     tui_op_hub::seed::seed_desktop_apps(&pool).await?;
+
+    // D161 (US-MDSK-03): auto-import knowledge bundles from the seed dir
+    // (default ~/.config/mydesk/bundles — MyDesk ships its actions there).
+    // Missing/empty dir = no-op, so standalone installs are unaffected.
+    let bundles_dir = {
+        let raw = config.seed.bundles_dir.clone();
+        if raw.starts_with('~') {
+            if let Ok(home) = std::env::var("HOME") {
+                home + &raw[1..]
+            } else {
+                raw
+            }
+        } else {
+            raw
+        }
+    };
+    let seeded = tui_op_hub::seed::seed_bundles_from_dir(&pool, std::path::Path::new(&bundles_dir)).await?;
+    if seeded > 0 {
+        tracing::info!(seeded, "knowledge bundles auto-seeded");
+    }
 
     // Workflow scheduler daemon (US-WF-07): executes cron-scheduled workflows
     let scheduler = tui_op_hub::scheduler::WorkflowScheduler::new(pool.clone());

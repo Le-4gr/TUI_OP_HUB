@@ -522,8 +522,10 @@ starter kits without touching core.
 |---|---|---|---|
 | `US-MDSK-01` | As a **User**, I want MyDesk to store remembered SSH-key passphrases in the **hub secrets vault** instead of a plaintext-adjacent local file, so that one encrypted store serves shell + TUI + future machines. | 🔴 | 8 |
   > **Status: implemented (hub side)** — `GET /secrets/by-name/{name}` returns the decrypted `{id, name, value}` for the first user (localhost-trust contract, same as `/ssh/agent-offer`). MyDesk `mydesk-keys remember` stores `ssh-pass:<name>` into this vault.
-| `US-MDSK-02` | As a **User**, I want my MyDesk keys registry (keys.json) mirrored into hub entities, so that keys are importable via shift-I and visible in the Secrets tab. | 🟡 | 5 |
+| `US-MDSK-02` | As a **User**, I want my MyDesk keys registry (keys.json) mirrored into hub entities, so that keys are importable via shift-I and visible in the Secrets tab. | ✅ | 5 |
+  > **Status: implemented (2026-10-15)** — `mydesk-keys push` mirrors every registry key into the vault via POST /secrets {kind: ssh_key, ssh_agent: true} (API accepts classification now); keys are usable/agent-offerable without the manual import.
 | `US-MDSK-03` | As a **User**, I want MyDesk system status (theme, agent state, fault reports) pushed to the hub as entities, so that automation and cross-machine sync see the desktop state. | 🟢 | 3 |
+  > **Partial (2026-10-15)** — knowledge/action bundles auto-seed into the hub on every start (`seed.bundles_dir`); the desktop-status push itself stays open.
 | `US-MCP-01` | As a **User**, I want a hub-native MCP server (`tui-op-hub mcp`, stdio) exposing entity query/run, workflow trigger and secrets get as MCP tools, so that AI agents (OpenCode) can drive the hub. | 🔴 | 8 |
   > **Status: IMPLEMENTED** (2026-10-04) — `tui-op-hub mcp` subcommand: newline-delimited JSON-RPC 2.0 over stdio; tools `query_entities` (FTS5 search) + `get_secret` (decrypt by name, localhost trust, never logged); `run_command` deferred to a follow-up. OpenCode wiring: `"mcp": {"tui-op-hub": {"type": "stdio", "command": "tui-op-hub", "args": ["mcp"]}}` in opencode.jsonc.
 | `US-MCP-02` | As a **User**, I want an OpenCode integration preset (mcp entry + a `mydesk` skill), so that agents know the hub surface without manual config. | 🟡 | 3 |
