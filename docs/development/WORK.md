@@ -1,3 +1,24 @@
+## 2026-10-15 — D162: keygen produces USABLE, COPYABLE keys
+
+- **The keygen was stranded**: SSH keys were generated into `/tmp/tui-op-hub-keys`
+  (wiped on reboot!), only the PATH + passphrase were stored (requires_reauth),
+  the key content never reached the vault, nothing was agent-flagged, and there
+  was no public key to copy — "generated keys can't be used, no way to copy the
+  right things".
+- **Now**: `k` generates into `~/.ssh/<name>` (conventional name, no more
+  `<name>_ed25519`), then runs the SAME pipeline as the import window:
+  vaulted as `ssh:<name>` (ssh_key, agent-flagged), public half stored as
+  `ssh-pub:<name>` (copyable), a chosen passphrase persists as
+  `ssh-pass:<name>` and unlocks the key into the agent IMMEDIATELY.
+- **`y` on Secrets copies the public key** of the selected ssh secret —
+  stored `ssh-pub:` half first, else derives it via `ssh-keygen -y` from the
+  vaulted private key (locked keys without a public half say so).
+  `keygen_dir` injectable so tests never touch $HOME; `handle_key` +
+  `bdd_status` pub for integration tests; stale 1-7,0 keybind overlay row
+  fixed (9 tabs incl. Packages).
+- Suite: 239 lib + 48 BDD + **3 ssh_agent_flow** = 290 passed / 0 failed
+  (new flow test drives real ssh-keygen → vault → assertions).
+
 ## 2026-10-15 — US-MDSK-02/03: hub accepts flagged keys + auto-seeds bundles (D161)
 
 - **POST /secrets gained `kind` + `ssh_agent`**: the API now classifies pushed

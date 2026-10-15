@@ -45,7 +45,9 @@ pub fn generate_ssh_key(dir: &Path, name: &str, passphrase: &str) -> AppResult<G
         return Err(AppError::Other("ssh-keygen not found on PATH".into()));
     }
     std::fs::create_dir_all(dir).map_err(|e| AppError::Other(format!("mkdir failed: {e}")))?;
-    let private_path = dir.join(format!("{name}_ed25519"));
+    // D162: conventional filename `~/.ssh/<name>` (+ `.pub`) — the vault
+    // entries then read ssh:<name> / ssh-pub:<name> instead of ssh:<name>_ed25519
+    let private_path = dir.join(name);
     if private_path.exists() {
         return Err(AppError::Other(format!(
             "ssh key '{name}' already exists at {}",

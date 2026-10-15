@@ -21,7 +21,9 @@ use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use tui_op_hub::config::AppConfig;
 use tui_op_hub::db;
+use tui_op_hub::tui::modern_app::ModernApp;
 use tui_op_hub::repository;
 use tui_op_hub::secrets;
 
@@ -289,6 +291,66 @@ async fn given_locked_key_when_imported_without_pass_then_no_pass_secret_is_crea
     assert!(
         locked_secret.passphrase_protected,
         "the stored key keeps its passphrase_protected flag (terminal unlock path)"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// D162: the KEYGEN flow must produce USABLE keys — the generated keypair
+/// lands in a persistent dir, is vaulted as agent-flagged ssh:<name>, keeps
+/// a copyable ssh-pub:<name> half, and the status points at 'y' (copy pub).
+#[tokio::test]
+async fn generated_key_is_vaulted_and_public_copyable() {
+    std::env::set_var("TUI_OP_HUB_SECRETS_KEY", TEST_KEY);
+    let pool = Arc::new(
+        sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap(),
+    );
+    db::run_migrations(&pool).await.unwrap();
+    let mut app = ModernApp::new(pool.clone(), AppConfig::default());
+
+    let dir = std::env::temp_dir().join(format!("mydesk-keygen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    app.keygen_dir = Some(dir.clone());
+
+    app.bdd_open_keygen();
+    for c in "vaulttest".chars() {
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(c),
+            crossterm::event::KeyModifiers::empty(),
+        ))
+        .await;
+    }
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('s'),
+        crossterm::event::KeyModifiers::CONTROL,
+    ))
+    .await;
+
+    assert!(dir.join("vaulttest").exists(), "private key in the keygen dir");
+    assert!(dir.join("vaulttest.pub").exists(), "public half written");
+
+    let uid = repository::get_or_create_user(&pool, "default").await.unwrap().id;
+    let all = repository::list_secrets(&pool, &uid).await.unwrap();
+    let priv_secret = all
+        .iter()
+        .find(|x| x.name == "ssh:vaulttest")
+        .expect("private half vaulted");
+    assert!(priv_secret.ssh_agent, "agent-flagged so S / timer offer it");
+    assert_eq!(priv_secret.secret_kind, "ssh_key");
+    assert!(
+        all.iter().any(|x| x.name == "ssh-pub:vaulttest"),
+        "public half stored for copying"
+    );
+    assert!(
+        app.bdd_status()
+            .unwrap_or_default()
+            .contains("'y' copies the public key"),
+        "status points at the copy action: {:?}",
+        app.bdd_status()
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

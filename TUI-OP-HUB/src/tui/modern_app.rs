@@ -695,6 +695,8 @@ pub struct ModernApp {
     /// Injectable parent dir for the workspace form (tests); None = default
     /// `$HOME/projects` (US-PROJ).
     new_project_parent: Option<std::path::PathBuf>,
+    /// D162: injectable keygen output dir so tests never touch $HOME/.ssh
+    pub keygen_dir: Option<std::path::PathBuf>,
     /// Templates discovered from plugins (US-PLG-14), loaded when the
     /// workspace form opens. Selection None = plain project (US-PROJ-08).
     templates: Vec<crate::plugin::ProjectTemplate>,
@@ -991,6 +993,7 @@ impl ModernApp {
             new_project_error: None,
             new_project_field_idx: 0,
             new_project_parent: None,
+            keygen_dir: None,
             templates: Vec::new(),
             new_project_template: None,
             template_preview: None,
@@ -3066,7 +3069,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         f.render_widget(text, area);
     }
 
-    async fn handle_key(&mut self, key: KeyEvent) {
+    pub async fn handle_key(&mut self, key: KeyEvent) {
         // Collect finished background workflow runs (US-WF-09) before routing
         self.poll_workflow_task().await;
         // US-PKG-02: Packages owns its keys (search input mode + list ops).
@@ -4227,6 +4230,13 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 // Secrets: open an ssh terminal for the selected key/host (US-SEC)
                 if self.ui.state == AppState::Secrets {
                     self.open_ssh_terminal().await;
+                }
+            }
+            KeyCode::Char('y') => {
+                // Secrets: copy the PUBLIC key of the selected ssh secret
+                // (D162 — GitHub/authorized_keys consumes exactly this)
+                if self.ui.state == AppState::Secrets {
+                    self.copy_selected_public_key().await;
                 }
             }
             KeyCode::Char('R') => {
@@ -9118,6 +9128,98 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         self.status_message = Some(format!("ssh session ended ({})", host.trim()));
     }
 
+    /// D162: copy the PUBLIC key of the selected Secrets row. Prefers the
+    /// stored `ssh-pub:<name>` half; falls back to deriving it from the
+    /// vaulted private key via `ssh-keygen -y` (passphrase-less keys only —
+    /// locked keys without a public half tell the user what to do).
+    async fn copy_selected_public_key(&mut self) {
+        let Some(secret) = self.secrets_list.items.get(self.secrets_list.selected).cloned()
+        else {
+            self.status_message = Some("No secret selected".to_string());
+            return;
+        };
+        let user_id = self.current_user_profile_id().await;
+        let stem = secret
+            .name
+            .strip_prefix("ssh-pub:")
+            .map(|x| x.to_string())
+            .unwrap_or_else(|| secret.name.strip_prefix("ssh:").unwrap_or(&secret.name).to_string());
+        let pub_name = format!("ssh-pub:{}", stem);
+
+        // 1. stored public half
+        if let Ok(Some(row)) = repository::get_secret_by_name(&*self.pool, &user_id, &pub_name)
+            .await
+        {
+            if let Ok(pem) = secrets::decrypt_for_user(&*self.pool, &user_id, &row.value_enc).await
+            {
+                match arboard::Clipboard::new() {
+                    Ok(mut cb) => {
+                        let _ = cb.set_text(pem.trim_end().to_string());
+                        self.status_message =
+                            Some("\u{2713} public key copied — paste into GitHub / authorized_keys".into());
+                    }
+                    Err(e) => self.status_message = Some(format!("\u{2717} clipboard: {}", e)),
+                }
+                return;
+            }
+        }
+
+        // 2. derive from the vaulted private key (passphrase-less only)
+        if secret.name.starts_with("ssh:") {
+            let pem = match secrets::decrypt_for_user(&*self.pool, &user_id, &secret.value_enc)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    self.status_message = Some(format!("\u{2717} decrypt failed: {}", e));
+                    return;
+                }
+            };
+            if secrets::ssh_import::is_passphrase_protected(&pem) {
+                self.status_message = Some(
+                    "locked key without a stored public half — unlock via 'S' first".into(),
+                );
+                return;
+            }
+            let tmp = std::env::temp_dir().join(format!("tui-op-hub-pub-{}.key", std::process::id()));
+            if std::fs::write(&tmp, &pem).is_err() {
+                self.status_message = Some("\u{2717} temp file failed".into());
+                return;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+            }
+            let out = std::process::Command::new("ssh-keygen")
+                .args(["-y", "-f"])
+                .arg(&tmp)
+                .output();
+            let _ = std::fs::remove_file(&tmp);
+            match out {
+                Ok(o) if o.status.success() => {
+                    let pubkey = String::from_utf8_lossy(&o.stdout).trim_end().to_string();
+                    match arboard::Clipboard::new() {
+                        Ok(mut cb) => {
+                            let _ = cb.set_text(pubkey);
+                            self.status_message = Some(
+                                "\u{2713} public key derived + copied — paste into GitHub / authorized_keys"
+                                    .into(),
+                            );
+                        }
+                        Err(e) => self.status_message = Some(format!("\u{2717} clipboard: {}", e)),
+                    }
+                }
+                _ => self
+                    .status_message
+                    = Some("\u{2717} ssh-keygen -y failed".to_string()),
+            }
+            return;
+        }
+
+        self.status_message = Some("not an ssh key secret — 'y' works on ssh:/ssh-pub: entries".into());
+    }
+
     /// Copy a passphrase-protected secret: unwrap the passphrase layer, then
     /// the user-key layer, and put the plaintext on the clipboard.
     async fn copy_secret_with_passphrase(&mut self, secret_id: &str, passphrase: &str) {
@@ -10924,8 +11026,13 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         }
     }
 
-    /// Generate the SSH/GPG key and store its location + passphrase as
-    /// encrypted secrets with tags (US-SEC-01).
+    /// Generate the SSH/GPG key and make it USABLE (US-SEC-01, D162):
+    /// the key lands in `~/.ssh` (persistent — /tmp was wiped on reboot),
+    /// then runs through the SAME pipeline as the import window: vaulted as
+    /// `ssh:<name>` (agent-flagged) + `ssh-pub:<name>` (copyable), a chosen
+    /// passphrase is stored as `ssh-pass:<name>` and the key is unlocked
+    /// into the agent immediately. Location + passphrase stay stored as
+    /// legacy secrets. `y` on Secrets copies the public key.
     async fn generate_key(&mut self) {
         let name = self.keygen.name.trim().to_string();
         if name.is_empty() {
@@ -10934,11 +11041,18 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         }
         let user_id = self.current_user_profile_id().await;
         let result = match self.keygen.kind_name() {
-            "ssh" => keygen::generate_ssh_key(
-                &std::env::temp_dir().join("tui-op-hub-keys"),
-                &name,
-                &self.keygen.passphrase,
-            ),
+            "ssh" => {
+                let dir = self
+                    .keygen_dir
+                    .clone()
+                    .unwrap_or_else(|| {
+                        std::path::PathBuf::from(
+                            std::env::var("HOME").unwrap_or_else(|_| ".".into()),
+                        )
+                        .join(".ssh")
+                    });
+                keygen::generate_ssh_key(&dir, &name, &self.keygen.passphrase)
+            }
             "gpg" => keygen::generate_gpg_key(&name, &self.keygen.email, &self.keygen.passphrase),
             _ => unreachable!(),
         };
@@ -10949,6 +11063,33 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 return;
             }
         };
+        // D162: SSH keys go through the import pipeline so they are USABLE:
+        // vaulted (ssh:<name>, agent-flagged), public half stored
+        // (ssh-pub:<name>), passphrase remembered (ssh-pass:<name>), and the
+        // key is offered to the running agent right away.
+        let mut vaulted = false;
+        if generated.kind == "ssh_key" {
+            let priv_path = std::path::PathBuf::from(&generated.private_path);
+            let pub_path = std::path::PathBuf::from(format!("{}.pub", generated.private_path));
+            let pass = if generated.passphrase.is_empty() {
+                None
+            } else {
+                Some(generated.passphrase.as_str())
+            };
+            match self
+                .import_ssh_file(&priv_path, pub_path.exists().then_some(pub_path.as_path()), pass)
+                .await
+            {
+                Ok(_) => vaulted = true,
+                Err(e) => {
+                    self.keygen.error = Some(format!(
+                        "key generated at {} but vaulting failed: {}",
+                        generated.private_path, e
+                    ));
+                    return;
+                }
+            }
+        }
         // Store the private key location (requires re-auth to use)
         let enc_path =
             match secrets::encrypt_for_user(&*self.pool, &user_id, &generated.private_path).await {
@@ -10984,10 +11125,14 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             }
         }
         self.keygen = KeygenState::default();
-        self.status_message = Some(format!(
-            "\u{2713} {} key '{}' generated and stored",
-            generated.kind, name
-        ));
+        self.status_message = Some(if vaulted {
+            format!(
+                "\u{2713} ssh key '{}' generated in ~/.ssh, vaulted + offered — 'y' copies the public key",
+                name
+            )
+        } else {
+            format!("\u{2713} {} key '{}' generated and stored", generated.kind, name)
+        });
         let _ = self.fetch_secrets().await;
         let _ = self.fetch_stats().await;
     }
@@ -11860,8 +12005,8 @@ impl ModernApp {
             "Switch tabs (configurable order, Settings last)",
         ));
         lines.push(row(
-            "1-7,0",
-            "1 Dashboard · 2 Knowledge · 3 Projects · 4 Workflows · 5 Secrets · 6 Configs · 7 Plugins · 0 Settings",
+            "1-9,0",
+            "1 Dashboard · 2 Knowledge · 3 Projects · 4 Workflows · 5 Secrets · 6 Configs · 7 Plugins · 8 Packages · 0 Settings",
         ));
         lines.push(row(
             "f",
@@ -11991,6 +12136,10 @@ impl ModernApp {
     }
 
     #[doc(hidden)]
+    pub fn bdd_status(&self) -> Option<String> {
+        self.status_message.clone()
+    }
+
     pub fn bdd_open_keygen(&mut self) {
         self.ui.state = AppState::Secrets;
         self.keygen = KeygenState {
@@ -14102,6 +14251,7 @@ mod panel_tests {
             .unwrap()
             .is_empty());
     }
+
 
     #[test]
     fn ssh_form_connect_command_shapes() {
