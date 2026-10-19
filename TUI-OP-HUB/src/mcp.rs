@@ -224,6 +224,8 @@ async fn tools_call(pool: &Arc<SqlitePool>, params: &Value) -> Result<Value, Val
                 "pkg list",
                 "keys list",
                 "sync status",
+                "apps status",
+                "apps capture --dry-run",
                 "updates",
             ];
             let raw = args
@@ -255,6 +257,7 @@ async fn tools_call(pool: &Arc<SqlitePool>, params: &Value) -> Result<Value, Val
                 "sync" => "mydesk-sync",
                 "health" => "mydesk-health",
                 "updates" => "mydesk-updates",
+                "apps" => "mydesk-apps",
                 _ => return Err(json!({"code": -32000, "message": "no script for command"})),
             };
             let rest = cmd.splitn(2, ' ').nth(1).unwrap_or("").to_string();

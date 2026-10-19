@@ -1439,6 +1439,54 @@ impl ModernApp {
             results.push(format!("[pacman] {name} {ver} — {desc}"));
             shown += 1;
         }
+        // D184: universal tiers — flatpak (and snap when present) so one
+        // search covers distro + universal package managers
+        let fq = q.clone();
+        let fp_out = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("flatpak").args(["search", &fq]).output()
+        })
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+        let mut fshown = 0;
+        for line in fp_out.lines().skip(1) {
+            if fshown >= 6 {
+                break;
+            }
+            let cols: Vec<&str> = line.split('\t').map(|s| s.trim()).collect();
+            if cols.len() < 2 {
+                continue;
+            }
+            results.push(format!(
+                "[flatpak] {} — {}",
+                cols[0],
+                cols.get(1).unwrap_or(&"")
+            ));
+            fshown += 1;
+        }
+        let sq = q.clone();
+        let snap_out = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("snap").args(["find", &sq]).output()
+        })
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+        let mut sshown = 0;
+        for line in snap_out.lines().skip(1) {
+            if sshown >= 4 {
+                break;
+            }
+            let cols: Vec<&str> = line.split_whitespace().collect::<Vec<_>>();
+            if cols.len() < 2 {
+                continue;
+            }
+            results.push(format!("[snap] {} {} — {}", cols[0], cols[1], cols.get(2).unwrap_or(&"")));
+            sshown += 1;
+        }
         if results.is_empty() {
             results.push(format!("no results for '{q}' (searched nix + pacman)"));
         }
@@ -1456,7 +1504,9 @@ impl ModernApp {
         let (source, rest) = row
             .strip_prefix("[nix] ")
             .map(|r| ("nix", r))
-            .or_else(|| row.strip_prefix("[pacman] ").map(|r| ("pacman", r)))?;
+            .or_else(|| row.strip_prefix("[pacman] ").map(|r| ("pacman", r)))
+            .or_else(|| row.strip_prefix("[flatpak] ").map(|r| ("flatpak", r)))
+            .or_else(|| row.strip_prefix("[snap] ").map(|r| ("snap", r)))?;
         let mut it = rest.split_whitespace();
         let attr = it.next()?.to_string();
         let desc = it.collect::<Vec<_>>().join(" ");
@@ -1535,6 +1585,30 @@ impl ModernApp {
             ("pacman", "declare") => (
                 format!("declare {} (distro manifest)", c.attr),
                 build(&format!("{home}/.local/bin/mydesk-distro"), vec!["add".into(), c.attr.clone()]),
+            ),
+            // D184: universal tiers
+            ("flatpak", "install") => (
+                format!("install {} (flatpak)", c.attr),
+                build("flatpak", vec![
+                    "install".into(), "--user".into(), "--noninteractive".into(), "-y".into(),
+                    c.attr.clone(),
+                ]),
+            ),
+            ("flatpak", "declare") => (
+                format!("declare {} (apps manifest)", c.attr),
+                build(&format!("{home}/.local/bin/mydesk-apps"), vec![
+                    "record".into(), "flatpak".into(), c.attr.clone(),
+                ]),
+            ),
+            ("snap", "install") => (
+                format!("install {} (snap)", c.attr),
+                build("pkexec", vec!["snap".into(), "install".into(), c.attr.clone()]),
+            ),
+            ("snap", "declare") => (
+                format!("declare {} (apps manifest)", c.attr),
+                build(&format!("{home}/.local/bin/mydesk-apps"), vec![
+                    "record".into(), "snap".into(), c.attr.clone(),
+                ]),
             ),
             _ => return,
         };
@@ -5321,6 +5395,14 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             "nix" => (
                 "nix profile install (profile tier)",
                 "mydesk-pkg addgh → git-tracked user-packages.nix",
+            ),
+            "flatpak" => (
+                "flatpak install --user (no root)",
+                "mydesk-apps record → git-tracked apps manifest",
+            ),
+            "snap" => (
+                "pkexec snap install (polkit dialog)",
+                "mydesk-apps record → git-tracked apps manifest",
             ),
             _ => (
                 "pkexec pacman -S (polkit password dialog)",
