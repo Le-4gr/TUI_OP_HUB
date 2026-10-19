@@ -3360,6 +3360,15 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                         }
                     }
                 }
+                // D182: `r` = make this host declarative — mydesk-repro
+                // capture (profile + distro tiers → git-tracked manifests)
+                KeyCode::Char('r') if !self.pkg_searching => {
+                    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                    let mut cmd = std::process::Command::new(format!("{home}/.local/bin/mydesk-repro"));
+                    cmd.arg("capture");
+                    self.status_message = Some("repro: capturing non-declarative tiers…".to_string());
+                    self.pkg_spawn("repro capture".to_string(), cmd);
+                }
                 KeyCode::Char('d') if !self.pkg_searching => self.packages_remove().await,
                 KeyCode::Esc => {
                     self.pkg_searching = false;
@@ -5810,6 +5819,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 ("Enter", "Search / install popup"),
                 ("a", "Install popup (results)"),
                 ("d", "Remove profile pkg"),
+                ("r", "Repro capture (declare host)"),
                 ("?", "Keybinds"),
                 ("q", "Quit"),
             ],
