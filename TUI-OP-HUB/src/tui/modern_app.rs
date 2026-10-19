@@ -5517,9 +5517,25 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             self.render_packages_search(f);
             return;
         }
+        if self.pkg_items.is_empty() {
+            // D201: friendly empty state — the profile tier is often empty;
+            // a bare "(0 items)" dead end gave no hint that `/` searches
+            // EVERY source. Show what this tab does instead.
+            let help = " Nothing declared in the mydesk nix profile yet — that's normal.\n\n This tab manages your packages across every source:\n\n   /      search nix + pacman + AUR + flatpak + snap + GitHub\n          (owner/repo builds from source)\n   Enter  on a result → choose [i] install now or [d] declare only\n   d      remove the selected package\n   r      capture this host's current state into the mydesk\n          manifests (profile + distro + apps)\n\n Start by pressing / and searching for something.";
+            let block = ratatui::widgets::Block::default()
+                .borders(ratatui::widgets::Borders::ALL)
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .border_style(ratatui::style::Style::default().fg(self.ui.theme.accent))
+                .title(" 📦 Packages ");
+            let par = ratatui::widgets::Paragraph::new(help)
+                .block(block)
+                .wrap(ratatui::widgets::Wrap { trim: false });
+            f.render_widget(par, f.area());
+            return;
+        }
         self.render_list(
             f,
-            "📦 Packages (nix profile)",
+            "📦 Packages",
             &self.pkg_items,
             self.pkg_selected,
             self.ui.theme.accent,
@@ -5656,8 +5672,9 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 ratatui::layout::Constraint::Length(3),
             ])
             .split(area);
+        // D201: the search actually covers 7 sources since D189 — say so.
         let title = format!(
-            "Search nix + pacman — {}▌  (Enter=search, again=install/declare popup · Esc=back)",
+            "Search nix + pacman + aur + flatpak + snap + github — {}▌  (Enter=search · Enter on result=install/declare · Esc=back)",
             self.pkg_search
         );
         let input = ratatui::widgets::Block::default()
@@ -5672,11 +5689,28 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             .iter()
             .map(|s| ratatui::widgets::ListItem::new(s.as_str()))
             .collect();
+        // D201: per-tier counts so the user sees where hits came from at a
+        // glance (prefix tags [nix]/[pacman]/[aur]/…)
+        let tier = |p: &str| {
+            self.pkg_results
+                .iter()
+                .filter(|r| r.starts_with(p))
+                .count()
+        };
+        let result_title = format!(
+            " Results — nix {} · pacman {} · aur {} · emerge {} · flatpak {} · snap {} ",
+            tier("[nix] "),
+            tier("[pacman] "),
+            tier("[aur] "),
+            tier("[emerge] "),
+            tier("[flatpak] "),
+            tier("[snap] "),
+        );
         let list = ratatui::widgets::List::new(items)
             .block(
                 ratatui::widgets::Block::default()
                     .borders(ratatui::widgets::Borders::ALL)
-                    .title("Results"),
+                    .title(result_title),
             )
             .highlight_style(ratatui::style::Style::default().bg(self.ui.theme.accent));
         let mut state = ratatui::widgets::ListState::default();
@@ -6063,11 +6097,11 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 ("q", "Quit"),
             ],
             AppState::Packages => vec![
-                ("/", "Search nix + pacman"),
-                ("Enter", "Search / install popup"),
-                ("a", "Install popup (results)"),
-                ("d", "Remove profile pkg"),
-                ("r", "Repro capture (declare host)"),
+                ("/", "Search all sources"),
+                ("Enter", "Install / declare"),
+                ("a", "Install popup"),
+                ("d", "Remove"),
+                ("r", "Declare host state"),
                 ("?", "Keybinds"),
                 ("q", "Quit"),
             ],
@@ -12709,6 +12743,15 @@ impl ModernApp {
         lines.push(row("y", "Copy the PUBLIC key (GitHub/authorized_keys)"));
         lines.push(row("t", "Open an ssh session using the selected key"));
         lines.push(row("H", "SSH host manager (connect / CRUD)"));
+
+        lines.push(Line::from(""));
+        lines.push(section("Packages"));
+        lines.push(row("/", "Search nix + pacman + aur + flatpak + snap + github"));
+        lines.push(row("Enter", "Search, or arm install/declare on a result"));
+        lines.push(row("i", "Install now (runs the real command, detached)"));
+        lines.push(row("d", "Declare only (writes the mydesk manifest)"));
+        lines.push(row("r", "Capture host state into mydesk manifests"));
+        lines.push(row("Esc", "Back to the package list"));
 
         lines.push(Line::from(""));
         lines.push(section("Plugins"));
