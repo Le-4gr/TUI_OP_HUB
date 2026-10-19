@@ -647,6 +647,13 @@ pub struct ModernApp {
     pkg_search: String,
     pkg_searching: bool,
     pkg_results: Vec<String>,
+    /// D181: package install/declare awaiting confirmation
+    pkg_confirm: Option<PkgConfirm>,
+    /// D181: query the shown results belong to (Enter re-arms vs re-searches)
+    pkg_searched: String,
+    /// D181: running background package job — the TUI never blocks on nix/pacman
+    pkg_job: Option<PkgJob>,
+    pkg_job_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
     workflow_form: WorkflowFormState,
     secret_form: SecretFormState,
     // Search state
@@ -724,6 +731,8 @@ pub struct ModernApp {
     // Keybind helper overlay (? key; US-TUI-09)
     keybinds_overlay: bool,
     wants_terminal: bool,
+    /// D180: --section deep link pending (drained at the top of run())
+    initial_section: bool,
     needs_full_redraw: bool,
     // Overlay states (forms, visual builder, popups)
     visual_form: Option<VisualWorkflowState>,
@@ -865,6 +874,29 @@ struct SshImportPanel {
     pass_editing: bool,
 }
 
+/// D181: one package search result awaiting an install/declare decision.
+#[derive(Clone)]
+struct PkgConfirm {
+    /// "nix" | "pacman"
+    source: &'static str,
+    /// nix attr (e.g. `ripgrep`) or pacman package name
+    attr: String,
+    /// description tail from the search row (shown in the popup)
+    desc: String,
+}
+
+/// D181: a running/done background package job — output streams into the
+/// Packages section so the TUI never blocks on nix/pacman/mydesk scripts.
+struct PkgJob {
+    label: String,
+    /// tail of streamed output (capped)
+    output: String,
+    done: bool,
+    ok: Option<bool>,
+    /// installed list refreshed once after completion
+    refreshed: bool,
+}
+
 fn ssh_scan_dir(dir: &std::path::Path, vault_names: &[String]) -> Vec<SshImportItem> {
     let mut items = Vec::new();
     let Ok(rd) = std::fs::read_dir(dir) else {
@@ -981,6 +1013,10 @@ impl ModernApp {
             pkg_search: String::new(),
             pkg_searching: false,
             pkg_results: Vec::new(),
+            pkg_confirm: None,
+            pkg_searched: String::new(),
+            pkg_job: None,
+            pkg_job_rx: None,
             workflow_form: WorkflowFormState::default(),
             secret_form: SecretFormState::default(),
             // Initialize search state
@@ -1025,6 +1061,7 @@ impl ModernApp {
             jobs_panel: None,
             keybinds_overlay: false,
             wants_terminal: false,
+            initial_section: false,
             needs_full_redraw: true,
             // Overlays start closed
             visual_form: None,
@@ -1344,15 +1381,18 @@ impl ModernApp {
         self.pkg_selected = 0;
     }
 
-    /// US-PKG-02: `nix search nixpkgs#<query> --json` (top 25 results).
+    /// US-PKG-02 / D181: search BOTH tiers — nixpkgs (`nix search`) and the
+    /// distro (`pacman -Ss`, absent on non-Arch) — with source badges so the
+    /// install action can route per source. Nix results first, then pacman.
     async fn packages_search(&mut self) {
         let q = self.pkg_search.trim().to_string();
         if q.is_empty() {
             return;
         }
-        let out = tokio::task::spawn_blocking(move || {
+        let nq = q.clone();
+        let nix_out = tokio::task::spawn_blocking(move || {
             std::process::Command::new("nix")
-                .args(["search", &format!("nixpkgs#{q}"), "--json"])
+                .args(["search", &format!("nixpkgs#{nq}"), "--json"])
                 .output()
         })
         .await
@@ -1361,41 +1401,169 @@ impl ModernApp {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .unwrap_or_default();
         let mut results = Vec::new();
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&nix_out) {
             if let Some(map) = v.as_object() {
-                for (k, val) in map.iter().take(25) {
+                for (k, val) in map.iter().take(20) {
                     let attr = k
                         .strip_prefix("legacyPackages.x86_64-linux.")
                         .unwrap_or(k);
                     let ver = val.get("version").and_then(|x| x.as_str()).unwrap_or("?");
                     let desc = val.get("description").and_then(|x| x.as_str()).unwrap_or("");
-                    results.push(format!("{attr} {ver} — {desc}"));
+                    results.push(format!("[nix] {attr} {ver} — {desc}"));
                 }
             }
+        }
+        let pq = q.clone();
+        let pac_out = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("pacman").args(["-Ss", &pq]).output()
+        })
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+        let mut shown = 0;
+        for block in pac_out.split("\n\n") {
+            if shown >= 12 {
+                break;
+            }
+            let mut lines = block.lines().filter(|l| !l.trim().is_empty());
+            let Some(head) = lines.next() else {
+                continue;
+            };
+            let Some((repo_name, ver)) = head.trim().split_once(' ') else {
+                continue;
+            };
+            let name = repo_name.split_once('/').map(|(_, n)| n).unwrap_or(repo_name);
+            let desc = lines.next().unwrap_or("").trim();
+            results.push(format!("[pacman] {name} {ver} — {desc}"));
+            shown += 1;
+        }
+        if results.is_empty() {
+            results.push(format!("no results for '{q}' (searched nix + pacman)"));
         }
         self.pkg_results = results;
         self.pkg_selected = 0;
         self.status_message = Some(format!(
             "{} results for '{}'",
             self.pkg_results.len(),
-            self.pkg_search.trim()
+            q
         ));
     }
 
-    async fn packages_add(&mut self, attr: String) {
-        let status = tokio::process::Command::new("nix")
-            .args(["profile", "install", &format!("nixpkgs#{attr}")])
-            .output()
-            .await;
-        let ok = status.map(|o| o.status.success()).unwrap_or(false);
-        self.status_message = Some(if ok {
-            format!("installed {attr} (profile)")
-        } else {
-            format!("install failed: {attr}")
-        });
-        self.fetch_packages().await;
+    /// D181: parse a search row into (source, attr, description).
+    fn parse_pkg_row(row: &str) -> Option<(&'static str, String, String)> {
+        let (source, rest) = row
+            .strip_prefix("[nix] ")
+            .map(|r| ("nix", r))
+            .or_else(|| row.strip_prefix("[pacman] ").map(|r| ("pacman", r)))?;
+        let mut it = rest.split_whitespace();
+        let attr = it.next()?.to_string();
+        let desc = it.collect::<Vec<_>>().join(" ");
+        Some((source, attr, desc))
     }
 
+    /// D181: arm the confirm popup for the selected search result.
+    fn packages_arm(&mut self, row: String) {
+        if let Some((source, attr, desc)) = Self::parse_pkg_row(&row) {
+            self.pkg_confirm = Some(PkgConfirm { source, attr, desc });
+        }
+    }
+
+    /// D181: run a package command DETACHED — output streams through a
+    /// channel into the section panel; the UI keeps rendering.
+    fn pkg_spawn(&mut self, label: String, mut cmd: std::process::Command) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        self.pkg_job = Some(PkgJob {
+            label,
+            output: String::new(),
+            done: false,
+            ok: None,
+            refreshed: false,
+        });
+        self.pkg_job_rx = Some(rx);
+        tokio::spawn(async move {
+            let mut tcmd = tokio::process::Command::from(cmd);
+            tcmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            match tcmd.output().await {
+                Ok(out) => {
+                    let so = String::from_utf8_lossy(&out.stdout);
+                    let se = String::from_utf8_lossy(&out.stderr);
+                    for l in so.lines().chain(se.lines()).take(60) {
+                        if !l.trim().is_empty() {
+                            let _ = tx.send(l.to_string());
+                        }
+                    }
+                    let _ = tx.send(format!(
+                        "EXIT:{}",
+                        if out.status.success() { "ok" } else { "failed" }
+                    ));
+                }
+                Err(e) => {
+                    let _ = tx.send(format!("spawn failed: {e}"));
+                    let _ = tx.send("EXIT:failed".to_string());
+                }
+            }
+        });
+    }
+
+    /// D181: build + launch the command for a confirmed action.
+    /// - nix install → `nix profile install` (profile tier)
+    /// - nix declare → `mydesk-pkg addgh` (git-tracked user-packages.nix)
+    /// - pacman install → `pkexec pacman -S` (polkit password dialog)
+    /// - pacman declare → `mydesk-distro add` (git-tracked manifest)
+    fn packages_run_confirmed(&mut self, c: PkgConfirm, action: &str) {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let build = |program: &str, args: Vec<String>| {
+            let mut cmd = std::process::Command::new(program);
+            cmd.args(args);
+            cmd
+        };
+        let (label, cmd) = match (c.source, action) {
+            ("nix", "install") => (
+                format!("install {}", c.attr),
+                build("nix", vec!["profile".into(), "install".into(), format!("nixpkgs#{}", c.attr)]),
+            ),
+            ("nix", "declare") => (
+                format!("declare {} (user-packages.nix)", c.attr),
+                build(&format!("{home}/.local/bin/mydesk-pkg"), vec!["addgh".into(), c.attr.clone()]),
+            ),
+            ("pacman", "install") => (
+                format!("install {} (pacman)", c.attr),
+                build("pkexec", vec!["pacman".into(), "-S".into(), "--noconfirm".into(), c.attr.clone()]),
+            ),
+            ("pacman", "declare") => (
+                format!("declare {} (distro manifest)", c.attr),
+                build(&format!("{home}/.local/bin/mydesk-distro"), vec!["add".into(), c.attr.clone()]),
+            ),
+            _ => return,
+        };
+        self.status_message = Some(format!("started: {}", label));
+        self.pkg_spawn(label, cmd);
+    }
+
+    /// D181: confirm-popup keys — [i] install now, [d] declare only, Esc cancel.
+    fn handle_pkg_confirm_key(&mut self, key: KeyEvent) {
+        let Some(c) = self.pkg_confirm.clone() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Char('i') => {
+                self.pkg_confirm = None;
+                self.packages_run_confirmed(c, "install");
+            }
+            KeyCode::Char('d') => {
+                self.pkg_confirm = None;
+                self.packages_run_confirmed(c, "declare");
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.pkg_confirm = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// D181: remove the selected profile package — detached, streamed.
     async fn packages_remove(&mut self) {
         let Some(item) = self.pkg_items.get(self.pkg_selected).cloned() else {
             return;
@@ -1404,17 +1572,10 @@ impl ModernApp {
         if name.is_empty() {
             return;
         }
-        let status = tokio::process::Command::new("nix")
-            .args(["profile", "remove", &name])
-            .output()
-            .await;
-        let ok = status.map(|o| o.status.success()).unwrap_or(false);
-        self.status_message = Some(if ok {
-            format!("removed {name}")
-        } else {
-            format!("remove failed: {name}")
-        });
-        self.fetch_packages().await;
+        let mut cmd = std::process::Command::new("nix");
+        cmd.args(["profile", "remove", &name]);
+        self.status_message = Some(format!("removing {name}…"));
+        self.pkg_spawn(format!("remove {name}"), cmd);
     }
 
     async fn fetch_plugins(&mut self) {
@@ -2062,12 +2223,39 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         Ok(())
     }
 
+    /// D180: deep link — open directly on a section (shell buttons pass
+    /// `--section pkg` etc.). Applied before the first render; the tab-id
+    /// mapping matches the configured tab order (dash|kb|proj|wf|sec|cfg|plug|pkg|set).
+    pub fn set_initial_section(&mut self, id: &str) {
+        let parse = |v: &str| match v.trim().to_lowercase().as_str() {
+            "dash" => Some(AppState::Dashboard),
+            "kb" => Some(AppState::Knowledge),
+            "proj" => Some(AppState::Projects),
+            "wf" => Some(AppState::Workflows),
+            "sec" => Some(AppState::Secrets),
+            "cfg" => Some(AppState::Configs),
+            "plug" => Some(AppState::Plugins),
+            "pkg" => Some(AppState::Packages),
+            "set" => Some(AppState::Settings),
+            _ => None,
+        };
+        if let Some(st) = parse(id) {
+            self.ui.state = st;
+            self.initial_section = true;
+        }
+    }
+
     /// Run the modern application
     pub async fn run(&mut self) -> anyhow::Result<()> {
         enable_raw_mode()?;
         execute!(io::stdout(), EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(io::stdout());
         let mut terminal = Terminal::new(backend)?;
+        // D180: the deep-linked section loads its data before the first draw
+        if self.initial_section {
+            self.initial_section = false;
+            let _ = self.refresh_current_tab().await;
+        }
 
         // D121: skip the login screen when an account with a persisted key
         // exists (personal-machine flow) — the account is linked to the OS
@@ -2151,6 +2339,39 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             }
             terminal.draw(|f| self.render(f))?;
 
+            // D181: drain streamed package-job output (non-blocking); on the
+            // first done tick, refresh the installed list once
+            if let Some(rx) = self.pkg_job_rx.as_mut() {
+                let mut finished = false;
+                while let Ok(line) = rx.try_recv() {
+                    let Some(job) = self.pkg_job.as_mut() else {
+                        break;
+                    };
+                    if let Some(rest) = line.strip_prefix("EXIT:") {
+                        job.done = true;
+                        job.ok = Some(rest == "ok");
+                        job.output
+                            .push_str(if rest == "ok" { "\n\u{2713} done" } else { "\n\u{2717} failed" });
+                        finished = true;
+                    } else {
+                        job.output.push_str(&line);
+                        job.output.push('\n');
+                        if job.output.len() > 4000 {
+                            let cut = job.output.len() - 4000;
+                            let off = job.output[cut..]
+                                .find('\n')
+                                .map(|i| cut + i + 1)
+                                .unwrap_or(cut);
+                            job.output.drain(..off);
+                        }
+                    }
+                }
+                if finished {
+                    self.fetch_packages().await;
+                    self.pkg_job_rx = None;
+                }
+            }
+
             if self.should_quit {
                 break;
             }
@@ -2205,6 +2426,13 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         }
         if self.keygen.open {
             self.render_keygen_form(f);
+        }
+        // D181: package confirm popup + live job tail (Packages section)
+        if self.pkg_confirm.is_some() {
+            self.render_pkg_confirm(f);
+        }
+        if let Some(job) = &self.pkg_job {
+            self.render_pkg_job_tail(f, job);
         }
         if let Some(path) = &self.register_input {
             self.render_register_input(f, path);
@@ -3092,6 +3320,12 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
     pub async fn handle_key(&mut self, key: KeyEvent) {
         // Collect finished background workflow runs (US-WF-09) before routing
         self.poll_workflow_task().await;
+        // D181: the package confirm popup is topmost when open — [i] install,
+        // [d] declare, [Esc] cancel (it can open from any Packages state)
+        if self.pkg_confirm.is_some() {
+            self.handle_pkg_confirm_key(key);
+            return;
+        }
         // US-PKG-02: Packages owns its keys (search input mode + list ops).
         if self.ui.state == AppState::Packages {
             match key.code {
@@ -3105,12 +3339,24 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 KeyCode::Backspace if self.pkg_searching => {
                     self.pkg_search.pop();
                 }
-                KeyCode::Enter if self.pkg_searching => self.packages_search().await,
-                KeyCode::Enter => {
-                    if let Some(res) = self.pkg_results.get(self.pkg_selected).cloned() {
-                        let attr = res.split_whitespace().next().unwrap_or("").to_string();
-                        if !attr.is_empty() {
-                            self.packages_add(attr).await;
+                // D181: Enter runs the search the first time (or when the
+                // query changed); with results shown and an unchanged query,
+                // Enter over a result arms the confirm popup instead
+                KeyCode::Enter if self.pkg_searching => {
+                    let q = self.pkg_search.trim().to_string();
+                    if q.is_empty() || self.pkg_results.is_empty() || q != self.pkg_searched {
+                        self.pkg_searched = q;
+                        self.packages_search().await;
+                    } else if let Some(res) = self.pkg_results.get(self.pkg_selected).cloned() {
+                        self.packages_arm(res);
+                    }
+                }
+                // D181: over the INSTALLED list (search closed), 'a'/Enter
+                // re-opens the last results armed for install/declare
+                KeyCode::Enter | KeyCode::Char('a') if !self.pkg_searching => {
+                    if !self.pkg_results.is_empty() {
+                        if let Some(res) = self.pkg_results.get(self.pkg_selected).cloned() {
+                            self.packages_arm(res);
                         }
                     }
                 }
@@ -5054,6 +5300,94 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         );
     }
 
+    /// D181: install/declare confirmation overlay — shows the exact command
+    /// that will run; [i] install now, [d] declare only, [Esc] cancel.
+    fn render_pkg_confirm(&self, f: &mut Frame) {
+        let Some(c) = &self.pkg_confirm else {
+            return;
+        };
+        let area = self.centered_rect(58, 24, f);
+        f.render_widget(ratatui::widgets::Clear, area);
+        let (how, via) = match c.source {
+            "nix" => (
+                "nix profile install (profile tier)",
+                "mydesk-pkg addgh → git-tracked user-packages.nix",
+            ),
+            _ => (
+                "pkexec pacman -S (polkit password dialog)",
+                "mydesk-distro add → git-tracked distro manifest",
+            ),
+        };
+        let text = format!(
+            "{}  {}\n{}\n\n{} {}\n{} {}\n\n[i] install now    [d] declare only    [Esc] cancel",
+            if c.source == "nix" { "[nix]" } else { "[pacman]" },
+            c.attr,
+            c.desc,
+            if c.source == "nix" { "install:" } else { "install:" },
+            how,
+            "declare:",
+            via
+        );
+        let block = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(ratatui::style::Style::default().fg(self.ui.theme.accent))
+            .title(" 📦 Install or declare? ");
+        f.render_widget(
+            ratatui::widgets::Paragraph::new(text).block(block),
+            area,
+        );
+    }
+
+    /// D181: live tail of the running/finished package job (bottom-left).
+    fn render_pkg_job_tail(&self, f: &mut Frame, job: &PkgJob) {
+        let area = f.area();
+        let w = 64.min(area.width.saturating_sub(4));
+        let h = 7.min(area.height.saturating_sub(4));
+        let r = ratatui::layout::Rect {
+            x: area.x + 2,
+            y: area.y + area.height.saturating_sub(h + 2),
+            width: w,
+            height: h,
+        };
+        f.render_widget(ratatui::widgets::Clear, r);
+        let state = if job.done {
+            match job.ok {
+                Some(true) => "\u{2713} done",
+                Some(false) => "\u{2717} failed",
+                None => "finished",
+            }
+        } else {
+            "running…"
+        };
+        let tail = job
+            .output
+            .lines()
+            .rev()
+            .take(4)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let style = if job.done && job.ok == Some(false) {
+            ratatui::style::Style::default().fg(self.ui.theme.error)
+        } else if job.done {
+            ratatui::style::Style::default().fg(self.ui.theme.success)
+        } else {
+            ratatui::style::Style::default().fg(self.ui.theme.warning)
+        };
+        let block = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(style)
+            .title(format!(" {} — {} ", job.label, state));
+        f.render_widget(
+            ratatui::widgets::Paragraph::new(tail).block(block),
+            r,
+        );
+    }
+
     /// US-PKG-02: nixpkgs search input + results.
     fn render_packages_search(&self, f: &mut Frame) {
         let area = f.area();
@@ -5066,7 +5400,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             ])
             .split(area);
         let title = format!(
-            "Search nixpkgs — {}▌  (Enter=search · a=add · Esc=back)",
+            "Search nix + pacman — {}▌  (Enter=search, again=install/declare popup · Esc=back)",
             self.pkg_search
         );
         let input = ratatui::widgets::Block::default()
@@ -5468,6 +5802,14 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 ("\u{2191}\u{2193}", "Navigate"),
                 ("a", "Approve"),
                 ("e", "Enable/Off"),
+                ("?", "Keybinds"),
+                ("q", "Quit"),
+            ],
+            AppState::Packages => vec![
+                ("/", "Search nix + pacman"),
+                ("Enter", "Search / install popup"),
+                ("a", "Install popup (results)"),
+                ("d", "Remove profile pkg"),
                 ("?", "Keybinds"),
                 ("q", "Quit"),
             ],

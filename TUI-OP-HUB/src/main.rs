@@ -7,6 +7,36 @@ use tui_op_hub::tui::modern_app::ModernApp;
 
 /// Minimal CLI flags (no clap dependency): `--help`, `--headless`,
 /// `--print-unit`, `--install-service`, `--uninstall-service` (US-DEP-04).
+
+/// D180: `--section <id>` / `--section=<id>` — open the TUI directly on a
+/// section. Ids match the tab ids (dash|kb|proj|wf|sec|cfg|plug|pkg|set);
+/// friendly aliases included. Used by the MyDesk shell's deep links.
+fn parse_section_arg() -> Option<String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    for (i, a) in args.iter().enumerate() {
+        let val = if a == "--section" {
+            args.get(i + 1).cloned()
+        } else {
+            a.strip_prefix("--section=").map(|s| s.to_string())
+        };
+        if let Some(v) = val {
+            return Some(match v.trim().to_lowercase().as_str() {
+                "packages" | "pkg" => "pkg".to_string(),
+                "secrets" | "keys" | "sec" => "sec".to_string(),
+                "plugins" | "plug" => "plug".to_string(),
+                "knowledge" | "kb" | "cmds" => "kb".to_string(),
+                "workflows" | "wf" => "wf".to_string(),
+                "configs" | "cfg" => "cfg".to_string(),
+                "projects" | "proj" => "proj".to_string(),
+                "settings" | "set" => "set".to_string(),
+                "dashboard" | "dash" => "dash".to_string(),
+                other => other.to_string(),
+            });
+        }
+    }
+    None
+}
+
 fn handle_cli_flags() -> Option<bool> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
@@ -20,6 +50,8 @@ fn handle_cli_flags() -> Option<bool> {
                  Flags:\n\
                    (none)              Launch the interactive TUI\n\
                    --headless          Run without the TUI (scheduler + API only)\n\
+                   --section <id>      Open the TUI directly on a section\n\
+                                       (dash|kb|proj|wf|sec|cfg|plug|pkg|set)\n\
                    --print-unit        Print the systemd user unit file\n\
                    --install-service   Install + enable the systemd user service\n\
                    --uninstall-service Disable + remove the systemd user service\n\
@@ -206,6 +238,12 @@ async fn main() -> anyhow::Result<()> {
     if config.tui.enabled && !headless {
         // Use modern UI with login/signup
         let mut app = ModernApp::new(pool, config);
+        // D180: `--section <id>` deep link — the MyDesk shell's package/distro
+        // cards jump straight into the hub's Packages section instead of
+        // reimplementing the install flow in QML.
+        if let Some(sec) = parse_section_arg() {
+            app.set_initial_section(&sec);
+        }
         app.run().await?;
     } else {
         // Headless service: load plugins. Admin-trusted plugins
