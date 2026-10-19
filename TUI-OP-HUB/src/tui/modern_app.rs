@@ -1487,8 +1487,108 @@ impl ModernApp {
             results.push(format!("[snap] {} {} — {}", cols[0], cols[1], cols.get(2).unwrap_or(&"")));
             sshown += 1;
         }
+        // D189: AUR tier — the AUR RPC API via curl (no paru dependency,
+        // works headless); name+description search
+        let aq = q.replace(' ', "%20");
+        let aur_out = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("curl")
+                .args([
+                    "-sf",
+                    "--max-time",
+                    "8",
+                    &format!(
+                        "https://aur.archlinux.org/rpc/v5/search/{aq}?by=name-desc"
+                    ),
+                ])
+                .output()
+        })
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&aur_out) {
+            if let Some(arr) = v.get("results").and_then(|r| r.as_array()) {
+                for r in arr.iter().take(8) {
+                    let name = r.get("Name").and_then(|x| x.as_str()).unwrap_or("");
+                    if name.is_empty() {
+                        continue;
+                    }
+                    let ver = r.get("Version").and_then(|x| x.as_str()).unwrap_or("?");
+                    let desc = r.get("Description").and_then(|x| x.as_str()).unwrap_or("");
+                    results.push(format!("[aur] {name} {ver} — {desc}"));
+                }
+            }
+        }
+        // D189: emerge tier (Gentoo hosts) — only when emerge exists
+        if std::path::Path::new("/usr/bin/emerge").is_file() {
+            let eq = q.clone();
+            let em_out = tokio::task::spawn_blocking(move || {
+                std::process::Command::new("emerge").args(["--search", &eq]).output()
+            })
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+            let mut eshown = 0;
+            let mut cur: Option<(String, String, String)> = None;
+            let mut flush = |cur: &mut Option<(String, String, String)>,
+                             results: &mut Vec<String>| {
+                if let Some((name, ver, desc)) = cur.take() {
+                    if !name.is_empty() && eshown < 6 {
+                        results.push(format!("[emerge] {name} {ver} — {desc}"));
+                        eshown += 1;
+                    }
+                }
+            };
+            for line in em_out.lines() {
+                let lt = line.trim();
+                if lt.starts_with('*') {
+                    // emerge block header: "*  category/name [ver]" — the
+                    // trailing " (N)" occurrence count is dropped
+                    let name = lt
+                        .trim_start_matches('*')
+                        .trim()
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '-' && c != '_' && c != '.')
+                        .to_string();
+                    flush(&mut cur, &mut results);
+                    cur = Some((name, String::new(), String::new()));
+                } else if cur.is_some() {
+                    let t = line.trim();
+                    if let Some(v) = t.strip_prefix("Latest version available:") {
+                        if let Some(c) = cur.as_mut() {
+                            c.1 = v.trim().to_string();
+                        }
+                    } else if let Some(d) = t.strip_prefix("Description:") {
+                        if let Some(c) = cur.as_mut() {
+                            c.2 = d.trim().to_string();
+                        }
+                    }
+                }
+            }
+            flush(&mut cur, &mut results);
+        }
+        // D189: GitHub source tier — owner/repo in the search box builds it
+        if let Some((owner, name)) = q.split_once('/') {
+            let ok = |s: &str| {
+                !s.is_empty()
+                    && s.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "-._".contains(c))
+            };
+            if ok(owner) && ok(name) {
+                results.push(format!(
+                    "[src] {q} — build {owner}/{name} from GitHub source (clone + build)"
+                ));
+            }
+        }
         if results.is_empty() {
-            results.push(format!("no results for '{q}' (searched nix + pacman)"));
+            results.push(format!(
+                "no results for '{q}' (searched nix + pacman + aur + flatpak + snap) — tip: owner/repo builds from GitHub"
+            ));
         }
         self.pkg_results = results;
         self.pkg_selected = 0;
@@ -1505,8 +1605,11 @@ impl ModernApp {
             .strip_prefix("[nix] ")
             .map(|r| ("nix", r))
             .or_else(|| row.strip_prefix("[pacman] ").map(|r| ("pacman", r)))
+            .or_else(|| row.strip_prefix("[aur] ").map(|r| ("aur", r)))
             .or_else(|| row.strip_prefix("[flatpak] ").map(|r| ("flatpak", r)))
-            .or_else(|| row.strip_prefix("[snap] ").map(|r| ("snap", r)))?;
+            .or_else(|| row.strip_prefix("[snap] ").map(|r| ("snap", r)))
+            .or_else(|| row.strip_prefix("[src] ").map(|r| ("src", r)))
+            .or_else(|| row.strip_prefix("[emerge] ").map(|r| ("emerge", r)))?;
         let mut it = rest.split_whitespace();
         let attr = it.next()?.to_string();
         let desc = it.collect::<Vec<_>>().join(" ");
@@ -1609,6 +1712,46 @@ impl ModernApp {
                 build(&format!("{home}/.local/bin/mydesk-apps"), vec![
                     "record".into(), "snap".into(), c.attr.clone(),
                 ]),
+            ),
+            // D189: AUR — paru MUST run as the user with a TTY (makepkg
+            // refuses root; sudo needs the password prompt), so the install
+            // goes through the mydesk task window instead of pkexec
+            ("aur", "install") => (
+                format!("install {} (aur — paru)", c.attr),
+                if std::path::Path::new(&format!("{home}/.local/bin/mydesk-term")).is_file() {
+                    build(
+                        &format!("{home}/.local/bin/mydesk-term"),
+                        vec![format!("paru -S --needed {}", c.attr)],
+                    )
+                } else {
+                    build("paru", vec!["-S".into(), "--needed".into(), c.attr.clone()])
+                },
+            ),
+            ("aur", "declare") => (
+                format!("declare {} (distro manifest — AUR tier)", c.attr),
+                build(&format!("{home}/.local/bin/mydesk-distro"), vec!["add".into(), c.attr.clone()]),
+            ),
+            // D189: GitHub source — mydesk-repro owns the [[src]] tier
+            ("src", "install") => (
+                format!("build {} from source (clone + build)", c.attr),
+                build(&format!("{home}/.local/bin/mydesk-repro"), vec![
+                    "add".into(), c.attr.clone(), "--build".into(),
+                ]),
+            ),
+            ("src", "declare") => (
+                format!("declare {} (profile manifest [[src]])", c.attr),
+                build(&format!("{home}/.local/bin/mydesk-repro"), vec!["add".into(), c.attr.clone()]),
+            ),
+            // D189: emerge (Gentoo hosts)
+            ("emerge", "install") => (
+                format!("install {} (emerge)", c.attr),
+                build("pkexec", vec![
+                    "emerge".into(), "-1".into(), "--ask=n".into(), c.attr.clone(),
+                ]),
+            ),
+            ("emerge", "declare") => (
+                format!("declare {} (distro manifest)", c.attr),
+                build(&format!("{home}/.local/bin/mydesk-distro"), vec!["add".into(), c.attr.clone()]),
             ),
             _ => return,
         };
@@ -5404,17 +5547,40 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 "pkexec snap install (polkit dialog)",
                 "mydesk-apps record → git-tracked apps manifest",
             ),
+            // D189: the new tiers get their own honest wording
+            "aur" => (
+                "paru -S in the mydesk task window (password prompt)",
+                "mydesk-distro add → git-tracked distro manifest (AUR tier)",
+            ),
+            "src" => (
+                "clone + build via mydesk-repro (make | cargo | go)",
+                "profile-packages.toml [[src]] row",
+            ),
+            "emerge" => (
+                "pkexec emerge -1 (polkit dialog)",
+                "mydesk-distro add → git-tracked distro manifest",
+            ),
             _ => (
                 "pkexec pacman -S (polkit password dialog)",
                 "mydesk-distro add → git-tracked distro manifest",
             ),
         };
+        let badge = match c.source {
+            "nix" => "[nix]",
+            "pacman" => "[pacman]",
+            "aur" => "[aur]",
+            "flatpak" => "[flatpak]",
+            "snap" => "[snap]",
+            "src" => "[src]",
+            "emerge" => "[emerge]",
+            _ => "[pkg]",
+        };
         let text = format!(
             "{}  {}\n{}\n\n{} {}\n{} {}\n\n[i] install now    [d] declare only    [Esc] cancel",
-            if c.source == "nix" { "[nix]" } else { "[pacman]" },
+            badge,
             c.attr,
             c.desc,
-            if c.source == "nix" { "install:" } else { "install:" },
+            "install:",
             how,
             "declare:",
             via
