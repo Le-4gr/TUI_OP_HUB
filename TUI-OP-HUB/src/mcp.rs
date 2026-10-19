@@ -92,6 +92,33 @@ fn tools_list() -> Value {
                     "properties": {"name": {"type": "string", "description": "exact secret name, e.g. ssh-pass:mykey"}},
                     "required": ["name"]
                 }
+            },
+            {
+                "name": "system_health",
+                "description": "Run the full mydesk-health sweep (disk, services, shell sanity) — fastest way to spot system bugs",
+                "inputSchema": {"type": "object", "properties": {}}
+            },
+            {
+                "name": "recent_errors",
+                "description": "Tail recent error-level journal lines (bug hunting)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"lines": {"type": "integer", "description": "how many (default 30, max 200)"}}
+                }
+            },
+            {
+                "name": "host_facts",
+                "description": "Facts about this machine: OS, hostname, distro, kernel, uptime, home-manager generation",
+                "inputSchema": {"type": "object", "properties": {}}
+            },
+            {
+                "name": "run_mydesk",
+                "description": "Run an allow-listed mydesk subcommand (status-class only: health, repro status, distro status, pkg profile, keys list, updates, …). Secret values are never exposed.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string", "description": "e.g. 'health' or 'distro status'"}},
+                    "required": ["command"]
+                }
             }
         ]
     })
@@ -120,6 +147,134 @@ async fn tools_call(pool: &Arc<SqlitePool>, params: &Value) -> Result<Value, Val
                     return Err(json!({"code": -32000, "message": format!("secret not found: {secret_name}")}))
                 }
                 Err(e) => return Err(json!({"code": -32603, "message": e.to_string()})),
+            }
+        }
+        // D183: system tools so agents can use + debug the MyDesk machine.
+        // Read-only / allow-listed; secret VALUES stay in get_secret only.
+        "system_health" => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            let out = tokio::task::spawn_blocking(move || {
+                std::process::Command::new(format!("{home}/.local/bin/mydesk-health"))
+                    .output()
+            })
+            .await
+            .map_err(|e| json!({"code": -32603, "message": e.to_string()}))?;
+            match out {
+                Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
+                Err(e) => {
+                    return Err(json!({"code": -32000, "message": format!("mydesk-health: {e}")}))
+                }
+            }
+        }
+        "recent_errors" => {
+            let n = args
+                .get("lines")
+                .and_then(|l| l.as_i64())
+                .unwrap_or(30)
+                .clamp(1, 200);
+            let out = tokio::task::spawn_blocking(move || {
+                std::process::Command::new("journalctl")
+                    .args(["-p", "err", "-n", &n.to_string(), "--no-pager"])
+                    .output()
+            })
+            .await
+            .map_err(|e| json!({"code": -32603, "message": e.to_string()}))?;
+            match out {
+                Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
+                Err(e) => return Err(json!({"code": -32000, "message": format!("journalctl: {e}")})),
+            }
+        }
+        "host_facts" => {
+            let nixos = std::path::Path::new("/etc/NIXOS").exists();
+            let hostname = std::fs::read_to_string("/etc/hostname").unwrap_or_default();
+            let out = tokio::task::spawn_blocking(move || {
+                let os = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+                let pretty = os
+                    .lines()
+                    .find(|l| l.starts_with("PRETTY_NAME="))
+                    .map(|l| l.split('=').nth(1).unwrap_or("").trim_matches('"').to_string())
+                    .unwrap_or_default();
+                let kernel = std::process::Command::new("uname")
+                    .arg("-sr")
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default();
+                let up = std::process::Command::new("uptime")
+                    .arg("-p")
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default();
+                format!(
+                    "OS: {}\nNixOS: {}\nhostname: {}\nkernel: {}\nuptime: {}",
+                    pretty, nixos, hostname.trim(), kernel, up
+                )
+            })
+            .await
+            .map_err(|e| json!({"code": -32603, "message": e.to_string()}))?;
+            out
+        }
+        "run_mydesk" => {
+            const ALLOWED: &[&str] = &[
+                "health",
+                "repro status",
+                "repro capture --dry-run",
+                "distro status",
+                "pkg profile",
+                "pkg declarative",
+                "pkg list",
+                "keys list",
+                "sync status",
+                "updates",
+            ];
+            let raw = args
+                .get("command")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let cmd = raw
+                .trim_start_matches("mydesk ")
+                .trim_start_matches("mydesk-")
+                .trim()
+                .to_string();
+            if !ALLOWED.contains(&cmd.as_str()) {
+                return Err(json!({
+                    "code": -32000,
+                    "message": format!(
+                        "rejected: '{raw}' is not allow-listed. allowed: {}",
+                        ALLOWED.join(", ")
+                    )
+                }));
+            }
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            let script = match cmd.split(' ').next().unwrap_or("") {
+                "repro" => "mydesk-repro",
+                "distro" => "mydesk-distro",
+                "pkg" => "mydesk-pkg",
+                "keys" => "mydesk-keys",
+                "sync" => "mydesk-sync",
+                "health" => "mydesk-health",
+                "updates" => "mydesk-updates",
+                _ => return Err(json!({"code": -32000, "message": "no script for command"})),
+            };
+            let rest = cmd.splitn(2, ' ').nth(1).unwrap_or("").to_string();
+            let full = format!("{}/.local/bin/{} {}", home, script, rest);
+            let out = tokio::task::spawn_blocking(move || {
+                std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&full)
+                    .output()
+            })
+            .await
+            .map_err(|e| json!({"code": -32603, "message": e.to_string()}))?;
+            match out {
+                Ok(o) => {
+                    let body = String::from_utf8_lossy(&o.stdout).to_string();
+                    format!("rc={}\n{}", o.status.code().unwrap_or(-1), body)
+                }
+                Err(e) => {
+                    return Err(json!({"code": -32000, "message": format!("{script}: {e}")}))
+                }
             }
         }
         other => return Err(json!({"code": -32601, "message": format!("unknown tool: {other}")})),
