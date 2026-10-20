@@ -46,6 +46,9 @@ pub(crate) fn some_if_not_empty(s: &str) -> Option<String> {
 
 /// (program, args-before-shell) for known terminal emulators, in preference order.
 pub(crate) const TERMINAL_EMULATORS: &[(&str, &[&str])] = &[
+    // D204: ghostty FIRST — nix-store kitty dies with EGL 65542 on this
+    // machine (same GL breakage class as quickshell, D167); distro ghostty works
+    ("ghostty", &["-e"]),
     ("alacritty", &["-e"]),
     ("kitty", &["-e"]),
     ("wezterm", &["start", "--"]),

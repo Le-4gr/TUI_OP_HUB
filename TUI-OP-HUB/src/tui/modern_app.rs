@@ -690,6 +690,10 @@ pub struct ModernApp {
     /// SSH host manager panel (Secrets → `H`)
     ssh_panel: Option<SshPanel>,
     ssh_import_panel: Option<SshImportPanel>,
+    /// D204: secret detail viewer (e on a secret shows metadata + copy paths)
+    secret_detail: Option<crate::models::Secret>,
+    /// D204: reveal flag reserved — the value stays masked; copies go via c/y
+    secret_detail_reveal: bool,
     /// D140: passphrases typed in the import panel, keyed by private-key path
     ssh_import_pass: std::collections::HashMap<String, String>,
     // New project creation form (US-PROJ)
@@ -1037,6 +1041,8 @@ impl ModernApp {
             config_store_dir: dirs_home().join(".config/tui-op-hub/configs"),
             ssh_panel: None,
             ssh_import_panel: None,
+            secret_detail: None,
+            secret_detail_reveal: false,
             ssh_import_pass: std::collections::HashMap::new(),
             dev_user_manager: false,
             dev_user_list: Vec::new(),
@@ -2684,6 +2690,9 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         if self.ssh_panel.is_some() {
             self.render_ssh_panel(f);
         }
+        if self.secret_detail.is_some() {
+            self.render_secret_detail(f);
+        }
         if self.ssh_import_panel.is_some() {
             self.render_ssh_import_panel(f);
         }
@@ -3601,6 +3610,11 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             self.handle_file_browser_key(key);
             return;
         }
+        // D204: secret detail viewer is topmost when open (e on a secret)
+        if self.secret_detail.is_some() {
+            self.handle_secret_detail_key(key).await;
+            return;
+        }
         // D118: SSH import window is topmost when open
         if self.ssh_import_panel.is_some() {
             self.handle_ssh_import_key(key).await;
@@ -4430,19 +4444,10 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                         }
                     }
                     AppState::Secrets => {
-                        let selected = self.secrets_list.get_selected().cloned();
-                        if let Some(secret) = selected {
-                            self.secret_form = SecretFormState {
-                                mode: Some(FormMode::Edit),
-                                name: secret.name.clone(),
-                                group: secret.secret_group.clone().unwrap_or_default(),
-                                username: secret.username.clone().unwrap_or_default(),
-                                url: secret.url.clone().unwrap_or_default(),
-                                email: secret.email.clone().unwrap_or_default(),
-                                ssh_agent: secret.ssh_agent,
-                                editing_id: Some(secret.id.clone()),
-                                ..Default::default()
-                            };
+                        // D204: e now SHOWS the secret (metadata + copy paths);
+                        // the edit form opens from the detail via Enter/e
+                        if let Some(secret) = self.secrets_list.get_selected().cloned() {
+                            self.secret_detail = Some(secret);
                         }
                     }
                     _ => {}
@@ -8226,7 +8231,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         self.render_field(
             f,
             chunks[2],
-            "Group (e.g. github, servers)",
+            "Group (github · servers · … — any label groups keys)",
             &self.secret_form.group,
             field == 2,
             false,
@@ -9458,10 +9463,10 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             KeyCode::Enter => {
                 self.ssh_import_selected().await;
             }
-            KeyCode::Char('y') if !editing => {
-                self.ssh_import_selected().await;
-            }
-            KeyCode::Char('c') if !editing => {
+            KeyCode::Char('c') | KeyCode::Char('y') if !editing => {
+                // D204: y now means "copy public key" (same as the Secrets
+                // tab) — it used to DUPLICATE the import action, which made
+                // the window feel random; import stays on Enter only
                 // D140: copy the selected PUBLIC key to the clipboard (GitHub
                 // → Settings → SSH keys consumes exactly this)
                 let picked = self.ssh_import_panel.as_ref().and_then(|p| {
@@ -9584,6 +9589,135 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         }
     }
 
+    /// D204: keys for the secret detail viewer (opened by `e` on a secret).
+    /// Shows metadata for READING + one-key copies; the edit form opens from
+    /// here with Enter/e, so nothing is lost versus the old direct edit.
+    async fn handle_secret_detail_key(&mut self, key: KeyEvent) {
+        let Some(secret) = self.secret_detail.clone() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => self.secret_detail = None,
+            KeyCode::Enter | KeyCode::Char('e') => {
+                // straight into the prefilled edit form (D204)
+                self.secret_form = SecretFormState {
+                    mode: Some(FormMode::Edit),
+                    name: secret.name.clone(),
+                    group: secret.secret_group.clone().unwrap_or_default(),
+                    username: secret.username.clone().unwrap_or_default(),
+                    url: secret.url.clone().unwrap_or_default(),
+                    email: secret.email.clone().unwrap_or_default(),
+                    ssh_agent: secret.ssh_agent,
+                    editing_id: Some(secret.id.clone()),
+                    ..Default::default()
+                };
+                self.secret_detail = None;
+            }
+            KeyCode::Char('c') => {
+                // copy the decrypted VALUE — the list selection still points
+                // at the same secret, so the existing helper just works
+                self.secret_detail = None;
+                self.copy_selected().await;
+            }
+            KeyCode::Char('y') => {
+                // copy the PUBLIC key (ssh secrets) — same as the list
+                self.secret_detail = None;
+                self.copy_selected_public_key().await;
+            }
+            KeyCode::Char('u') | KeyCode::Char('l') | KeyCode::Char('m') => {
+                // copy one metadata field (D204: "see the info to copy")
+                let (text, label) = match key.code {
+                    KeyCode::Char('u') => (secret.username.clone(), "username"),
+                    KeyCode::Char('l') => (secret.url.clone(), "url"),
+                    _ => (secret.email.clone(), "email"),
+                };
+                match text {
+                    Some(v) if !v.is_empty() => match arboard::Clipboard::new() {
+                        Ok(mut clipboard) => match clipboard.set_text(v) {
+                            Ok(()) => {
+                                self.status_message = Some(format!("\u{2713} {} copied", label))
+                            }
+                            Err(e) => {
+                                self.status_message =
+                                    Some(format!("\u{2717} Clipboard failed: {}", e))
+                            }
+                        },
+                        Err(e) => {
+                            self.status_message =
+                                Some(format!("\u{2717} Clipboard unavailable: {}", e))
+                        }
+                    },
+                    _ => self.status_message = Some(format!("no {} on this secret", label)),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// D204: the secret detail viewer — every stored field at a glance with
+    /// the copy actions spelled out. The value stays MASKED (never rendered
+    /// decrypted); `c` copies it via the existing decrypt path.
+    fn render_secret_detail(&self, f: &mut Frame) {
+        use ratatui::widgets::Paragraph;
+        let Some(secret) = self.secret_detail.as_ref() else {
+            return;
+        };
+        let area = self.centered_rect(62, 46, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.accent))
+            .title(format!(" \u{1f50d} {} ", secret.name))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let lab = |s: &str| {
+            Span::styled(
+                format!(" {:<10}", s),
+                Style::default().fg(self.ui.theme.border),
+            )
+        };
+        let or_dash = |v: &Option<String>| v.clone().unwrap_or_else(|| "\u{2014}".to_string());
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(Line::from(vec![
+            lab("name"),
+            Span::styled(
+                secret.name.clone(),
+                Style::default()
+                    .fg(self.ui.theme.fg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        lines.push(Line::from(vec![lab("group"), Span::raw(or_dash(&secret.secret_group))]));
+        lines.push(Line::from(vec![lab("username"), Span::raw(or_dash(&secret.username))]));
+        lines.push(Line::from(vec![lab("url"), Span::raw(or_dash(&secret.url))]));
+        lines.push(Line::from(vec![lab("email"), Span::raw(or_dash(&secret.email))]));
+        lines.push(Line::from(vec![lab("kind"), Span::raw(secret.secret_kind.clone())]));
+        lines.push(Line::from(vec![lab("agent"), Span::raw(if secret.ssh_agent {
+            "\u{2713} offered to ssh-agent".to_string()
+        } else {
+            "\u{2014}".to_string()
+        })]));
+        if secret.passphrase_protected {
+            lines.push(Line::from(vec![lab("locked"), Span::raw("passphrase protected")]));
+        }
+        lines.push(Line::from(vec![lab("created"), Span::raw(secret.created_at.clone())]));
+        lines.push(Line::from(vec![lab("updated"), Span::raw(secret.updated_at.clone())]));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " value: \u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}   (c copies the value \u{b7} y copies the public key)",
+            Style::default().fg(self.ui.theme.border),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " Enter/e edit \u{b7} c copy value \u{b7} y copy pubkey \u{b7} u user \u{b7} l url \u{b7} m email \u{b7} Esc close",
+            Style::default().fg(self.ui.theme.highlight),
+        )));
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
     fn render_ssh_import_panel(&self, f: &mut Frame) {
         let Some(panel) = self.ssh_import_panel.as_ref() else {
             return;
@@ -9678,7 +9812,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             chunks[2],
         );
 
-        let hints = "Enter: import selected + offer to agent · Space: toggle · a: select all · e: file explorer (pick dir) · p: passphrase · c: copy public key (for GitHub) · Esc: close";
+        let hints = "Enter: import selected + offer to agent · Space: toggle · a: select all · e: file explorer (pick dir) · p: passphrase · c/y: copy public key (for GitHub) · Esc: close";
         f.render_widget(
             Paragraph::new(Span::styled(hints, Style::default().fg(self.ui.theme.border))),
             chunks[3],
@@ -9734,8 +9868,15 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                         None,
                     ) {
                         Some((prog, args)) => {
-                            let spawned =
-                                std::process::Command::new(&prog).args(&args).spawn();
+                            // D204: null stdio — the terminal window must never
+                            // inherit this TTY's stderr (fontconfig/GL spam
+                            // painted over the TUI while ratatui was drawing)
+                            let spawned = std::process::Command::new(&prog)
+                                .args(&args)
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .spawn();
                             match spawned {
                                 Ok(_) => opened += 1,
                                 Err(_) => _skipped += 1,
@@ -10760,6 +10901,9 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c").arg(&command);
         cmd.stdin(std::process::Stdio::null());
+        // D204: detach out/err too — child stderr used to paint over the TUI
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
         match cmd.spawn() {
             Ok(child) => {
                 let pid = child.id().unwrap_or(0);
