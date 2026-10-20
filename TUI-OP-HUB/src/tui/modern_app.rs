@@ -690,6 +690,8 @@ pub struct ModernApp {
     /// SSH host manager panel (Secrets → `H`)
     ssh_panel: Option<SshPanel>,
     ssh_import_panel: Option<SshImportPanel>,
+    /// D206: image preview popup (Knowledge → V)
+    image_popup: Option<ImagePopup>,
     /// D204: secret detail viewer (e on a secret shows metadata + copy paths)
     secret_detail: Option<crate::models::Secret>,
     /// D204: reveal flag reserved — the value stays masked; copies go via c/y
@@ -852,6 +854,14 @@ impl KbFilter {
     }
 }
 
+/// D206: an image preview popup — a decoded image + its protocol renderer
+/// (half-blocks by default; kitty/ghostty graphical upgrade later).
+struct ImagePopup {
+    proto: Box<dyn ratatui_image::protocol::Protocol>,
+    title: String,
+    path: String,
+}
+
 /// One key file discovered by the SSH import panel (D118 hub).
 #[derive(Clone)]
 struct SshImportItem {
@@ -899,6 +909,49 @@ struct PkgJob {
     ok: Option<bool>,
     /// installed list refreshed once after completion
     refreshed: bool,
+}
+
+/// D206: find the first image path referenced by free text — markdown
+/// `![alt](path)` first, then any token ending in an image extension.
+/// Returns the tilde-expanded path only when the file exists on disk.
+pub(crate) fn extract_image_path(content: &str) -> Option<String> {
+    const EXTS: [&str; 6] = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"];
+    let expand = |p: &str| -> String {
+        if let Some(rest) = p.strip_prefix("~/") {
+            if let Ok(home) = std::env::var("HOME") {
+                return format!("{home}/{rest}");
+            }
+        }
+        p.to_string()
+    };
+    let is_img =
+        |p: &str| EXTS.iter().any(|e| p.to_ascii_lowercase().ends_with(e));
+    // markdown image syntax ![alt](path)
+    if let Some(start) = content.find("](") {
+        let rest = &content[start + 2..];
+        if let Some(end) = rest.find(')') {
+            let raw = rest[..end].trim();
+            if is_img(raw) && !raw.is_empty() {
+                let p = expand(raw);
+                if std::path::Path::new(&p).is_file() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    // bare paths anywhere in the text
+    for line in content.lines() {
+        for token in line.split_whitespace() {
+            let t = token.trim_matches(|c| c == '(' || c == ')' || c == '`' || c == '"' || c == '\'');
+            if t.len() > 4 && is_img(t) {
+                let p = expand(t);
+                if std::path::Path::new(&p).is_file() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn ssh_scan_dir(dir: &std::path::Path, vault_names: &[String]) -> Vec<SshImportItem> {
@@ -1041,6 +1094,7 @@ impl ModernApp {
             config_store_dir: dirs_home().join(".config/tui-op-hub/configs"),
             ssh_panel: None,
             ssh_import_panel: None,
+            image_popup: None,
             secret_detail: None,
             secret_detail_reveal: false,
             ssh_import_pass: std::collections::HashMap::new(),
@@ -2690,6 +2744,9 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         if self.ssh_panel.is_some() {
             self.render_ssh_panel(f);
         }
+        if self.image_popup.is_some() {
+            self.render_image_popup(f);
+        }
         if self.secret_detail.is_some() {
             self.render_secret_detail(f);
         }
@@ -3608,6 +3665,11 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         // window can open the explorer (e) to pick the scan directory
         if self.file_browser.is_some() {
             self.handle_file_browser_key(key);
+            return;
+        }
+        // D206: image preview popup is topmost when open (V on knowledge)
+        if self.image_popup.is_some() {
+            self.handle_image_popup_key(key);
             return;
         }
         // D204: secret detail viewer is topmost when open (e on a secret)
@@ -4593,6 +4655,13 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 // the Secrets shift-I (SSH import window)
                 if self.ui.state == AppState::Knowledge {
                     self.import_input = Some(default_bundle_path());
+                }
+            }
+            KeyCode::Char('V') => {
+                // D206: render an image referenced by the selected knowledge
+                // entity (half-blocks preview, Esc closes)
+                if self.ui.state == AppState::Knowledge {
+                    self.open_image_popup().await;
                 }
             }
             KeyCode::Char('k') => {
@@ -6062,6 +6131,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 ("i", "Options"),
                 ("m", "Man"),
                 ("R", "Sudo"),
+                ("V", "Image"),
                 ("/", "Find"),
                 ("?", "Keybinds"),
                 ("q", "Quit"),
@@ -9657,6 +9727,112 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
     /// D204: the secret detail viewer — every stored field at a glance with
     /// the copy actions spelled out. The value stays MASKED (never rendered
     /// decrypted); `c` copies it via the existing decrypt path.
+    // ------------------------------------------------------------------
+    // D206: image preview popup (Knowledge → V)
+    // ------------------------------------------------------------------
+
+    /// Render the image referenced by the selected knowledge entity in a
+    /// centered popup. Half-blocks protocol: no terminal query needed, works
+    /// everywhere (kitty graphics upgrade for ghostty later).
+    async fn open_image_popup(&mut self) {
+        let Some(entity) = self.commands_list.get_selected().cloned() else {
+            self.status_message = Some("no entity selected".to_string());
+            return;
+        };
+        let text = entity
+            .content
+            .clone()
+            .or_else(|| entity.description.clone())
+            .unwrap_or_default();
+        let Some(path) = extract_image_path(&text) else {
+            self.status_message = Some(
+                "no image path found in this entity — add a line with an image path (png/jpg/gif/webp)"
+                    .to_string(),
+            );
+            return;
+        };
+        // D206: nested match — ImageReader::open is io::Error, decode is ImageError
+        let img = match image::ImageReader::open(&path) {
+            Ok(r) => match r.decode() {
+                Ok(img) => img,
+                Err(e) => {
+                    self.status_message = Some(format!("✗ decode {path}: {e}"));
+                    return;
+                }
+            },
+            Err(e) => {
+                self.status_message = Some(format!("✗ open {path}: {e}"));
+                return;
+            }
+        };
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let w = (cols * 62 / 100).saturating_sub(2).max(10);
+        let h = (rows * 46 / 100).saturating_sub(2).max(6);
+        let title = std::path::Path::new(&path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("image")
+            .to_string();
+        // D206: no stdio query — Picker::new defaults to Halfblocks
+        let mut picker = ratatui_image::picker::Picker::new((10, 20));
+        let proto_res = picker.new_protocol(
+            img,
+            ratatui::layout::Rect::new(0, 0, w, h),
+            ratatui_image::Resize::Fit(None),
+        );
+        match proto_res {
+            Ok(proto) => {
+                self.image_popup = Some(ImagePopup {
+                    proto,
+                    title: format!("\u{1f5bc} {title}"),
+                    path,
+                });
+            }
+            Err(e) => self.status_message = Some(format!("✗ image preview: {e}")),
+        }
+    }
+
+    fn handle_image_popup_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('v') => {
+                self.image_popup = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn render_image_popup(&self, f: &mut Frame) {
+        use ratatui::widgets::Paragraph;
+        let Some(popup) = self.image_popup.as_ref() else {
+            return;
+        };
+        let area = self.centered_rect(62, 46, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.accent))
+            .style(Style::default().bg(self.ui.theme.bg))
+            .title(format!(" {} ", popup.title));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let proto = &popup.proto;
+        f.render_widget(
+            ratatui_image::Image::new(proto.as_ref()),
+            inner,
+        );
+        let hint = Line::from(Span::styled(
+            " esc/q close · half-blocks render (ghostty kitty upgrade later)",
+            Style::default().fg(self.ui.theme.border),
+        ));
+        let hint_area = ratatui::layout::Rect {
+            y: area.bottom().saturating_sub(1),
+            height: 1,
+            ..area
+        };
+        f.render_widget(Paragraph::new(hint), hint_area);
+    }
+
     fn render_secret_detail(&self, f: &mut Frame) {
         use ratatui::widgets::Paragraph;
         let Some(secret) = self.secret_detail.as_ref() else {
@@ -12876,6 +13052,10 @@ impl ModernApp {
         lines.push(row("X", "Cancel the running workflow"));
 
         lines.push(Line::from(""));
+        lines.push(section("Knowledge"));
+        lines.push(row("V", "Render an image preview from the entity's content"));
+
+        lines.push(Line::from(""));
         lines.push(section("Secrets"));
         lines.push(row("n", "New secret (encrypted on save)"));
         lines.push(row("e", "Edit selected secret"));
@@ -15956,5 +16136,37 @@ mod configs_tab_tests {
         app.handle_key(key(KeyCode::Char('u'))).await;
         assert_eq!(app.configs_list.items[0].version, 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+
+#[cfg(test)]
+mod image_path_tests {
+    use super::extract_image_path;
+
+    #[test]
+    fn finds_markdown_image_path() {
+        let p = std::env::temp_dir().join("tuihub-imgtest-md.png");
+        std::fs::write(&p, b"png").unwrap();
+        let s = format!("check ![shot]({}) done", p.display());
+        assert_eq!(extract_image_path(&s), Some(p.display().to_string()));
+        std::fs::remove_file(&p).unwrap();
+    }
+
+    #[test]
+    fn finds_bare_path() {
+        let p = std::env::temp_dir().join("tuihub-imgtest-bare.jpg");
+        std::fs::write(&p, b"jpg").unwrap();
+        assert_eq!(
+            extract_image_path(&p.display().to_string()),
+            Some(p.display().to_string())
+        );
+        std::fs::remove_file(&p).unwrap();
+    }
+
+    #[test]
+    fn ignores_missing_files() {
+        assert_eq!(extract_image_path("see /nonexistent/nope-42.png"), None);
+        assert_eq!(extract_image_path(""), None);
     }
 }

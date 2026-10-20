@@ -70,6 +70,8 @@ cron = "0.12"
 
 # Plugin System (US-PLG-01)
 libloading = "0.8"
+ratatui-image = { version = "1", default-features = false, features = ["crossterm", "image-defaults"] }
+image = "0.25"
 
 [profile.release]
 # Single binary optimization (US-NF-05)
