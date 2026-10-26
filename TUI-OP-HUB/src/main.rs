@@ -52,6 +52,7 @@ fn handle_cli_flags() -> Option<bool> {
                    --headless          Run without the TUI (scheduler + API only)\n\
                    --section <id>      Open the TUI directly on a section\n\
                                        (dash|kb|proj|wf|sec|cfg|plug|pkg|set)\n\
+                   --export-keybinds   Print all keybinds as JSON and exit\n\
                    --print-unit        Print the systemd user unit file\n\
                    --install-service   Install + enable the systemd user service\n\
                    --uninstall-service Disable + remove the systemd user service\n\
@@ -61,6 +62,52 @@ fn handle_cli_flags() -> Option<bool> {
         }
         "--print-unit" => {
             println!("{}", tui_op_hub::service::systemd_user_unit());
+            Some(true)
+        }
+        "--export-keybinds" => {
+            // D195: machine-readable keybind dump for the docs CI (docs.yml
+            // renders it as static HTML). No DB, no terminal app — safe to
+            // run in CI right after the test suite.
+            use tui_op_hub::tui::modern_ui::AppState;
+            let global: Vec<(&str, &str)> = vec![
+                ("Tab", "Switch tabs (configurable order, Settings last)"),
+                (
+                    "1-9,0",
+                    "1 Dashboard · 2 Knowledge · 3 Projects · 4 Workflows · 5 Secrets · 6 Configs · 7 Plugins · 8 Packages · 0 Settings",
+                ),
+                ("f", "Knowledge tab: cycle the type filter (All/Commands/Apps/Scripts)"),
+                ("`", "Open a new terminal window"),
+                ("/", "Fuzzy search in the current list"),
+                ("?", "Toggle the keybind helper"),
+                ("q", "Quit"),
+            ];
+            let screens: Vec<(&str, AppState)> = vec![
+                ("dashboard", AppState::Dashboard),
+                ("knowledge", AppState::Knowledge),
+                ("projects", AppState::Projects),
+                ("workflows", AppState::Workflows),
+                ("secrets", AppState::Secrets),
+                ("configs", AppState::Configs),
+                ("plugins", AppState::Plugins),
+                ("packages", AppState::Packages),
+                ("settings", AppState::Settings),
+            ];
+            let mut screens_json = serde_json::Map::new();
+            for (name, state) in &screens {
+                let hints: Vec<serde_json::Value> = ModernApp::keybind_hints_for(state)
+                    .into_iter()
+                    .map(|(k, l)| serde_json::json!([k, l]))
+                    .collect();
+                screens_json.insert((*name).to_string(), serde_json::Value::Array(hints));
+            }
+            let payload = serde_json::json!({
+                "global": global
+                    .iter()
+                    .map(|(k, l)| serde_json::json!([k, l]))
+                    .collect::<Vec<_>>(),
+                "screens": serde_json::Value::Object(screens_json),
+            });
+            println!("{payload}");
             Some(true)
         }
         "mcp" => {

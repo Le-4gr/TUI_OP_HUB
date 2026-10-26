@@ -6095,7 +6095,13 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
 
     /// Context keybind hints for the current state (footer + `?` overlay).
     fn keybind_hints(&self) -> Vec<(&'static str, &'static str)> {
-        match self.ui.state {
+        Self::keybind_hints_for(&self.ui.state)
+    }
+
+    /// Context hint table without needing an app instance (D195: powers the
+    /// `--export-keybinds` docs export as well as the live footer).
+    pub fn keybind_hints_for(state: &AppState) -> Vec<(&'static str, &'static str)> {
+        match state {
             AppState::Dashboard => vec![
                 ("1-9", "Tabs"),
                 ("f", "Fetch"),

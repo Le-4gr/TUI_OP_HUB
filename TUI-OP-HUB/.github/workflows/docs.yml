@@ -1,0 +1,52 @@
+# D195: keep the keybinds docs in sync automatically — the `?` overlay and
+# the footer hints now have ONE live source (ModernApp::keybind_hints_for),
+# exported machine-readably via `tui-op-hub --export-keybinds`, tested,
+# rendered to a static HTML page and published to GitHub Pages on every
+# push to dev.
+name: docs
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  # The BDD/ssh tests share a repo-local fixture passphrase in CI.
+  TUI_OP_HUB_SECRETS_KEY: test
+
+jobs:
+  keybinds:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test suite
+        run: cargo test --locked
+
+      - name: Export keybinds as JSON
+        run: cargo run --locked --quiet -- --export-keybinds > keybinds.json
+
+      - name: Render keybinds.html
+        run: mkdir -p site && python3 scripts/gen_keybinds_page.py < keybinds.json > site/keybinds.html
+
+      - name: Page asset
+        run: cp keybinds.json site/keybinds.json
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - uses: actions/deploy-pages@v4
