@@ -202,6 +202,10 @@ async fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        // D264: tracing must NEVER write to stdout — the TUI paints on the
+        // alternate screen and INFO lines land in the visible pane as
+        // "debug codes" (the user-visible Secrets-tab symptom).
+        .with_writer(std::io::stderr)
         .init();
 
     tracing::info!("TUI-OP-HUB starting up");

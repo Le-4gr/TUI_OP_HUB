@@ -696,6 +696,12 @@ pub struct ModernApp {
     secret_detail: Option<crate::models::Secret>,
     /// D204: reveal flag reserved — the value stays masked; copies go via c/y
     secret_detail_reveal: bool,
+    /// D264: decrypted value shown while the detail viewer is open (v)
+    secret_detail_plain: Option<String>,
+    /// D264: in-TUI passphrase prompt for locked ssh keys (S queue)
+    ssh_pass_prompt: Option<SshPassPrompt>,
+    /// D264: queued locked keys waiting for a passphrase prompt
+    ssh_pass_pending: Vec<(String, std::path::PathBuf)>,
     /// D140: passphrases typed in the import panel, keyed by private-key path
     ssh_import_pass: std::collections::HashMap<String, String>,
     // New project creation form (US-PROJ)
@@ -860,6 +866,15 @@ struct ImagePopup {
     proto: Box<dyn ratatui_image::protocol::Protocol>,
     title: String,
     path: String,
+}
+
+/// D264: in-TUI passphrase prompt for a locked ssh key without a stored
+/// passphrase (replaces the old pop-a-terminal ssh-add path).
+struct SshPassPrompt {
+    name: String,
+    pem_path: std::path::PathBuf,
+    input: String,
+    error: Option<String>,
 }
 
 /// One key file discovered by the SSH import panel (D118 hub).
@@ -1096,6 +1111,9 @@ impl ModernApp {
             ssh_import_panel: None,
             image_popup: None,
             secret_detail: None,
+            secret_detail_plain: None,
+            ssh_pass_prompt: None,
+            ssh_pass_pending: Vec::new(),
             secret_detail_reveal: false,
             ssh_import_pass: std::collections::HashMap::new(),
             dev_user_manager: false,
@@ -2750,6 +2768,9 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         if self.secret_detail.is_some() {
             self.render_secret_detail(f);
         }
+        if self.ssh_pass_prompt.is_some() {
+            self.render_ssh_pass_prompt(f);
+        }
         if self.ssh_import_panel.is_some() {
             self.render_ssh_import_panel(f);
         }
@@ -3601,7 +3622,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
     }
 
     pub async fn handle_key(&mut self, key: KeyEvent) {
-        // Collect finished background workflow runs (US-WF-09) before routing
+                // Collect finished background workflow runs (US-WF-09) before routing
         self.poll_workflow_task().await;
         // D181: the package confirm popup is topmost when open — [i] install,
         // [d] declare, [Esc] cancel (it can open from any Packages state)
@@ -3670,6 +3691,11 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         // D206: image preview popup is topmost when open (V on knowledge)
         if self.image_popup.is_some() {
             self.handle_image_popup_key(key);
+            return;
+        }
+        // D264: in-TUI ssh passphrase prompt is topmost when open
+        if self.ssh_pass_prompt.is_some() {
+            self.handle_ssh_pass_prompt_key(key).await;
             return;
         }
         // D204: secret detail viewer is topmost when open (e on a secret)
@@ -4510,6 +4536,7 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                         // the edit form opens from the detail via Enter/e
                         if let Some(secret) = self.secrets_list.get_selected().cloned() {
                             self.secret_detail = Some(secret);
+                            self.secret_detail_plain = None;
                         }
                     }
                     _ => {}
@@ -9551,9 +9578,9 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                 match picked {
                     Some((name, Some(pub_path))) => {
                         match std::fs::read_to_string(&pub_path) {
-                            Ok(pem) => match arboard::Clipboard::new() {
-                                Ok(mut cb) => {
-                                    let _ = cb.set_text(pem.trim_end());
+                            Ok(pem) => match clipboard_set(pem.trim_end()) {
+                                Ok(mut _cb) => {
+                                    let _ = pem.trim_end();
                                     if let Some(p2) = self.ssh_import_panel.as_mut() {
                                         p2.message = Some(format!(
                                             "\u{2713} public key '{}' copied — paste into GitHub",
@@ -9673,7 +9700,10 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             return;
         };
         match key.code {
-            KeyCode::Esc => self.secret_detail = None,
+            KeyCode::Esc => {
+                self.secret_detail = None;
+                self.secret_detail_plain = None;
+            }
             KeyCode::Enter | KeyCode::Char('e') => {
                 // straight into the prefilled edit form (D204)
                 self.secret_form = SecretFormState {
@@ -9688,16 +9718,19 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                     ..Default::default()
                 };
                 self.secret_detail = None;
+                self.secret_detail_plain = None;
             }
             KeyCode::Char('c') => {
                 // copy the decrypted VALUE — the list selection still points
                 // at the same secret, so the existing helper just works
                 self.secret_detail = None;
+                self.secret_detail_plain = None;
                 self.copy_selected().await;
             }
             KeyCode::Char('y') => {
                 // copy the PUBLIC key (ssh secrets) — same as the list
                 self.secret_detail = None;
+                self.secret_detail_plain = None;
                 self.copy_selected_public_key().await;
             }
             KeyCode::Char('u') | KeyCode::Char('l') | KeyCode::Char('m') => {
@@ -9708,25 +9741,87 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                     _ => (secret.email.clone(), "email"),
                 };
                 match text {
-                    Some(v) if !v.is_empty() => match arboard::Clipboard::new() {
-                        Ok(mut clipboard) => match clipboard.set_text(v) {
-                            Ok(()) => {
-                                self.status_message = Some(format!("\u{2713} {} copied", label))
-                            }
-                            Err(e) => {
-                                self.status_message =
-                                    Some(format!("\u{2717} Clipboard failed: {}", e))
-                            }
-                        },
-                        Err(e) => {
-                            self.status_message =
-                                Some(format!("\u{2717} Clipboard unavailable: {}", e))
-                        }
+                    Some(v) if !v.is_empty() => match clipboard_set(&v) {
+                        Ok(()) => self.status_message = Some(format!("\u{2713} {} copied", label)),
+                        Err(e) => self.status_message = Some(format!("\u{2717} clipboard: {}", e)),
                     },
                     _ => self.status_message = Some(format!("no {} on this secret", label)),
                 }
             }
+            KeyCode::Char('v') => {
+                // D264: reveal the decrypted value in place; v again hides
+                if self.secret_detail_plain.is_some() {
+                    self.secret_detail_plain = None;
+                    return;
+                }
+                let user_id = self.current_user_profile_id().await;
+                match secrets::decrypt_for_user(&*self.pool, &user_id, &secret.value_enc).await {
+                    Ok(v) => self.secret_detail_plain = Some(v),
+                    Err(e) => {
+                        self.status_message = Some(format!("\u{2717} decrypt failed: {}", e))
+                    }
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// D264: keys for the in-TUI ssh passphrase prompt (S on a locked key).
+    async fn handle_ssh_pass_prompt_key(&mut self, key: KeyEvent) {
+                let Some(prompt) = self.ssh_pass_prompt.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                let _ = std::fs::remove_file(&prompt.pem_path);
+                self.ssh_pass_prompt = None;
+                for (_, p) in self.ssh_pass_pending.drain(..) {
+                    let _ = std::fs::remove_file(p);
+                }
+                self.status_message = Some("ssh-agent: passphrase prompt cancelled".into());
+            }
+            KeyCode::Backspace => {
+                prompt.input.pop();
+            }
+            KeyCode::Enter => {
+                let name = prompt.name.clone();
+                let pem_path = prompt.pem_path.clone();
+                let pass = prompt.input.clone();
+                let pem = match std::fs::read_to_string(&pem_path) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        prompt.error = Some(format!("key file: {}", e));
+                        return;
+                    }
+                };
+                match secrets::ssh_agent::add_key_with_pass(&name, &pem, &pass) {
+                    Ok(()) => {
+                        let _ = std::fs::remove_file(&pem_path);
+                        self.ssh_pass_prompt = None;
+                        self.status_message =
+                            Some(format!("\u{2713} ssh-agent: added {} (passphrase)", name));
+                        self.next_ssh_pass_prompt();
+                    }
+                    Err(e) => {
+                        prompt.input.clear();
+                        prompt.error = Some(e.to_string());
+                    }
+                }
+            }
+            KeyCode::Char(c) => prompt.input.push(c),
+            _ => {}
+        }
+    }
+
+    /// D264: pop the next queued locked key into the prompt (or finish).
+    fn next_ssh_pass_prompt(&mut self) {
+        if let Some((name, path)) = self.ssh_pass_pending.pop() {
+            self.ssh_pass_prompt = Some(SshPassPrompt {
+                name,
+                pem_path: path,
+                input: String::new(),
+                error: None,
+            });
         }
     }
 
@@ -9839,6 +9934,55 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         f.render_widget(Paragraph::new(hint), hint_area);
     }
 
+    /// D264: masked in-TUI passphrase prompt for locked ssh keys.
+    fn render_ssh_pass_prompt(&self, f: &mut Frame) {
+        let area = self.centered_rect(56, 12, f);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .title(" \u{1f511} SSH key passphrase ")
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.ui.theme.highlight))
+            .style(Style::default().bg(self.ui.theme.bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let Some(prompt) = self.ssh_pass_prompt.as_ref() else {
+            return;
+        };
+        let mut pending = self.ssh_pass_pending.len();
+        if pending > 0 {
+            pending += 0; // queued after this one
+        }
+        let lines = vec![
+            Line::from(Span::raw(format!(
+                " unlock {} to add it to the agent",
+                prompt.name
+            ))),
+            Line::from(Span::styled(
+                "\u{2022}".repeat(prompt.input.len().max(1)),
+                Style::default().fg(self.ui.theme.accent).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(match &prompt.error {
+                Some(e) => Span::styled(format!(" \u{2717} {}", e), Style::default().fg(self.ui.theme.error)),
+                None => Span::raw(" "),
+            }),
+            Line::from(Span::styled(
+                format!(
+                    " Enter add \u{b7} Esc cancel{}",
+                    if self.ssh_pass_pending.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" \u{b7} {} more queued", self.ssh_pass_pending.len())
+                    }
+                ),
+                Style::default().fg(self.ui.theme.border),
+            )),
+        ];
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
     fn render_secret_detail(&self, f: &mut Frame) {
         use ratatui::widgets::Paragraph;
         let Some(secret) = self.secret_detail.as_ref() else {
@@ -9888,13 +10032,24 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         lines.push(Line::from(vec![lab("created"), Span::raw(secret.created_at.clone())]));
         lines.push(Line::from(vec![lab("updated"), Span::raw(secret.updated_at.clone())]));
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            " value: \u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}   (c copies the value \u{b7} y copies the public key)",
-            Style::default().fg(self.ui.theme.border),
-        )));
+        if let Some(plain) = self.secret_detail_plain.as_ref() {
+            // D264: revealed value (v) — every line, no truncation
+            for line in plain.lines() {
+                lines.push(Line::from(Span::raw(format!(" value: {}", line))));
+            }
+            lines.push(Line::from(Span::styled(
+                " (v hides the value again \u{b7} c copies \u{b7} y copies the public key)",
+                Style::default().fg(self.ui.theme.border),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                " value: \u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}   (c copies \u{b7} v reveal \u{b7} y copies the public key)",
+                Style::default().fg(self.ui.theme.border),
+            )));
+        }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            " Enter/e edit \u{b7} c copy value \u{b7} y copy pubkey \u{b7} u user \u{b7} l url \u{b7} m email \u{b7} Esc close",
+            " Enter/e edit \u{b7} c copy value \u{b7} y copy pubkey \u{b7} v reveal \u{b7} u user \u{b7} l url \u{b7} m email \u{b7} Esc close",
             Style::default().fg(self.ui.theme.highlight),
         )));
         f.render_widget(Paragraph::new(lines), inner);
@@ -10045,33 +10200,25 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
                             std::fs::Permissions::from_mode(0o600),
                         );
                     }
-                    match terminal_window_command_for(
-                        &format!("ssh-add {} && rm -f {}", key_file.display(), key_file.display()),
-                        None,
-                    ) {
-                        Some((prog, args)) => {
-                            // D204: null stdio — the terminal window must never
-                            // inherit this TTY's stderr (fontconfig/GL spam
-                            // painted over the TUI while ratatui was drawing)
-                            let spawned = std::process::Command::new(&prog)
-                                .args(&args)
-                                .stdin(std::process::Stdio::null())
-                                .stdout(std::process::Stdio::null())
-                                .stderr(std::process::Stdio::null())
-                                .spawn();
-                            match spawned {
-                                Ok(_) => opened += 1,
-                                Err(_) => _skipped += 1,
-                            }
-                        }
-                        None => _skipped += 1,
+                    // D264: ask for the passphrase IN the TUI (prompt popup)
+                    // instead of popping a terminal window; the 0600 key file
+                    // stays in /tmp until added or cancelled (Esc removes all).
+                    self.ssh_pass_pending.push((stem.clone(), key_file.clone()));
+                    if self.ssh_pass_prompt.is_none() {
+                        self.ssh_pass_prompt = Some(SshPassPrompt {
+                            name: stem.clone(),
+                            pem_path: key_file,
+                            input: String::new(),
+                            error: None,
+                        });
                     }
+                    opened += 1;
                 }
                 Err(_) => _skipped += 1,
             }
         }
         self.status_message = Some(format!(
-            "ssh-agent: {} key(s) added, {} unlocked (stored passphrase), {} opened in a terminal, {} _skipped",
+            "ssh-agent: {} added, {} unlocked (stored passphrase), {} passphrase prompts, {} unavailable",
             out.offered, out.unlocked, opened, out.skipped
         ));
     }
@@ -10156,9 +10303,8 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
         {
             if let Ok(pem) = secrets::decrypt_for_user(&*self.pool, &user_id, &row.value_enc).await
             {
-                match arboard::Clipboard::new() {
-                    Ok(mut cb) => {
-                        let _ = cb.set_text(pem.trim_end().to_string());
+                match clipboard_set(pem.trim_end()) {
+                    Ok(()) => {
                         self.status_message =
                             Some("\u{2713} public key copied — paste into GitHub / authorized_keys".into());
                     }
@@ -10203,9 +10349,8 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             match out {
                 Ok(o) if o.status.success() => {
                     let pubkey = String::from_utf8_lossy(&o.stdout).trim_end().to_string();
-                    match arboard::Clipboard::new() {
-                        Ok(mut cb) => {
-                            let _ = cb.set_text(pubkey);
+                    match clipboard_set(&pubkey) {
+                        Ok(()) => {
                             self.status_message = Some(
                                 "\u{2713} public key derived + copied — paste into GitHub / authorized_keys"
                                     .into(),
@@ -10241,11 +10386,8 @@ command -v nix >/dev/null 2>&1 && { echo "== nix flake inputs =="; nix flake met
             }
         };
         match secrets::unwrap_with_passphrase(&value, passphrase) {
-            Ok(plaintext) => match arboard::Clipboard::new() {
-                Ok(mut cb) => {
-                    let _ = cb.set_text(plaintext);
-                    self.status_message = Some("Copied to clipboard".to_string());
-                }
+            Ok(plaintext) => match clipboard_set(&plaintext) {
+                Ok(()) => self.status_message = Some("Copied to clipboard".to_string()),
                 Err(e) => self.status_message = Some(format!("Clipboard unavailable: {}", e)),
             },
             Err(_) => {

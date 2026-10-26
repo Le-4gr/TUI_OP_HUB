@@ -164,3 +164,29 @@ pub(crate) fn pub_path_if(priv_path: &std::path::Path) -> Option<std::path::Path
     }
 }
 
+
+/// D264: clipboard that actually works on Wayland — wl-copy talks to the
+/// compositor directly; arboard uses X11 (XWayland), whose clipboard
+/// Wayland-native apps cannot read. Falls back to arboard when wl-copy is
+/// unavailable (X11 sessions, headless).
+pub(crate) fn clipboard_set(text: &str) -> Result<(), String> {
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        if let Ok(mut child) = std::process::Command::new("wl-copy")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            use std::io::Write;
+            if let Some(stdin) = child.stdin.as_mut() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            let _ = child.stdin.take(); // EOF: wl-copy owns the text now
+            return Ok(());
+        }
+    }
+    match arboard::Clipboard::new() {
+        Ok(mut cb) => cb.set_text(text.to_string()).map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    }
+}
